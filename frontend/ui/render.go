@@ -28,7 +28,11 @@ func renderView(m Model) string {
 	var sb strings.Builder
 
 	// Row 0: tab bar
-	sb.WriteString(renderTabBar(m.regionName, m.status, width))
+	status := m.status
+	if m.prefixMode {
+		status = "ctrl+b ..."
+	}
+	sb.WriteString(renderTabBar(m.regionName, status, width))
 	sb.WriteByte('\n')
 
 	// Rows 1..height-1: region content

@@ -228,6 +228,37 @@ func TestPrefixKeyLiteralCtrlB(t *testing.T) {
 	pio.WaitFor(t, ">", 10*time.Second)
 }
 
+func TestPrefixKeyStatusIndicator(t *testing.T) {
+	socketPath, serverCleanup := startServer(t)
+	defer serverCleanup()
+
+	pio, frontendCleanup := startFrontend(t, socketPath)
+	defer frontendCleanup()
+
+	pio.WaitFor(t, "bash", 10*time.Second)
+
+	// Wait until the system is truly idle (no new PTY output for 500ms).
+	pio.WaitForSilence(500 * time.Millisecond)
+
+	// Now send ctrl+b only. The status indicator should appear immediately.
+	pio.buf.Reset()
+	pio.Write([]byte{0x02})
+	pio.WaitFor(t, "ctrl+b ...", 3*time.Second)
+
+	// Send an unrecognized key to dismiss the prefix mode.
+	// The status should disappear on the next render.
+	pio.buf.Reset()
+	pio.Write([]byte("x"))
+
+	// Type a command to trigger a re-render, then verify "ctrl+b ..." is gone.
+	pio.Write([]byte("echo prefix_cleared\r"))
+	output := pio.WaitFor(t, "prefix_cleared", 10*time.Second)
+
+	if strings.Contains(output, "ctrl+b ...") {
+		t.Fatal("prefix status indicator still visible after prefix mode ended")
+	}
+}
+
 func TestSessionPersistence(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()

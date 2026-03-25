@@ -3,14 +3,18 @@ package ui
 import (
 	"bytes"
 	"encoding/base64"
+	"io"
 	"log/slog"
 	"os"
 
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/term"
 	"termd/frontend/client"
 	"termd/frontend/protocol"
-
-	"github.com/charmbracelet/x/term"
 )
+
+type prefixStartedMsg struct{}
+type prefixEndedMsg struct{}
 
 const prefixKey = 0x02 // ctrl+b
 
@@ -24,25 +28,17 @@ func SetupRawTerminal() (restore func(), err error) {
 	return func() { term.Restore(fd, oldState) }, nil
 }
 
-// ExitReason indicates why the raw input loop exited.
-type ExitReason int
-
-const (
-	ExitError   ExitReason = iota // stdin error or send error
-	ExitDetach                    // user pressed ctrl+b d
-	ExitClosed                    // regionReady channel closed
-)
-
 // RawInputLoop reads raw bytes from stdin and forwards them to the server.
-// It blocks on regionReady until the handshake completes, then reads stdin
-// in a loop. Handles the prefix key (ctrl+b) for frontend commands.
-// Returns the reason for exiting.
-func RawInputLoop(stdin *os.File, c *client.Client, regionReady <-chan string, pipeW interface{ Close() error }) ExitReason {
+// When ctrl+b is detected, the next byte is diverted to pipeW (bubbletea's
+// input) so the prefix command is handled by bubbletea's Update loop.
+// Sends prefixStartedMsg via program.Send() to trigger a re-render for the
+// status indicator.
+func RawInputLoop(stdin *os.File, c *client.Client, regionReady <-chan string, pipeW io.WriteCloser, program *tea.Program) {
 	defer pipeW.Close()
 
 	regionID, ok := <-regionReady
 	if !ok {
-		return ExitClosed
+		return
 	}
 	slog.Debug("raw input loop started", "region_id", regionID)
 
@@ -52,7 +48,7 @@ func RawInputLoop(stdin *os.File, c *client.Client, regionReady <-chan string, p
 		n, err := stdin.Read(buf)
 		if err != nil {
 			slog.Debug("raw input read error", "error", err)
-			return ExitError
+			return
 		}
 		if n == 0 {
 			continue
@@ -61,20 +57,9 @@ func RawInputLoop(stdin *os.File, c *client.Client, regionReady <-chan string, p
 		chunk := buf[:n]
 
 		if prefixActive {
-			// First byte after prefix key determines the command.
-			switch chunk[0] {
-			case 'd':
-				slog.Debug("prefix: detach")
-				return ExitDetach
-			case prefixKey:
-				// Send a literal ctrl+b to the program.
-				sendInput(c, regionID, []byte{prefixKey})
-			default:
-				// Unknown prefix command — discard the byte.
-				slog.Debug("prefix: unknown command", "byte", chunk[0])
-			}
+			// Divert the first byte to bubbletea for prefix command handling.
+			pipeW.Write(chunk[:1])
 			prefixActive = false
-			// Process remaining bytes in the chunk (if any).
 			chunk = chunk[1:]
 			if len(chunk) == 0 {
 				continue
@@ -83,37 +68,27 @@ func RawInputLoop(stdin *os.File, c *client.Client, regionReady <-chan string, p
 
 		// Scan for prefix key in the chunk.
 		if idx := bytes.IndexByte(chunk, prefixKey); idx >= 0 {
-			// Send everything before the prefix key.
+			// Send everything before the prefix key to the server.
 			if idx > 0 {
 				sendInput(c, regionID, chunk[:idx])
 			}
-			// Enter prefix mode. Remaining bytes after the prefix key
-			// will be processed on the next iteration (or if there are
-			// more bytes in this chunk, handle them now).
+			program.Send(prefixStartedMsg{})
 			rest := chunk[idx+1:]
 			if len(rest) > 0 {
-				// We have bytes after ctrl+b in the same read.
-				switch rest[0] {
-				case 'd':
-					slog.Debug("prefix: detach")
-					return ExitDetach
-				case prefixKey:
-					sendInput(c, regionID, []byte{prefixKey})
-				default:
-					slog.Debug("prefix: unknown command", "byte", rest[0])
-				}
-				// Send any remaining bytes after the prefix command.
+				// Byte after ctrl+b is in the same read — divert it to bubbletea.
+				pipeW.Write(rest[:1])
+				// Remaining bytes after the prefix command go to the server.
 				if len(rest) > 1 {
 					sendInput(c, regionID, rest[1:])
 				}
 			} else {
-				// ctrl+b was the last byte — wait for next read.
+				// ctrl+b was the last byte — next read goes to bubbletea.
 				prefixActive = true
 			}
 			continue
 		}
 
-		// No prefix key — send the entire chunk.
+		// No prefix key — send the entire chunk to the server.
 		sendInput(c, regionID, chunk)
 	}
 }

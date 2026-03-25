@@ -167,6 +167,23 @@ func (p *ptyIO) WaitForRaw(t *testing.T, needle string, timeout time.Duration) s
 	}
 }
 
+// WaitForSilence drains output until no new data arrives for the given duration.
+// This is not a fixed sleep — the timer resets on each new byte.
+func (p *ptyIO) WaitForSilence(duration time.Duration) {
+	for {
+		select {
+		case data, ok := <-p.ch:
+			if !ok {
+				return
+			}
+			p.buf.Write(data)
+			// Reset: new data arrived, wait again.
+		case <-time.After(duration):
+			return // no new data for the duration — idle.
+		}
+	}
+}
+
 // Write sends raw bytes to the PTY (simulating keyboard input).
 func (p *ptyIO) Write(data []byte) {
 	p.ptmx.Write(data)

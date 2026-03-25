@@ -2,6 +2,8 @@
 package ui
 
 import (
+	"encoding/base64"
+
 	tea "github.com/charmbracelet/bubbletea"
 	"termd/frontend/client"
 	"termd/frontend/protocol"
@@ -15,6 +17,8 @@ type Model struct {
 	cmd         string
 	cmdArgs     []string
 	RegionReady chan string // signals raw input goroutine with regionID
+	Detached    bool
+	prefixMode  bool
 	regionID    string
 	regionName  string
 	lines       []string
@@ -181,6 +185,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ServerErrorMsg:
 		m.err = msg.Context + ": " + msg.Message
 		return m, tea.Quit
+
+	case prefixStartedMsg:
+		m.prefixMode = true
+		return m, nil
+
+	case tea.KeyMsg:
+		// Only received during prefix mode (raw loop diverted input to bubbletea).
+		m.prefixMode = false
+		switch msg.String() {
+		case "d":
+			m.Detached = true
+			return m, tea.Quit
+		case "ctrl+b":
+			if m.regionID != "" {
+				data := base64.StdEncoding.EncodeToString([]byte{0x02})
+				_ = m.client.Send(protocol.InputMsg{
+					Type:     "input",
+					RegionID: m.regionID,
+					Data:     data,
+				})
+			}
+			return m, nil
+		default:
+			return m, nil
+		}
 
 	default:
 		return m, nil

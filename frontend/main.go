@@ -50,7 +50,6 @@ func main() {
 	}
 	defer c.Close()
 
-	// Put stdin in raw mode so we can read raw bytes.
 	restore, err := ui.SetupRawTerminal()
 	if err != nil {
 		slog.Error("raw mode failed", "error", err)
@@ -58,34 +57,22 @@ func main() {
 	}
 	defer restore()
 
-	// Create a pipe for bubbletea's input. Bubbletea reads from pipeR
-	// (which blocks forever — no parsed key messages). We read raw stdin
-	// ourselves in a separate goroutine.
 	pipeR, pipeW := io.Pipe()
 
 	model := ui.NewModel(c, shell, []string{})
 	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithInput(pipeR))
 
-	// Start the raw input goroutine. On detach, it tells bubbletea to quit.
-	exitReason := make(chan ui.ExitReason, 1)
-	go func() {
-		reason := ui.RawInputLoop(os.Stdin, c, model.RegionReady, pipeW)
-		exitReason <- reason
-		p.Quit()
-	}()
+	go ui.RawInputLoop(os.Stdin, c, model.RegionReady, pipeW, p)
 
-	if _, err := p.Run(); err != nil {
+	finalModel, err := p.Run()
+	if err != nil {
 		slog.Error("program error", "error", err)
 		os.Exit(1)
 	}
 
-	select {
-	case reason := <-exitReason:
-		if reason == ui.ExitDetach {
-			restore()
-			restore = func() {}
-			os.Stdout.WriteString("detached\n")
-		}
-	default:
+	if m, ok := finalModel.(ui.Model); ok && m.Detached {
+		restore()
+		restore = func() {}
+		os.Stdout.WriteString("detached\n")
 	}
 }
