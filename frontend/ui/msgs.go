@@ -43,6 +43,12 @@ type ResizeResponseMsg struct {
 	Message  string
 }
 
+type ListRegionsResponseMsg struct {
+	Regions []protocol.RegionInfo
+	Error   bool
+	Message string
+}
+
 type ServerErrorMsg struct {
 	Context string
 	Message string
@@ -77,6 +83,11 @@ func waitForUpdate(c *client.Client) tea.Cmd {
 			case protocol.ResizeResponse:
 				return ResizeResponseMsg{
 					RegionID: m.RegionID,
+					Error: m.Error, Message: m.Message,
+				}
+			case protocol.ListRegionsResponse:
+				return ListRegionsResponseMsg{
+					Regions: m.Regions,
 					Error: m.Error, Message: m.Message,
 				}
 			default:

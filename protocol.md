@@ -125,6 +125,34 @@ Note: the frontend subtracts 1 from the terminal height to account for the tab b
 
 ---
 
+### list_regions_request
+
+List all existing regions on the server. Used by the frontend on startup to check for sessions
+to resume.
+
+```json
+{ "type": "list_regions_request" }
+```
+
+| Field | Type   | Description            |
+|-------|--------|------------------------|
+| type  | string | `"list_regions_request"` |
+
+### list_regions_response
+
+```json
+{ "type": "list_regions_response", "regions": [{"region_id": "abc123", "name": "bash"}], "error": false, "message": "" }
+```
+
+| Field   | Type           | Description                                       |
+|---------|----------------|---------------------------------------------------|
+| type    | string         | `"list_regions_response"`                         |
+| regions | []RegionInfo   | Array of `{region_id, name}` for each live region |
+| error   | bool           | True on failure                                   |
+| message | string         | Error description, or `""`                        |
+
+---
+
 ## Server → Frontend
 
 ### region_created

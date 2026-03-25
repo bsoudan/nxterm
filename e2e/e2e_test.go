@@ -228,6 +228,46 @@ func TestPrefixKeyLiteralCtrlB(t *testing.T) {
 	pio.WaitFor(t, ">", 10*time.Second)
 }
 
+func TestSessionPersistence(t *testing.T) {
+	socketPath, serverCleanup := startServer(t)
+	defer serverCleanup()
+
+	// First frontend: type a unique marker, then detach.
+	pio1, cleanup1 := startFrontend(t, socketPath)
+
+	pio1.WaitFor(t, "bash", 10*time.Second)
+	pio1.Write([]byte("echo persistence_marker_12345\r"))
+	pio1.WaitFor(t, "persistence_marker_12345", 10*time.Second)
+
+	// Detach (ctrl+b d)
+	pio1.Write([]byte{0x02})
+	pio1.Write([]byte("d"))
+
+	// Wait for first frontend to exit
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case <-deadline:
+			cleanup1()
+			t.Fatal("timeout waiting for first frontend to exit")
+		case _, ok := <-pio1.ch:
+			if !ok {
+				goto reconnect
+			}
+		}
+	}
+
+reconnect:
+	cleanup1()
+
+	// Second frontend: should reconnect to the existing region and see
+	// the marker in the terminal scrollback/screen.
+	pio2, cleanup2 := startFrontend(t, socketPath)
+	defer cleanup2()
+
+	pio2.WaitFor(t, "persistence_marker_12345", 10*time.Second)
+}
+
 func TestExit(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()

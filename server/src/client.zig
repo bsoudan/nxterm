@@ -82,6 +82,7 @@ pub const Client = struct {
             .subscribe_request => |req| self.handleSubscribe(req),
             .input => |req| self.handleInput(alloc, req),
             .resize_request => |req| self.handleResize(req),
+            .list_regions_request => self.handleListRegions(alloc),
         }
     }
 
@@ -193,6 +194,34 @@ pub const Client = struct {
 
         self.sendMessage(.{ .resize_response = .{
             .region_id = &region.id,
+            .@"error" = false,
+            .message = "",
+        } });
+    }
+
+    fn handleListRegions(self: *Client, alloc: std.mem.Allocator) void {
+        const regions = &self.server.regions;
+        var infos = alloc.alloc(protocol.RegionInfo, regions.count()) catch {
+            self.sendMessage(.{ .list_regions_response = .{
+                .regions = &.{},
+                .@"error" = true,
+                .message = "out of memory",
+            } });
+            return;
+        };
+
+        var i: usize = 0;
+        var it = regions.iterator();
+        while (it.next()) |entry| {
+            infos[i] = .{
+                .region_id = entry.key_ptr.*,
+                .name = entry.value_ptr.*.name,
+            };
+            i += 1;
+        }
+
+        self.sendMessage(.{ .list_regions_response = .{
+            .regions = infos,
             .@"error" = false,
             .message = "",
         } });

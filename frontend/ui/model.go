@@ -32,20 +32,19 @@ func NewModel(c *client.Client, cmd string, args []string) Model {
 		cmd:         cmd,
 		cmdArgs:     args,
 		RegionReady: make(chan string, 1),
-		status:      "spawning...",
+		status:      "connecting...",
 	}
 }
 
 func (m Model) Init() tea.Cmd {
+	// First, list existing regions to check for a session to resume.
 	return tea.Batch(
 		func() tea.Msg {
-			err := m.client.Send(protocol.SpawnRequest{
-				Type: "spawn_request",
-				Cmd:  m.cmd,
-				Args: m.cmdArgs,
+			err := m.client.Send(protocol.ListRegionsRequest{
+				Type: "list_regions_request",
 			})
 			if err != nil {
-				return ServerErrorMsg{Context: "spawn", Message: err.Error()}
+				return ServerErrorMsg{Context: "list_regions", Message: err.Error()}
 			}
 			return nil
 		},
@@ -71,6 +70,51 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			})
 		}
 		return m, nil
+
+	case ListRegionsResponseMsg:
+		if msg.Error {
+			m.err = "list regions failed: " + msg.Message
+			return m, tea.Quit
+		}
+		if len(msg.Regions) > 0 {
+			// Resume existing session.
+			m.regionID = msg.Regions[0].RegionID
+			m.regionName = msg.Regions[0].Name
+			m.status = "subscribing..."
+			select {
+			case m.RegionReady <- m.regionID:
+			default:
+			}
+			return m, tea.Batch(
+				func() tea.Msg {
+					err := m.client.Send(protocol.SubscribeRequest{
+						Type:     "subscribe_request",
+						RegionID: m.regionID,
+					})
+					if err != nil {
+						return ServerErrorMsg{Context: "subscribe", Message: err.Error()}
+					}
+					return nil
+				},
+				waitForUpdate(m.client),
+			)
+		}
+		// No existing region — spawn a new one.
+		m.status = "spawning..."
+		return m, tea.Batch(
+			func() tea.Msg {
+				err := m.client.Send(protocol.SpawnRequest{
+					Type: "spawn_request",
+					Cmd:  m.cmd,
+					Args: m.cmdArgs,
+				})
+				if err != nil {
+					return ServerErrorMsg{Context: "spawn", Message: err.Error()}
+				}
+				return nil
+			},
+			waitForUpdate(m.client),
+		)
 
 	case SpawnResponseMsg:
 		if msg.Error {

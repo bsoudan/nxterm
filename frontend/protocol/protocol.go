@@ -75,6 +75,22 @@ type RegionDestroyed struct {
 	RegionID string `json:"region_id"`
 }
 
+type ListRegionsRequest struct {
+	Type string `json:"type"`
+}
+
+type RegionInfo struct {
+	RegionID string `json:"region_id"`
+	Name     string `json:"name"`
+}
+
+type ListRegionsResponse struct {
+	Type    string       `json:"type"`
+	Regions []RegionInfo `json:"regions"`
+	Error   bool         `json:"error"`
+	Message string       `json:"message"`
+}
+
 // ── Parsing ─────────────────────────────────────────────────────────────────
 
 type envelope struct {
@@ -106,6 +122,9 @@ func ParseInbound(line []byte) (any, error) {
 		return msg, json.Unmarshal(line, &msg)
 	case "region_destroyed":
 		var msg RegionDestroyed
+		return msg, json.Unmarshal(line, &msg)
+	case "list_regions_response":
+		var msg ListRegionsResponse
 		return msg, json.Unmarshal(line, &msg)
 	default:
 		return nil, fmt.Errorf("unknown message type: %s", env.Type)

@@ -38,6 +38,17 @@ pub const RegionDestroyed = struct {
     region_id: []const u8,
 };
 
+pub const RegionInfo = struct {
+    region_id: []const u8,
+    name: []const u8,
+};
+
+pub const ListRegionsResponse = struct {
+    regions: []const RegionInfo,
+    @"error": bool,
+    message: []const u8,
+};
+
 pub const OutboundMessage = union(enum) {
     spawn_response: SpawnResponse,
     subscribe_response: SubscribeResponse,
@@ -45,6 +56,7 @@ pub const OutboundMessage = union(enum) {
     region_created: RegionCreated,
     screen_update: ScreenUpdate,
     region_destroyed: RegionDestroyed,
+    list_regions_response: ListRegionsResponse,
 };
 
 // ── Inbound messages (frontend → server) ────────────────────────────────────
@@ -69,11 +81,14 @@ pub const ResizeRequest = struct {
     height: u16,
 };
 
+pub const ListRegionsRequest = struct {};
+
 pub const InboundMessage = union(enum) {
     spawn_request: SpawnRequest,
     subscribe_request: SubscribeRequest,
     input: InputMsg,
     resize_request: ResizeRequest,
+    list_regions_request: ListRegionsRequest,
 };
 
 // ── Serialization ────────────────────────────────────────────────────────────
@@ -100,6 +115,8 @@ pub fn parseInbound(alloc: std.mem.Allocator, line: []const u8) !InboundMessage 
         return .{ .input = try std.json.parseFromSliceLeaky(InputMsg, alloc, line, json_opts) };
     } else if (std.mem.eql(u8, tag.@"type", "resize_request")) {
         return .{ .resize_request = try std.json.parseFromSliceLeaky(ResizeRequest, alloc, line, json_opts) };
+    } else if (std.mem.eql(u8, tag.@"type", "list_regions_request")) {
+        return .{ .list_regions_request = .{} };
     }
 
     return error.UnknownMessageType;
@@ -142,6 +159,12 @@ pub fn writeOutbound(writer: *std.io.Writer, msg: OutboundMessage) !void {
         .region_destroyed => |r| try writer.print("{f}", .{std.json.fmt(.{
             .@"type" = "region_destroyed",
             .region_id = r.region_id,
+        }, .{})}),
+        .list_regions_response => |r| try writer.print("{f}", .{std.json.fmt(.{
+            .@"type" = "list_regions_response",
+            .regions = r.regions,
+            .@"error" = r.@"error",
+            .message = r.message,
         }, .{})}),
     }
     try writer.writeByte('\n');
