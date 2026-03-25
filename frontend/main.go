@@ -37,7 +37,7 @@ func main() {
 	}
 	defer c.Close()
 
-	model := ui.NewModel(c, shell, nil)
+	model := ui.NewModel(c, shell, []string{})
 	p := tea.NewProgram(model, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		slog.Error("program error", "error", err)
