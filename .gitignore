@@ -1,2 +1,4 @@
 .claude-config
 .local
+.zig-cache
+zig-out

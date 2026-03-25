@@ -1,0 +1,10 @@
+.{
+    .name = .termd_server,
+    .fingerprint = 0x481936820747b452,
+    .version = "0.0.0",
+    .minimum_zig_version = "0.15.0",
+    .dependencies = .{
+        // Added in Phase 1 via: zig fetch --save https://github.com/ghostty-org/ghostty/archive/<COMMIT>.tar.gz
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src" },
+}

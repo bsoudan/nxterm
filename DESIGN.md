@@ -71,24 +71,12 @@ Programs express placement preferences through tags (beside parent, float, take 
 
 ### Messages
 
-**Frontend → Server**
+See `protocol.md` for the canonical, up-to-date message definitions. The summary below is intentionally brief; `protocol.md` is the source of truth.
 
-```json
-{ "type": "spawn",     "cmd": "/bin/bash", "args": [] }
-{ "type": "subscribe", "region_id": "abc123" }
-{ "type": "input",     "region_id": "abc123", "data": "<base64>" }
-{ "type": "resize",    "region_id": "abc123", "width": 220, "height": 50 }
-```
+- **Frontend → Server**: `spawn_request`, `subscribe_request`, `input`, `resize_request` (plus their corresponding `_response` messages from the server)
+- **Server → Frontend**: `region_created`, `screen_update`, `region_destroyed`
 
-**Server → Frontend**
-
-```json
-{ "type": "region_created",   "region_id": "abc123", "name": "bash" }
-{ "type": "screen_update",    "region_id": "abc123", "width": 220, "height": 50, "cells": [...] }
-{ "type": "region_destroyed", "region_id": "abc123" }
-```
-
-The `cells` payload is a flat row-major array of `{ char, fg, bg, attrs }` objects. Full refresh for v1; dirty-region diffs in a later milestone.
+`screen_update` carries a plain-text `lines[]` array (one string per row, no escape sequences) for M1. Colors and attributes are deferred to a later milestone once the protocol stabilizes.
 
 ### Future serialization
 
