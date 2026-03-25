@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -11,12 +12,24 @@ import (
 )
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr,
-		&slog.HandlerOptions{Level: slog.LevelDebug})))
+	debug := flag.Bool("debug", false, "enable debug logging to /tmp/termd-frontend.log")
+	flag.Parse()
+
+	if !*debug && os.Getenv("TERMD_DEBUG") == "1" {
+		*debug = true
+	}
+
+	if *debug {
+		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr,
+			&slog.HandlerOptions{Level: slog.LevelDebug})))
+	} else {
+		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr,
+			&slog.HandlerOptions{Level: slog.LevelWarn})))
+	}
 
 	socketPath := "/tmp/termd.sock"
-	if len(os.Args) > 1 {
-		socketPath = os.Args[1]
+	if flag.NArg() > 0 {
+		socketPath = flag.Arg(0)
 	}
 
 	// Resolve shell via SHELL env or PATH lookup (NixOS has no /bin)
