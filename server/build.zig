@@ -8,9 +8,15 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
 
-    // ghostty-vt dependency wired in Phase 1 after pinning via zig fetch --save.
+    if (b.lazyDependency("ghostty", .{
+        .target = target,
+        .optimize = optimize,
+    })) |dep| {
+        server_mod.addImport("ghostty-vt", dep.module("ghostty-vt"));
+    }
 
     const exe = b.addExecutable(.{
         .name = "termd",
