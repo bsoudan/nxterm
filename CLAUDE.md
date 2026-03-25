@@ -16,6 +16,11 @@ some context, though only what's readily accessible
 
 * prefer writing end to end (e2e) tests over writing unit tests, but unit tests are still good for particular tricky code and/or code that is hard to test using an end to end test
 
+* do not commit without allowing me to review.
+
+* in general, don't comment code to describe what it's doing unless it's tricky or hard to understand.  better to have descriptive naming and structure.  save comments for things that the code doesn't convey, like intent, purpose, or design decisions that are not obvious.
+
+
 ## Environment
 
 * you're running on nixos-25.11.  nix works a bit differently than most linux distributions, the most notable is that binaries do not live in /bin or /usr/bin.  do not reference commands directly by their path ever.
