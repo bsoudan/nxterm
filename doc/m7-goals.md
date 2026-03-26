@@ -53,11 +53,11 @@ Authentication options:
 - Password (for dev/testing)
 
 The SSH transport gives encryption and authentication without requiring a reverse proxy or TLS
-certificate setup. It also integrates with existing SSH infrastructure (agent forwarding, key
-management).
+certificate setup.
 
-The frontend dials SSH, authenticates, opens a channel, and uses it as the protocol transport.
-Jump hosts and ProxyCommand work automatically via the user's `~/.ssh/config`.
+The frontend dials SSH using the Go library (`golang.org/x/crypto/ssh`), authenticates, opens
+a channel, and uses it as the protocol transport. Jump hosts and ProxyCommand are not supported
+initially — users who need those can use manual SSH port forwarding (`ssh -L ... -N`).
 
 ## 5. termctl support
 
