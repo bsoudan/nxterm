@@ -44,7 +44,10 @@ func renderView(m Model) string {
 	sb.WriteString(renderTabBar(m.regionName, status, width))
 	sb.WriteByte('\n')
 
-	contentHeight := height - 1
+	contentHeight := height - 2 // tab bar + status bar
+	if contentHeight < 1 {
+		contentHeight = 1
+	}
 	showCursor := !m.showLogView
 
 	if m.localScreen != nil {
@@ -55,9 +58,7 @@ func renderView(m Model) string {
 				row = cells[i]
 			}
 			renderCellLine(&sb, row, width, i, m.cursorRow, m.cursorCol, showCursor)
-			if i < contentHeight-1 {
-				sb.WriteByte('\n')
-			}
+			sb.WriteByte('\n')
 		}
 	} else {
 		for i := range contentHeight {
@@ -82,11 +83,11 @@ func renderView(m Model) string {
 					sb.WriteRune(ch)
 				}
 			}
-			if i < contentHeight-1 {
-				sb.WriteByte('\n')
-			}
+			sb.WriteByte('\n')
 		}
 	}
+
+	sb.WriteString(renderStatusBar(m.connStatus, m.Endpoint, width))
 
 	base := sb.String()
 
@@ -303,6 +304,22 @@ func renderLogOverlay(m Model, base string, width, height int) string {
 	baseLayer := lipgloss.NewLayer(base)
 	dialogLayer := lipgloss.NewLayer(dialog).X(x).Y(y).Z(1)
 	return lipgloss.NewCompositor(baseLayer, dialogLayer).Render()
+}
+
+var statusBarStyle = lipgloss.NewStyle().Faint(true)
+
+func renderStatusBar(connStatus, endpoint string, width int) string {
+	left := statusBarStyle.Render(connStatus)
+	right := statusBarStyle.Render(endpoint)
+
+	leftW := lipgloss.Width(left)
+	rightW := lipgloss.Width(right)
+	fill := width - leftW - rightW
+	if fill < 1 {
+		fill = 1
+	}
+
+	return left + strings.Repeat(" ", fill) + right
 }
 
 func renderTabBar(regionName, status string, width int) string {

@@ -84,7 +84,8 @@ func main() {
 
 	pipeR, pipeW := io.Pipe()
 
-	model := ui.NewModel(c, shell, shellArgs, logRing)
+	endpoint := "unix:" + *socketPath
+	model := ui.NewModel(c, shell, shellArgs, logRing, endpoint)
 	p := tea.NewProgram(model,
 		tea.WithInput(pipeR),
 		tea.WithColorProfile(colorprofile.TrueColor),

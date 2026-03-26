@@ -21,6 +21,7 @@ type Model struct {
 	client      *client.Client
 	cmd         string
 	cmdArgs     []string
+	Endpoint    string
 	RegionReady chan string
 	FocusCh     chan chan struct{} // raw loop reads this to enter focus mode
 	Detached    bool
@@ -32,6 +33,7 @@ type Model struct {
 	LogRing     *termlog.LogRingBuffer
 	regionID    string
 	regionName  string
+	connStatus  string
 	localScreen *te.Screen
 	lines       []string
 	cursorRow   int
@@ -42,15 +44,27 @@ type Model struct {
 	err         string
 }
 
-func NewModel(c *client.Client, cmd string, args []string, ring *termlog.LogRingBuffer) Model {
+// contentHeight returns the number of rows available for terminal content
+// (total height minus tab bar and status bar).
+func (m Model) contentHeight() int {
+	h := m.termHeight - 2
+	if h < 1 {
+		h = 1
+	}
+	return h
+}
+
+func NewModel(c *client.Client, cmd string, args []string, ring *termlog.LogRingBuffer, endpoint string) Model {
 	return Model{
-		client:      c,
-		cmd:         cmd,
-		cmdArgs:     args,
+		client:     c,
+		cmd:        cmd,
+		cmdArgs:    args,
+		Endpoint:   endpoint,
 		RegionReady: make(chan string, 1),
-		FocusCh:     make(chan chan struct{}, 1),
-		LogRing:     ring,
-		status:      "connecting...",
+		FocusCh:    make(chan chan struct{}, 1),
+		LogRing:    ring,
+		connStatus: "connected",
+		status:     "connecting...",
 	}
 }
 
@@ -75,15 +89,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.termWidth = msg.Width
 		m.termHeight = msg.Height
 		if m.regionID != "" {
-			contentHeight := msg.Height - 1
-			if contentHeight < 1 {
-				contentHeight = 1
-			}
 			_ = m.client.Send(protocol.ResizeRequest{
 				Type:     "resize_request",
 				RegionID: m.regionID,
 				Width:    uint16(msg.Width),
-				Height:   uint16(contentHeight),
+				Height:   uint16(m.contentHeight()),
 			})
 		}
 		return m, nil
@@ -163,12 +173,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		m.status = ""
-		if m.termWidth > 0 && m.termHeight > 1 {
+		if m.termWidth > 0 && m.termHeight > 2 {
 			_ = m.client.Send(protocol.ResizeRequest{
 				Type:     "resize_request",
 				RegionID: m.regionID,
 				Width:    uint16(m.termWidth),
-				Height:   uint16(m.termHeight - 1),
+				Height:   uint16(m.contentHeight()),
 			})
 		}
 		return m, waitForUpdate(m.client)
@@ -182,9 +192,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if width <= 0 {
 			width = 80
 		}
-		height := m.termHeight - 1
-		if height < 1 {
-			height = 24
+		height := m.contentHeight()
+		if m.termHeight <= 0 {
+			height = 22 // default 24 - 2 chrome rows
 		}
 		m.localScreen = te.NewScreen(width, height)
 		if len(msg.Cells) > 0 {

@@ -766,17 +766,17 @@ func TestResizeMidSession(t *testing.T) {
 		return false
 	}, "'120' at col 0 on a content row", 10*time.Second)
 
-	// Verify new row count (40 - 1 for tab bar = 39)
+	// Verify new row count (40 - 2 for tab bar and status bar = 38)
 	pio.WaitFor(t, "termd$ ", 10*time.Second)
 	pio.Write([]byte("tput lines\r"))
 	pio.WaitForScreen(t, func(lines []string) bool {
 		for i := 1; i < len(lines); i++ {
-			if strings.HasPrefix(lines[i], "39") {
+			if strings.HasPrefix(lines[i], "38") {
 				return true
 			}
 		}
 		return false
-	}, "'39' at col 0 on a content row", 10*time.Second)
+	}, "'38' at col 0 on a content row", 10*time.Second)
 }
 
 func TestRegionKilledExternally(t *testing.T) {
