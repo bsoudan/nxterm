@@ -139,10 +139,10 @@ in the status bar and retries with exponential backoff.
 
 ### Tests
 
-- Start server + frontend, kill server, verify status bar shows `reconnecting...`.
-- Restart server, verify frontend reconnects and resumes.
-- Kill server, wait, restart with the same socket — frontend should reconnect and re-subscribe
-  to the surviving region.
+- Start server + frontend over Unix socket, use `termctl client kill` to drop the frontend's
+  connection, verify status bar shows `reconnecting...`, then verify it reconnects and
+  re-subscribes (prompt reappears, typing works).
+- Same test over TCP.
 
 ---
 
