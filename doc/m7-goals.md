@@ -1,7 +1,8 @@
 # Milestone 7 Goals — Transport Layer
 
-Add TCP, WebSocket, and SSH transport support alongside the existing Unix socket. The JSON
-protocol is unchanged — these are alternative ways to carry the same byte stream.
+Add a connection status bar, TCP, WebSocket, and SSH transport support alongside the existing
+Unix socket, and automatic reconnection. The JSON protocol is unchanged — these are alternative
+ways to carry the same byte stream.
 
 ## 1. Transport abstraction
 
@@ -25,13 +26,28 @@ termd-frontend --connect ssh://user@host:2222
 
 The existing `--socket` flag continues to work as shorthand for `unix:path`.
 
-## 2. TCP
+## 2. Frontend status bar
+
+Add a bottom status bar to the frontend showing connection state (`connecting...`, `connected`,
+`reconnecting...`) and the endpoint address. This gives the user visibility into which server
+they're connected to and whether the connection is healthy.
+
+## 3. Automatic reconnect
+
+When the server connection drops, the frontend doesn't exit. It shows `reconnecting...` in the
+status bar and retries with exponential backoff (100ms → 200ms → ... → 60s cap). On reconnect,
+it re-subscribes to the previous region and resumes. If the region is gone, it exits. Detach
+(ctrl+b d) exits immediately even during reconnect.
+
+This is important to have before remote transports where network interruptions are routine.
+
+## 4. TCP
 
 Plain TCP listener on the server, plain TCP dial on the frontend. No framing beyond what the
 protocol already does (newline-delimited JSON). Useful for local or trusted-network connections
 and as the base for reverse proxies.
 
-## 3. WebSocket
+## 5. WebSocket
 
 Server embeds an HTTP server with a `/ws` endpoint that upgrades to WebSocket. Each WebSocket
 connection is bridged into the same `acceptClient` path. The WebSocket carries the newline-delimited
@@ -43,7 +59,7 @@ Benefits:
 - TLS via standard HTTPS (configure with `--tls-cert` / `--tls-key`, or put behind Caddy/nginx)
 - Opens the door to browser-based clients (xterm.js) in a future milestone
 
-## 4. SSH
+## 6. SSH
 
 Server embeds an SSH server using `golang.org/x/crypto/ssh`. Each authenticated SSH session
 opens a direct-streamlocal channel (or a simple session channel) that carries the JSON protocol.
@@ -59,7 +75,7 @@ The frontend dials SSH using the Go library (`golang.org/x/crypto/ssh`), authent
 a channel, and uses it as the protocol transport. Jump hosts and ProxyCommand are not supported
 initially — users who need those can use manual SSH port forwarding (`ssh -L ... -N`).
 
-## 5. termctl support
+## 7. termctl support
 
 termctl gets the same `--connect` flag and transport support, so it can manage remote servers:
 ```
