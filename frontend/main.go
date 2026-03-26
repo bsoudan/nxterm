@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -75,7 +76,7 @@ func main() {
 	}
 	conn, err := transport.Dial(endpoint)
 	if err != nil {
-		slog.Error("connect failed", "error", err)
+		fmt.Fprintf(os.Stderr, "error: connect %s: %v\n", endpoint, err)
 		os.Exit(1)
 	}
 	c := client.New(conn, "termd-frontend")

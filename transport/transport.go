@@ -56,7 +56,11 @@ func parseSpec(spec string) (scheme, addr string) {
 		return "unix", spec
 	}
 	if i := strings.Index(spec, ":"); i > 0 {
-		return spec[:i], spec[i+1:]
+		scheme = spec[:i]
+		addr = spec[i+1:]
+		// Strip leading "//" from URL-style specs (tcp://host:port)
+		addr = strings.TrimPrefix(addr, "//")
+		return scheme, addr
 	}
 	// No scheme prefix, assume unix
 	return "unix", spec

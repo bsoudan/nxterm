@@ -18,6 +18,8 @@ func TestParseSpec(t *testing.T) {
 		{"unix:/tmp/termd.sock", "unix", "/tmp/termd.sock"},
 		{"tcp:127.0.0.1:9090", "tcp", "127.0.0.1:9090"},
 		{"tcp:0.0.0.0:0", "tcp", "0.0.0.0:0"},
+		{"tcp://127.0.0.1:9090", "tcp", "127.0.0.1:9090"},
+		{"unix:///tmp/termd.sock", "unix", "/tmp/termd.sock"},
 	}
 	for _, tt := range tests {
 		scheme, addr := parseSpec(tt.spec)
