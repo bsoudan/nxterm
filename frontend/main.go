@@ -43,7 +43,7 @@ func main() {
 		}
 	}
 
-	c, err := client.New(socketPath)
+	c, err := client.New(socketPath, "termd-frontend")
 	if err != nil {
 		slog.Error("connect failed", "error", err)
 		os.Exit(1)

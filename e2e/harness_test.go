@@ -15,6 +15,7 @@ import (
 const (
 	serverBin   = "../server/zig-out/bin/termd"
 	frontendBin = "../frontend/termd-frontend"
+	termctlBin  = "../termctl/termctl"
 )
 
 // startServer starts the termd server on a temp socket.
@@ -182,6 +183,33 @@ func (p *ptyIO) WaitForSilence(duration time.Duration) {
 			return // no new data for the duration — idle.
 		}
 	}
+}
+
+// runTermctl runs the termctl binary with the given args and returns stdout.
+func runTermctl(t *testing.T, socketPath string, args ...string) string {
+	t.Helper()
+	bin, err := filepath.Abs(termctlBin)
+	if err != nil {
+		t.Fatalf("resolve termctl binary: %v", err)
+	}
+	fullArgs := append([]string{"--socket", socketPath}, args...)
+	cmd := exec.Command(bin, fullArgs...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("termctl %v failed: %v\n%s", args, err, out)
+	}
+	return string(out)
+}
+
+// spawnRegion uses termctl to spawn a region and returns the region ID.
+func spawnRegion(t *testing.T, socketPath string, shellCmd string) string {
+	t.Helper()
+	out := runTermctl(t, socketPath, "region", "spawn", shellCmd)
+	id := strings.TrimSpace(out)
+	if len(id) != 36 {
+		t.Fatalf("expected 36-char region ID, got %q", id)
+	}
+	return id
 }
 
 // Write sends raw bytes to the PTY (simulating keyboard input).

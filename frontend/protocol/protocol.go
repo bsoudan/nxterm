@@ -1,4 +1,3 @@
-// Package protocol mirrors the termd wire protocol for the Go frontend.
 package protocol
 
 import (
@@ -6,7 +5,15 @@ import (
 	"fmt"
 )
 
-// ── Outbound (frontend → server) ────────────────────────────────────────────
+// ── Outbound (frontend/termctl → server) ────────────────────────────────────
+
+type Identify struct {
+	Type     string `json:"type"`
+	Hostname string `json:"hostname"`
+	Username string `json:"username"`
+	Pid      int    `json:"pid"`
+	Process  string `json:"process"`
+}
 
 type SpawnRequest struct {
 	Type string   `json:"type"`
@@ -32,7 +39,34 @@ type ResizeRequest struct {
 	Height   uint16 `json:"height"`
 }
 
-// ── Inbound (server → frontend) ─────────────────────────────────────────────
+type ListRegionsRequest struct {
+	Type string `json:"type"`
+}
+
+type StatusRequest struct {
+	Type string `json:"type"`
+}
+
+type GetScreenRequest struct {
+	Type     string `json:"type"`
+	RegionID string `json:"region_id"`
+}
+
+type KillRegionRequest struct {
+	Type     string `json:"type"`
+	RegionID string `json:"region_id"`
+}
+
+type ListClientsRequest struct {
+	Type string `json:"type"`
+}
+
+type KillClientRequest struct {
+	Type     string `json:"type"`
+	ClientID uint32 `json:"client_id"`
+}
+
+// ── Inbound (server → frontend/termctl) ─────────────────────────────────────
 
 type SpawnResponse struct {
 	Type     string `json:"type"`
@@ -75,13 +109,11 @@ type RegionDestroyed struct {
 	RegionID string `json:"region_id"`
 }
 
-type ListRegionsRequest struct {
-	Type string `json:"type"`
-}
-
 type RegionInfo struct {
 	RegionID string `json:"region_id"`
 	Name     string `json:"name"`
+	Cmd      string `json:"cmd"`
+	Pid      int    `json:"pid"`
 }
 
 type ListRegionsResponse struct {
@@ -91,13 +123,63 @@ type ListRegionsResponse struct {
 	Message string       `json:"message"`
 }
 
+type StatusResponse struct {
+	Type          string `json:"type"`
+	Pid           int    `json:"pid"`
+	UptimeSeconds int64  `json:"uptime_seconds"`
+	SocketPath    string `json:"socket_path"`
+	NumClients    int    `json:"num_clients"`
+	NumRegions    int    `json:"num_regions"`
+	Error         bool   `json:"error"`
+	Message       string `json:"message"`
+}
+
+type GetScreenResponse struct {
+	Type      string   `json:"type"`
+	RegionID  string   `json:"region_id"`
+	CursorRow uint16   `json:"cursor_row"`
+	CursorCol uint16   `json:"cursor_col"`
+	Lines     []string `json:"lines"`
+	Error     bool     `json:"error"`
+	Message   string   `json:"message"`
+}
+
+type KillRegionResponse struct {
+	Type     string `json:"type"`
+	RegionID string `json:"region_id"`
+	Error    bool   `json:"error"`
+	Message  string `json:"message"`
+}
+
+type ClientInfoData struct {
+	ClientID           uint32 `json:"client_id"`
+	Hostname           string `json:"hostname"`
+	Username           string `json:"username"`
+	Pid                int    `json:"pid"`
+	Process            string `json:"process"`
+	SubscribedRegionID string `json:"subscribed_region_id"`
+}
+
+type ListClientsResponse struct {
+	Type    string           `json:"type"`
+	Clients []ClientInfoData `json:"clients"`
+	Error   bool             `json:"error"`
+	Message string           `json:"message"`
+}
+
+type KillClientResponse struct {
+	Type     string `json:"type"`
+	ClientID uint32 `json:"client_id"`
+	Error    bool   `json:"error"`
+	Message  string `json:"message"`
+}
+
 // ── Parsing ─────────────────────────────────────────────────────────────────
 
 type envelope struct {
 	Type string `json:"type"`
 }
 
-// ParseInbound decodes a raw JSON line into the concrete message type.
 func ParseInbound(line []byte) (any, error) {
 	var env envelope
 	if err := json.Unmarshal(line, &env); err != nil {
@@ -125,6 +207,21 @@ func ParseInbound(line []byte) (any, error) {
 		return msg, json.Unmarshal(line, &msg)
 	case "list_regions_response":
 		var msg ListRegionsResponse
+		return msg, json.Unmarshal(line, &msg)
+	case "status_response":
+		var msg StatusResponse
+		return msg, json.Unmarshal(line, &msg)
+	case "get_screen_response":
+		var msg GetScreenResponse
+		return msg, json.Unmarshal(line, &msg)
+	case "kill_region_response":
+		var msg KillRegionResponse
+		return msg, json.Unmarshal(line, &msg)
+	case "list_clients_response":
+		var msg ListClientsResponse
+		return msg, json.Unmarshal(line, &msg)
+	case "kill_client_response":
+		var msg KillClientResponse
 		return msg, json.Unmarshal(line, &msg)
 	default:
 		return nil, fmt.Errorf("unknown message type: %s", env.Type)

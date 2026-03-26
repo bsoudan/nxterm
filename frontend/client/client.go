@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"os"
+	"os/user"
+	"path/filepath"
 	"sync"
 
 	"termd/frontend/protocol"
@@ -22,7 +25,7 @@ type Client struct {
 }
 
 // New connects to the termd server at the given Unix socket path.
-func New(socketPath string) (*Client, error) {
+func New(socketPath string, processName string) (*Client, error) {
 	conn, err := net.Dial("unix", socketPath)
 	if err != nil {
 		return nil, fmt.Errorf("connect: %w", err)
@@ -37,6 +40,20 @@ func New(socketPath string) (*Client, error) {
 
 	go c.readLoop()
 	go c.writeLoop()
+
+	hostname, _ := os.Hostname()
+	username := "unknown"
+	if u, err := user.Current(); err == nil {
+		username = u.Username
+	}
+	proc := processName
+	if proc == "" {
+		proc = filepath.Base(os.Args[0])
+	}
+	_ = c.Send(protocol.Identify{
+		Type: "identify", Hostname: hostname,
+		Username: username, Pid: os.Getpid(), Process: proc,
+	})
 
 	return c, nil
 }
@@ -65,8 +82,17 @@ func (c *Client) Updates() <-chan any {
 // Close shuts down the connection and drains goroutines.
 func (c *Client) Close() {
 	c.closeOnce.Do(func() {
-		close(c.done)
-		c.conn.Close()
+		// Drain pending sends before closing the connection
+		for {
+			select {
+			case data := <-c.sendCh:
+				c.conn.Write(data)
+			default:
+				close(c.done)
+				c.conn.Close()
+				return
+			}
+		}
 	})
 }
 

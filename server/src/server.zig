@@ -3,11 +3,20 @@ const protocol = @import("protocol.zig");
 const Region = @import("region.zig").Region;
 const Client = @import("client.zig").Client;
 
+const c = @cImport({
+    @cDefine("_GNU_SOURCE", "1");
+    @cInclude("unistd.h");
+    @cInclude("signal.h");
+});
+
 const log = std.log.scoped(.server);
 
 pub const Server = struct {
     alloc: std.mem.Allocator,
     socket_fd: std.posix.fd_t,
+    socket_path: []const u8,
+    start_time: i64,
+    next_client_id: u32,
     regions: std.StringArrayHashMap(*Region),
     clients: std.ArrayList(*Client),
     running: bool,
@@ -30,6 +39,9 @@ pub const Server = struct {
         return .{
             .alloc = alloc,
             .socket_fd = sock,
+            .socket_path = socket_path,
+            .start_time = std.time.timestamp(),
+            .next_client_id = 1,
             .regions = .{ .unmanaged = .{}, .allocator = alloc, .ctx = .{} },
             .clients = .{},
             .running = true,
@@ -94,12 +106,17 @@ pub const Server = struct {
                 var i: usize = client_count;
                 while (i > 0) {
                     i -= 1;
+                    const cl = self.clients.items[i];
+                    if (cl.dead) {
+                        cl.deinit();
+                        _ = self.clients.swapRemove(i);
+                        continue;
+                    }
                     const pfd = pollfds.items[1 + i];
                     if (pfd.revents & (std.posix.POLL.IN | std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) {
-                        const client = self.clients.items[i];
-                        const ok = client.readAvailable() catch false;
+                        const ok = cl.readAvailable() catch false;
                         if (!ok) {
-                            client.deinit();
+                            cl.deinit();
                             _ = self.clients.swapRemove(i);
                         }
                     }
@@ -183,8 +200,26 @@ pub const Server = struct {
 
     fn acceptClient(self: *Server) !void {
         const client_fd = try std.posix.accept(self.socket_fd, null, null, std.posix.SOCK.CLOEXEC);
-        const client = Client.init(self.alloc, client_fd, self);
+        const id = self.next_client_id;
+        self.next_client_id += 1;
+        const client = Client.init(self.alloc, client_fd, self, id);
         try self.clients.append(self.alloc, client);
+    }
+
+    pub fn killRegion(self: *Server, region_id: []const u8) bool {
+        const region = self.regions.get(region_id) orelse return false;
+        _ = c.kill(region.child_pid, c.SIGKILL);
+        return true;
+    }
+
+    pub fn killClient(self: *Server, client_id: u32) bool {
+        for (self.clients.items) |cl| {
+            if (cl.id == client_id) {
+                cl.dead = true;
+                return true;
+            }
+        }
+        return false;
     }
 
     fn sendScreenUpdate(self: *Server, region: *Region) void {

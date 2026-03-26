@@ -18,6 +18,7 @@ pub const Region = struct {
     alloc: std.mem.Allocator,
     id: [36]u8,
     name: []const u8,
+    cmd: []const u8,
     width: u16,
     height: u16,
     pty_master: std.posix.fd_t,
@@ -97,6 +98,7 @@ pub const Region = struct {
             .alloc = alloc,
             .id = generateId(),
             .name = try alloc.dupe(u8, extractName(cmd)),
+            .cmd = try alloc.dupe(u8, cmd),
             .width = width,
             .height = height,
             .pty_master = pty.master,
@@ -132,6 +134,7 @@ pub const Region = struct {
         std.posix.close(self.output_notify_write);
         self.terminal.deinit(self.alloc);
         self.alloc.free(self.name);
+        self.alloc.free(self.cmd);
         self.alloc.destroy(self);
     }
 

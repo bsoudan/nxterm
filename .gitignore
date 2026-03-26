@@ -6,3 +6,4 @@ frontend/termd-frontend
 nano.*.save
 x
 x.save
+termctl/termctl
