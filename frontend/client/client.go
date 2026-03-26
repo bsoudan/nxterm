@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	termlog "termd/frontend/log"
 	"termd/frontend/protocol"
 )
 
@@ -65,7 +66,7 @@ func (c *Client) Send(msg any) error {
 		return fmt.Errorf("marshal: %w", err)
 	}
 	data = append(data, '\n')
-	slog.Debug("send", "type", fmt.Sprintf("%T", msg))
+	termlog.LogProtocolMsg("send", msg)
 	select {
 	case c.sendCh <- data:
 		return nil
@@ -108,7 +109,7 @@ func (c *Client) readLoop() {
 			slog.Debug("recv parse error", "error", err)
 			continue
 		}
-		slog.Debug("recv", "type", fmt.Sprintf("%T", msg))
+		termlog.LogProtocolMsg("recv", msg)
 		select {
 		case c.updates <- msg:
 		case <-c.done:

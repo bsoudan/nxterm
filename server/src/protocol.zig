@@ -178,31 +178,49 @@ const json_opts: std.json.ParseOptions = .{ .ignore_unknown_fields = true };
 
 pub fn parseInbound(alloc: std.mem.Allocator, line: []const u8) !InboundMessage {
     const tag = try std.json.parseFromSliceLeaky(TypeTag, alloc, line, json_opts);
-    log.debug("recv type={s}", .{tag.@"type"});
 
     const t = tag.@"type";
     if (std.mem.eql(u8, t, "identify")) {
-        return .{ .identify = try std.json.parseFromSliceLeaky(Identify, alloc, line, json_opts) };
+        const r = try std.json.parseFromSliceLeaky(Identify, alloc, line, json_opts);
+        log.debug("recv identify hostname={s} username={s} pid={d} process={s}", .{ r.hostname, r.username, r.pid, r.process });
+        return .{ .identify = r };
     } else if (std.mem.eql(u8, t, "spawn_request")) {
-        return .{ .spawn_request = try std.json.parseFromSliceLeaky(SpawnRequest, alloc, line, json_opts) };
+        const r = try std.json.parseFromSliceLeaky(SpawnRequest, alloc, line, json_opts);
+        log.debug("recv spawn_request cmd={s} args=[{d}]", .{ r.cmd, r.args.len });
+        return .{ .spawn_request = r };
     } else if (std.mem.eql(u8, t, "subscribe_request")) {
-        return .{ .subscribe_request = try std.json.parseFromSliceLeaky(SubscribeRequest, alloc, line, json_opts) };
+        const r = try std.json.parseFromSliceLeaky(SubscribeRequest, alloc, line, json_opts);
+        log.debug("recv subscribe_request region_id={s}", .{r.region_id});
+        return .{ .subscribe_request = r };
     } else if (std.mem.eql(u8, t, "input")) {
-        return .{ .input = try std.json.parseFromSliceLeaky(InputMsg, alloc, line, json_opts) };
+        const r = try std.json.parseFromSliceLeaky(InputMsg, alloc, line, json_opts);
+        log.debug("recv input region_id={s} data=[{d} chars]", .{ r.region_id, r.data.len });
+        return .{ .input = r };
     } else if (std.mem.eql(u8, t, "resize_request")) {
-        return .{ .resize_request = try std.json.parseFromSliceLeaky(ResizeRequest, alloc, line, json_opts) };
+        const r = try std.json.parseFromSliceLeaky(ResizeRequest, alloc, line, json_opts);
+        log.debug("recv resize_request region_id={s} width={d} height={d}", .{ r.region_id, r.width, r.height });
+        return .{ .resize_request = r };
     } else if (std.mem.eql(u8, t, "list_regions_request")) {
+        log.debug("recv list_regions_request", .{});
         return .{ .list_regions_request = .{} };
     } else if (std.mem.eql(u8, t, "status_request")) {
+        log.debug("recv status_request", .{});
         return .{ .status_request = .{} };
     } else if (std.mem.eql(u8, t, "get_screen_request")) {
-        return .{ .get_screen_request = try std.json.parseFromSliceLeaky(GetScreenRequest, alloc, line, json_opts) };
+        const r = try std.json.parseFromSliceLeaky(GetScreenRequest, alloc, line, json_opts);
+        log.debug("recv get_screen_request region_id={s}", .{r.region_id});
+        return .{ .get_screen_request = r };
     } else if (std.mem.eql(u8, t, "kill_region_request")) {
-        return .{ .kill_region_request = try std.json.parseFromSliceLeaky(KillRegionRequest, alloc, line, json_opts) };
+        const r = try std.json.parseFromSliceLeaky(KillRegionRequest, alloc, line, json_opts);
+        log.debug("recv kill_region_request region_id={s}", .{r.region_id});
+        return .{ .kill_region_request = r };
     } else if (std.mem.eql(u8, t, "list_clients_request")) {
+        log.debug("recv list_clients_request", .{});
         return .{ .list_clients_request = .{} };
     } else if (std.mem.eql(u8, t, "kill_client_request")) {
-        return .{ .kill_client_request = try std.json.parseFromSliceLeaky(KillClientRequest, alloc, line, json_opts) };
+        const r = try std.json.parseFromSliceLeaky(KillClientRequest, alloc, line, json_opts);
+        log.debug("recv kill_client_request client_id={d}", .{r.client_id});
+        return .{ .kill_client_request = r };
     }
 
     return error.UnknownMessageType;
@@ -266,7 +284,17 @@ pub fn writeOutbound(writer: *std.io.Writer, msg: OutboundMessage) !void {
     }
     try writer.writeByte('\n');
     switch (msg) {
-        .screen_update => |r| log.debug("send type=screen_update cursor=({d},{d})", .{ r.cursor_row, r.cursor_col }),
-        else => log.debug("send type={s}", .{@tagName(msg)}),
+        .spawn_response => |r| log.debug("send spawn_response region_id={s} name={s} error={}", .{ r.region_id, r.name, r.@"error" }),
+        .subscribe_response => |r| log.debug("send subscribe_response region_id={s} error={}", .{ r.region_id, r.@"error" }),
+        .resize_response => |r| log.debug("send resize_response region_id={s} error={}", .{ r.region_id, r.@"error" }),
+        .region_created => |r| log.debug("send region_created region_id={s} name={s}", .{ r.region_id, r.name }),
+        .screen_update => |r| log.debug("send screen_update region_id={s} cursor=({d},{d}) lines=[{d} lines]", .{ r.region_id, r.cursor_row, r.cursor_col, r.lines.len }),
+        .region_destroyed => |r| log.debug("send region_destroyed region_id={s}", .{r.region_id}),
+        .list_regions_response => |r| log.debug("send list_regions_response regions=[{d}] error={}", .{ r.regions.len, r.@"error" }),
+        .status_response => |r| log.debug("send status_response pid={d} uptime={d}s clients={d} regions={d}", .{ r.pid, r.uptime_seconds, r.num_clients, r.num_regions }),
+        .get_screen_response => |r| log.debug("send get_screen_response region_id={s} cursor=({d},{d}) lines=[{d} lines] error={}", .{ r.region_id, r.cursor_row, r.cursor_col, r.lines.len, r.@"error" }),
+        .kill_region_response => |r| log.debug("send kill_region_response region_id={s} error={}", .{ r.region_id, r.@"error" }),
+        .list_clients_response => |r| log.debug("send list_clients_response clients=[{d}] error={}", .{ r.clients.len, r.@"error" }),
+        .kill_client_response => |r| log.debug("send kill_client_response client_id={d} error={}", .{ r.client_id, r.@"error" }),
     }
 }

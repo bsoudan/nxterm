@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"termd/frontend/client"
+	termlog "termd/frontend/log"
 	"termd/frontend/ui"
 )
 
@@ -30,13 +31,12 @@ func main() {
 		}
 	}
 
+	level := slog.LevelWarn
 	if *debug {
-		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr,
-			&slog.HandlerOptions{Level: slog.LevelDebug})))
-	} else {
-		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr,
-			&slog.HandlerOptions{Level: slog.LevelWarn})))
+		level = slog.LevelDebug
 	}
+	ringBuf := termlog.NewLogRingBuffer(1000)
+	slog.SetDefault(slog.New(termlog.NewHandler(os.Stderr, level, ringBuf)))
 
 	shell := os.Getenv("SHELL")
 	if shell == "" {

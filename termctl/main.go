@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/urfave/cli/v2"
 	"termd/frontend/client"
+	termlog "termd/frontend/log"
 	"termd/frontend/protocol"
 )
 
@@ -31,6 +33,14 @@ func main() {
 				Usage:   "enable debug logging",
 				EnvVars: []string{"TERMD_DEBUG"},
 			},
+		},
+		Before: func(c *cli.Context) error {
+			level := slog.LevelWarn
+			if c.Bool("debug") {
+				level = slog.LevelDebug
+			}
+			slog.SetDefault(slog.New(termlog.NewHandler(os.Stderr, level, nil)))
+			return nil
 		},
 		Commands: []*cli.Command{
 			{
