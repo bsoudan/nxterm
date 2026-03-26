@@ -20,6 +20,8 @@ some context, though only what's readily accessible
 
 * in general, don't comment code to describe what it's doing unless it's tricky or hard to understand.  better to have descriptive naming and structure.  save comments for things that the code doesn't convey, like intent, purpose, or design decisions that are not obvious.
 
+* anytime that flake.nix is changed, we need to stop our session so that the claude human user can reload the new development environment.
+
 
 ## Environment
 
