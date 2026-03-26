@@ -43,6 +43,7 @@
 
           shellHook = ''
             export CLAUDE_CONFIG_DIR=$PWD/.claude-config
+            export PATH="$PWD/.local/bin:$PATH"
             export GOPATH="$PWD/.local/go"
             export GOCACHE="$PWD/.local/var/cache/go"
             export ZIG_GLOBAL_CACHE_DIR="$PWD/.local/var/cache/zig"

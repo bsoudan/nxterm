@@ -3,20 +3,20 @@
 all: build-server build-frontend build-termctl
 
 build-server:
-	cd server && zig build
+	cd server && zig build -p ../.local
 
 build-frontend:
-	cd frontend && go build -o termd-frontend .
+	cd frontend && go build -o ../.local/bin/termd-frontend .
 
 build-termctl:
-	cd termctl && go build -o termctl .
+	cd termctl && go build -o ../.local/bin/termctl .
 
 test: test-e2e
 
-test-e2e: build-server build-frontend build-termctl
-	cd e2e && go test -v -timeout 120s
+test-e2e: all
+	cd e2e && PATH="$(CURDIR)/.local/bin:$(PATH)" go test -v -timeout 120s
 
 clean:
-	rm -rf server/zig-out server/.zig-cache
+	rm -rf .local/bin .local/var/zig-cache server/zig-out server/.zig-cache
 	cd frontend && go clean ./...
 	cd termctl && go clean ./...

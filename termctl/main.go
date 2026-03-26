@@ -19,9 +19,17 @@ func main() {
 		Usage: "control the termd server",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
-				Name:  "socket",
-				Value: "/tmp/termd.sock",
-				Usage: "server socket path",
+				Name:    "socket",
+				Aliases: []string{"s"},
+				Value:   "/tmp/termd.sock",
+				Usage:   "server socket path",
+				EnvVars: []string{"TERMD_SOCKET"},
+			},
+			&cli.BoolFlag{
+				Name:    "debug",
+				Aliases: []string{"d"},
+				Usage:   "enable debug logging",
+				EnvVars: []string{"TERMD_DEBUG"},
 			},
 		},
 		Commands: []*cli.Command{

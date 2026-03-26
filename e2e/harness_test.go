@@ -12,33 +12,16 @@ import (
 	"github.com/creack/pty"
 )
 
-const (
-	serverBin   = "../server/zig-out/bin/termd"
-	frontendBin = "../frontend/termd-frontend"
-	termctlBin  = "../termctl/termctl"
-)
-
-// startServer starts the termd server on a temp socket.
-// Returns the socket path and a cleanup function.
 func startServer(t *testing.T) (string, func()) {
 	t.Helper()
 
-	bin, err := filepath.Abs(serverBin)
-	if err != nil {
-		t.Fatalf("resolve server binary: %v", err)
-	}
-	if _, err := os.Stat(bin); err != nil {
-		t.Fatalf("server binary not found at %s (run make build-server)", bin)
-	}
-
 	socketPath := filepath.Join(t.TempDir(), "termd.sock")
-	cmd := exec.Command(bin, socketPath)
+	cmd := exec.Command("termd", "--socket", socketPath)
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
-		t.Fatalf("start server: %v", err)
+		t.Fatalf("start server: %v (is termd in PATH?)", err)
 	}
 
-	// Wait for socket to appear (no sleep — tight poll with yield)
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(socketPath); err == nil {
@@ -57,25 +40,15 @@ func startServer(t *testing.T) (string, func()) {
 	}
 }
 
-// startFrontend starts the termd frontend in a PTY connected to the given server socket.
-// Returns a ptyIO for observing output and writing input, plus a cleanup function.
 func startFrontend(t *testing.T, socketPath string) (*ptyIO, func()) {
 	t.Helper()
 
-	bin, err := filepath.Abs(frontendBin)
-	if err != nil {
-		t.Fatalf("resolve frontend binary: %v", err)
-	}
-	if _, err := os.Stat(bin); err != nil {
-		t.Fatalf("frontend binary not found at %s (run make build-frontend)", bin)
-	}
-
-	cmd := exec.Command(bin, socketPath)
+	cmd := exec.Command("termd-frontend", "--socket", socketPath)
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 80})
 	if err != nil {
-		t.Fatalf("start frontend in pty: %v", err)
+		t.Fatalf("start frontend in pty: %v (is termd-frontend in PATH?)", err)
 	}
 
 	io := newPtyIO(ptmx)
@@ -188,12 +161,8 @@ func (p *ptyIO) WaitForSilence(duration time.Duration) {
 // runTermctl runs the termctl binary with the given args and returns stdout.
 func runTermctl(t *testing.T, socketPath string, args ...string) string {
 	t.Helper()
-	bin, err := filepath.Abs(termctlBin)
-	if err != nil {
-		t.Fatalf("resolve termctl binary: %v", err)
-	}
 	fullArgs := append([]string{"--socket", socketPath}, args...)
-	cmd := exec.Command(bin, fullArgs...)
+	cmd := exec.Command("termctl", fullArgs...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("termctl %v failed: %v\n%s", args, err, out)

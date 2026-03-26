@@ -13,11 +13,21 @@ import (
 )
 
 func main() {
-	debug := flag.Bool("debug", false, "enable debug logging to stderr")
+	socketPath := flag.String("socket", "", "socket path (env: TERMD_SOCKET, default: /tmp/termd.sock)")
+	flag.StringVar(socketPath, "s", "", "socket path (shorthand)")
+	debug := flag.Bool("debug", false, "enable debug logging (env: TERMD_DEBUG=1)")
+	flag.BoolVar(debug, "d", false, "enable debug logging (shorthand)")
 	flag.Parse()
 
 	if !*debug && os.Getenv("TERMD_DEBUG") == "1" {
 		*debug = true
+	}
+	if *socketPath == "" {
+		if env := os.Getenv("TERMD_SOCKET"); env != "" {
+			*socketPath = env
+		} else {
+			*socketPath = "/tmp/termd.sock"
+		}
 	}
 
 	if *debug {
@@ -26,11 +36,6 @@ func main() {
 	} else {
 		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr,
 			&slog.HandlerOptions{Level: slog.LevelWarn})))
-	}
-
-	socketPath := "/tmp/termd.sock"
-	if flag.NArg() > 0 {
-		socketPath = flag.Arg(0)
 	}
 
 	shell := os.Getenv("SHELL")
@@ -43,7 +48,7 @@ func main() {
 		}
 	}
 
-	c, err := client.New(socketPath, "termd-frontend")
+	c, err := client.New(*socketPath, "termd-frontend")
 	if err != nil {
 		slog.Error("connect failed", "error", err)
 		os.Exit(1)
