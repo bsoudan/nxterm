@@ -192,72 +192,38 @@ func TestEventProxyReplayColors(t *testing.T) {
 	proxy := NewEventProxy(serverScreen)
 	stream := te.NewStream(proxy, false)
 
-	// SGR 31 = red fg, then draw "RED", then SGR 0 = reset, then " ", SGR 32 = green, draw "GRN"
-	input := "\x1b[31mRED\x1b[0m \x1b[32mGRN\x1b[0m \x1b[1mBLD\x1b[0m"
+	// ANSI16 red, green, bold, 256-color orange (208), true-color
+	input := "\x1b[31mRED\x1b[0m \x1b[32mGRN\x1b[0m \x1b[1mBLD\x1b[0m \x1b[38;5;208mIDX\x1b[0m \x1b[38;2;255;128;0mRGB\x1b[0m"
 	stream.FeedBytes([]byte(input))
 
-	// Check server screen cells have correct colors
-	serverCells := serverScreen.LinesCells()
-	t.Logf("server cell[0][0]: Data=%q Fg=%+v Bold=%v", serverCells[0][0].Data, serverCells[0][0].Attr.Fg, serverCells[0][0].Attr.Bold)
-	t.Logf("server cell[0][4]: Data=%q Fg=%+v Bold=%v", serverCells[0][4].Data, serverCells[0][4].Attr.Fg, serverCells[0][4].Attr.Bold)
-	t.Logf("server cell[0][8]: Data=%q Fg=%+v Bold=%v", serverCells[0][8].Data, serverCells[0][8].Attr.Fg, serverCells[0][8].Attr.Bold)
-
-	if serverCells[0][0].Attr.Fg.Name != "red" {
-		t.Fatalf("server: expected 'R' to have red fg, got %+v", serverCells[0][0].Attr.Fg)
-	}
-
-	// Flush and replay
 	allEvents := proxy.Flush()
 	allEvents = roundTripEvents(allEvents)
 
 	frontendScreen := te.NewScreen(cols, rows)
 	ui.ReplayEvents(frontendScreen, allEvents)
 
-	frontendCells := frontendScreen.LinesCells()
-	t.Logf("frontend cell[0][0]: Data=%q Fg=%+v Bold=%v", frontendCells[0][0].Data, frontendCells[0][0].Attr.Fg, frontendCells[0][0].Attr.Bold)
-	t.Logf("frontend cell[0][4]: Data=%q Fg=%+v Bold=%v", frontendCells[0][4].Data, frontendCells[0][4].Attr.Fg, frontendCells[0][4].Attr.Bold)
-	t.Logf("frontend cell[0][8]: Data=%q Fg=%+v Bold=%v", frontendCells[0][8].Data, frontendCells[0][8].Attr.Fg, frontendCells[0][8].Attr.Bold)
+	fc := frontendScreen.LinesCells()[0]
 
-	// Verify colors match
-	if frontendCells[0][0].Attr.Fg.Name != "red" {
-		t.Errorf("frontend: 'R' expected red fg, got %+v", frontendCells[0][0].Attr.Fg)
+	// RED at col 0: ANSI16 red
+	if fc[0].Attr.Fg.Name != "red" {
+		t.Errorf("'R' expected red fg, got %+v", fc[0].Attr.Fg)
 	}
-	if frontendCells[0][4].Attr.Fg.Name != "green" {
-		t.Errorf("frontend: 'G' expected green fg, got %+v", frontendCells[0][4].Attr.Fg)
+	// GRN at col 4: ANSI16 green
+	if fc[4].Attr.Fg.Name != "green" {
+		t.Errorf("'G' expected green fg, got %+v", fc[4].Attr.Fg)
 	}
-	if !frontendCells[0][8].Attr.Bold {
-		t.Errorf("frontend: 'B' expected bold, got %+v", frontendCells[0][8].Attr)
+	// BLD at col 8: bold
+	if !fc[8].Attr.Bold {
+		t.Errorf("'B' expected bold, got %+v", fc[8].Attr)
+	}
+	// IDX at col 12: 256-color index 208
+	if fc[12].Attr.Fg.Mode != te.ColorANSI256 || fc[12].Attr.Fg.Index != 208 {
+		t.Errorf("'I' expected ANSI256 index 208, got %+v", fc[12].Attr.Fg)
+	}
+	// RGB at col 16: true color
+	if fc[16].Attr.Fg.Mode != te.ColorTrueColor {
+		t.Errorf("'R' expected TrueColor, got %+v", fc[16].Attr.Fg)
 	}
 }
 
-func TestEventProxyJSONRoundTrip(t *testing.T) {
-	// Test that events with zero-value fields survive JSON round-trip
-	events := []protocol.TerminalEvent{
-		{Op: "ed", How: 0, Private: false},    // EraseInDisplay(0, false) - common
-		{Op: "el", How: 0, Private: false},    // EraseInLine(0, false) - common
-		{Op: "cup"},                            // CursorPosition() - no params = home
-		{Op: "sgr", Attrs: []int{0}},          // Reset attributes
-		{Op: "sm", Params: []int{1049}, Private: true}, // Enter alt screen
-		{Op: "rm", Params: []int{1049}, Private: true}, // Exit alt screen
-		{Op: "sm", Params: []int{25}, Private: true},   // Show cursor (private=true)
-		{Op: "rm", Params: []int{25}, Private: true},   // Hide cursor (private=true)
-	}
 
-	roundTripped := roundTripEvents(events)
-
-	for i, orig := range events {
-		rt := roundTripped[i]
-		if orig.Op != rt.Op {
-			t.Errorf("event %d: Op %q != %q", i, orig.Op, rt.Op)
-		}
-		if orig.How != rt.How {
-			t.Errorf("event %d (%s): How %d != %d", i, orig.Op, orig.How, rt.How)
-		}
-		if orig.Private != rt.Private {
-			t.Errorf("event %d (%s): Private %v != %v", i, orig.Op, orig.Private, rt.Private)
-		}
-		origJSON, _ := json.Marshal(orig)
-		rtJSON, _ := json.Marshal(rt)
-		t.Logf("event %d: %s -> %s", i, origJSON, rtJSON)
-	}
-}

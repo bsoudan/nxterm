@@ -224,6 +224,14 @@ func spawnRegion(t *testing.T, socketPath string, shellCmd string) string {
 	return id
 }
 
+// Resize changes the PTY window size and updates the go-te screen to match.
+func (p *ptyIO) Resize(cols, rows uint16) {
+	pty.Setsize(p.ptmx, &pty.Winsize{Rows: rows, Cols: cols})
+	p.mu.Lock()
+	p.screen.Resize(int(rows), int(cols))
+	p.mu.Unlock()
+}
+
 // Write sends raw bytes to the PTY (simulating keyboard input).
 func (p *ptyIO) Write(data []byte) {
 	p.ptmx.Write(data)

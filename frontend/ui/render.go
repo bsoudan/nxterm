@@ -196,26 +196,41 @@ func sgrTransition(from, to te.Attr) string {
 	return "\x1b[" + strings.Join(params, ";") + "m"
 }
 
-// teColorSGR converts a go-te Color to its SGR parameter string via the
-// shared color spec format.
+// teColorSGR converts a go-te Color directly to its SGR parameter string.
 func teColorSGR(c te.Color, isBg bool) string {
-	spec := teColorToSpec(c)
-	return protocol.ColorSpecToSGR(spec, isBg)
-}
-
-// teColorToSpec converts a go-te Color to its color spec string.
-func teColorToSpec(c te.Color) string {
 	switch c.Mode {
 	case te.ColorDefault:
-		return ""
+		if isBg {
+			return "49"
+		}
+		return "39"
 	case te.ColorANSI16:
-		return c.Name
+		if isBg {
+			if code, ok := protocol.BgSGR[c.Name]; ok {
+				return code
+			}
+			return "49"
+		}
+		if code, ok := protocol.FgSGR[c.Name]; ok {
+			return code
+		}
+		return "39"
 	case te.ColorANSI256:
-		return fmt.Sprintf("5;%d", c.Index)
+		if isBg {
+			return fmt.Sprintf("48;5;%d", c.Index)
+		}
+		return fmt.Sprintf("38;5;%d", c.Index)
 	case te.ColorTrueColor:
-		return "2;" + c.Name
+		r, g, b := protocol.ParseHexColor(c.Name)
+		if isBg {
+			return fmt.Sprintf("48;2;%d;%d;%d", r, g, b)
+		}
+		return fmt.Sprintf("38;2;%d;%d;%d", r, g, b)
 	}
-	return ""
+	if isBg {
+		return "49"
+	}
+	return "39"
 }
 
 func renderLogOverlay(m Model, base string, width, height int) string {

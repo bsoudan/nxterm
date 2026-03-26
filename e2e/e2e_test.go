@@ -729,6 +729,96 @@ reconnect:
 	}
 }
 
+func TestResizeMidSession(t *testing.T) {
+	socketPath, serverCleanup := startServer(t)
+	defer serverCleanup()
+
+	pio, frontendCleanup := startFrontend(t, socketPath)
+	defer frontendCleanup()
+
+	pio.WaitFor(t, "termd$ ", 10*time.Second)
+
+	// Verify initial 80 columns
+	pio.Write([]byte("tput cols\r"))
+	pio.WaitForScreen(t, func(lines []string) bool {
+		for i := 1; i < len(lines); i++ {
+			if strings.HasPrefix(lines[i], "80") {
+				return true
+			}
+		}
+		return false
+	}, "'80' at col 0 on a content row", 10*time.Second)
+
+	pio.WaitFor(t, "termd$ ", 10*time.Second)
+
+	// Resize to 120x40
+	pio.Resize(120, 40)
+	pio.WaitForSilence(200 * time.Millisecond)
+
+	// Verify new column count
+	pio.Write([]byte("tput cols\r"))
+	pio.WaitForScreen(t, func(lines []string) bool {
+		for i := 1; i < len(lines); i++ {
+			if strings.HasPrefix(lines[i], "120") {
+				return true
+			}
+		}
+		return false
+	}, "'120' at col 0 on a content row", 10*time.Second)
+
+	// Verify new row count (40 - 1 for tab bar = 39)
+	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.Write([]byte("tput lines\r"))
+	pio.WaitForScreen(t, func(lines []string) bool {
+		for i := 1; i < len(lines); i++ {
+			if strings.HasPrefix(lines[i], "39") {
+				return true
+			}
+		}
+		return false
+	}, "'39' at col 0 on a content row", 10*time.Second)
+}
+
+func TestRegionKilledExternally(t *testing.T) {
+	socketPath, serverCleanup := startServer(t)
+	defer serverCleanup()
+
+	pio, frontendCleanup := startFrontend(t, socketPath)
+	defer frontendCleanup()
+
+	pio.WaitFor(t, "termd$ ", 10*time.Second)
+
+	// Get the region ID
+	out := runTermctl(t, socketPath, "region", "list")
+	var regionID string
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 0 && len(fields[0]) == 36 {
+			regionID = fields[0]
+			break
+		}
+	}
+	if regionID == "" {
+		t.Fatal("could not find region ID")
+	}
+
+	// Kill the region externally
+	runTermctl(t, socketPath, "region", "kill", regionID)
+
+	// Wait for the frontend's PTY to close (same pattern as TestPrefixKeyDetach)
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case <-deadline:
+			t.Fatal("timeout waiting for frontend to exit after region kill")
+		case _, ok := <-pio.ch:
+			if !ok {
+				return
+			}
+		}
+	}
+}
+
 func TestExit(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()

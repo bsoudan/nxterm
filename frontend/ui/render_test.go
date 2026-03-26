@@ -1,0 +1,120 @@
+package ui
+
+import (
+	"strings"
+	"testing"
+
+	te "github.com/rcarmo/go-te/pkg/te"
+)
+
+func TestSgrTransition(t *testing.T) {
+	defaultAttr := te.Attr{}
+
+	redFg := te.Attr{Fg: te.Color{Mode: te.ColorANSI16, Name: "red"}}
+	greenFg := te.Attr{Fg: te.Color{Mode: te.ColorANSI16, Name: "green"}}
+
+	boldOnly := te.Attr{Bold: true}
+	boldRed := te.Attr{Bold: true, Fg: te.Color{Mode: te.ColorANSI16, Name: "red"}}
+	boldGreen := te.Attr{Bold: true, Fg: te.Color{Mode: te.ColorANSI16, Name: "green"}}
+	notBoldRed := te.Attr{Fg: te.Color{Mode: te.ColorANSI16, Name: "red"}}
+
+	reverseUnderline := te.Attr{Reverse: true, Underline: true}
+	reverseOnly := te.Attr{Reverse: true}
+
+	italicOnly := te.Attr{Italics: true}
+
+	tests := []struct {
+		name         string
+		from         te.Attr
+		to           te.Attr
+		want         string   // exact match if non-empty
+		wantContains []string // substrings that must appear
+		wantAbsent   []string // substrings that must NOT appear
+	}{
+		{
+			name: "default to default",
+			from: defaultAttr,
+			to:   defaultAttr,
+			want: "\x1b[m", // reset is emitted because to == zero Attr
+		},
+		{
+			name: "default to bold",
+			from: defaultAttr,
+			to:   boldOnly,
+			want: "\x1b[1m",
+		},
+		{
+			name:         "default to red fg",
+			from:         defaultAttr,
+			to:           redFg,
+			wantContains: []string{"31"},
+		},
+		{
+			name: "bold+red to default",
+			from: boldRed,
+			to:   defaultAttr,
+			want: "\x1b[m",
+		},
+		{
+			name:         "bold+red to bold+green",
+			from:         boldRed,
+			to:           boldGreen,
+			wantContains: []string{"32"},
+			wantAbsent:   []string{";1;", ";1m", "[1;"},
+		},
+		{
+			name:         "bold+red to not-bold+red",
+			from:         boldRed,
+			to:           notBoldRed,
+			wantContains: []string{"0", "31"},
+		},
+		{
+			name:         "reverse+underline to reverse only",
+			from:         reverseUnderline,
+			to:           reverseOnly,
+			wantContains: []string{"24"},
+		},
+		{
+			name:         "italic to not-italic",
+			from:         italicOnly,
+			to:           defaultAttr,
+			want:         "\x1b[m",
+		},
+		{
+			name:         "italic to no attributes",
+			from:         italicOnly,
+			to:           greenFg,
+			wantContains: []string{"23", "32"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sgrTransition(tc.from, tc.to)
+
+			if tc.want != "" {
+				if got != tc.want {
+					t.Errorf("sgrTransition() = %q, want %q", got, tc.want)
+				}
+				return
+			}
+			if tc.want == "" && len(tc.wantContains) == 0 && len(tc.wantAbsent) == 0 {
+				if got != "" {
+					t.Errorf("sgrTransition() = %q, want empty string", got)
+				}
+				return
+			}
+
+			for _, sub := range tc.wantContains {
+				if !strings.Contains(got, sub) {
+					t.Errorf("sgrTransition() = %q, want it to contain %q", got, sub)
+				}
+			}
+			for _, sub := range tc.wantAbsent {
+				if strings.Contains(got, sub) {
+					t.Errorf("sgrTransition() = %q, want it NOT to contain %q", got, sub)
+				}
+			}
+		})
+	}
+}
