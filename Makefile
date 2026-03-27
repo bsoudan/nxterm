@@ -1,14 +1,17 @@
-.PHONY: all build-server build-frontend build-termctl check-windows test test-e2e clean
+.PHONY: all build-server build-frontend build-frontend-windows build-termctl check-windows test test-e2e clean
 
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
-all: build-server build-frontend build-termctl
+all: build-server build-frontend build-frontend-windows build-termctl
 
 build-server:
 	cd server && go build -ldflags "-X main.version=$(VERSION)" -o ../.local/bin/termd .
 
 build-frontend:
 	cd frontend && go build -ldflags "-X main.version=$(VERSION)" -o ../.local/bin/termd-frontend .
+
+build-frontend-windows:
+	cd frontend && GOOS=windows GOARCH=amd64 go build -ldflags "-X main.version=$(VERSION)" -o ../.local/bin/termd-frontend.exe .
 
 build-termctl:
 	cd termctl && go build -ldflags "-X main.version=$(VERSION)" -o ../.local/bin/termctl .

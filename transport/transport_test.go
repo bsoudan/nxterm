@@ -23,11 +23,9 @@ func TestParseSpec(t *testing.T) {
 		{"/tmp/termd.sock", "unix", "/tmp/termd.sock"},
 		{"./termd.sock", "unix", "./termd.sock"},
 		{"unix:/tmp/termd.sock", "unix", "/tmp/termd.sock"},
-		{"tcp:127.0.0.1:9090", "tcp", "127.0.0.1:9090"},
-		{"tcp:0.0.0.0:0", "tcp", "0.0.0.0:0"},
 		{"tcp://127.0.0.1:9090", "tcp", "127.0.0.1:9090"},
+		{"tcp://0.0.0.0:0", "tcp", "0.0.0.0:0"},
 		{"unix:///tmp/termd.sock", "unix", "/tmp/termd.sock"},
-		{"ws:127.0.0.1:8080", "ws", "127.0.0.1:8080"},
 		{"ws://127.0.0.1:8080", "ws", "127.0.0.1:8080"},
 		{"wss://host:443/ws", "wss", "host:443/ws"},
 	}
@@ -52,7 +50,7 @@ func TestUnixRoundTrip(t *testing.T) {
 }
 
 func TestTCPRoundTrip(t *testing.T) {
-	ln, err := Listen("tcp:127.0.0.1:0")
+	ln, err := Listen("tcp://127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +128,7 @@ func TestListenUnknownScheme(t *testing.T) {
 }
 
 func TestWSRoundTrip(t *testing.T) {
-	ln, err := Listen("ws:127.0.0.1:0")
+	ln, err := Listen("ws://127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +256,7 @@ func TestSSHAuthFailure(t *testing.T) {
 
 // bidirectional verifies data flows both ways.
 func TestTCPBidirectional(t *testing.T) {
-	ln, err := Listen("tcp:127.0.0.1:0")
+	ln, err := Listen("tcp://127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}

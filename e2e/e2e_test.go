@@ -815,7 +815,7 @@ func TestTCPTransport(t *testing.T) {
 }
 
 func TestWebSocketTransport(t *testing.T) {
-	socketPath, addrs, serverCleanup := startServerWithListeners(t, "ws:127.0.0.1:0")
+	socketPath, addrs, serverCleanup := startServerWithListeners(t, "ws://127.0.0.1:0")
 	defer serverCleanup()
 
 	var wsAddr string
@@ -852,10 +852,10 @@ func TestSSHTransport(t *testing.T) {
 
 	// Start server with Unix + SSH (no auth keys = accept all for test)
 	socketPath := filepath.Join(dir, "termd.sock")
-	cmd := exec.Command("termd", "--socket", socketPath,
-		"--listen", "ssh:127.0.0.1:0",
+	cmd := exec.Command("termd",
 		"--ssh-host-key", hostKeyPath,
-		"--ssh-no-auth")
+		"--ssh-no-auth",
+		"unix:"+socketPath, "ssh://127.0.0.1:0")
 	stderrR, stderrW, _ := os.Pipe()
 	cmd.Stderr = stderrW
 	if err := cmd.Start(); err != nil {

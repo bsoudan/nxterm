@@ -29,12 +29,6 @@ func generateUnit(execPath string, cmd *cli.Command) string {
 	var args []string
 	args = append(args, execPath)
 
-	for _, spec := range cmd.StringSlice("listen") {
-		args = append(args, "--listen", spec)
-	}
-	if sock := cmd.String("socket"); sock != "" {
-		args = append(args, "--socket", sock)
-	}
 	if cmd.String("ssh-host-key") != "" {
 		args = append(args, "--ssh-host-key", cmd.String("ssh-host-key"))
 	}
@@ -48,6 +42,9 @@ func generateUnit(execPath string, cmd *cli.Command) string {
 		args = append(args, "--debug")
 	}
 
+	// Positional args are listen specs
+	args = append(args, cmd.Args().Slice()...)
+
 	execLine := strings.Join(args, " ")
 
 	return fmt.Sprintf(`[Unit]
@@ -57,7 +54,8 @@ Description=termd %s
 Type=simple
 ExecStart=%s
 Restart=on-failure
-Environment="TERMD_VERSION=%s PATH=%s"
+Environment=TERMD_VERSION=%s
+Environment=PATH=%s
 
 [Install]
 WantedBy=default.target
@@ -129,8 +127,7 @@ func cmdStart(_ context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("start: %s", out)
 	}
 
-	fmt.Printf("termd %s started\n", version)
-	return nil
+	return cmdStatus(context.Background(), cmd)
 }
 
 func cmdStop(_ context.Context, cmd *cli.Command) error {
@@ -175,4 +172,13 @@ func cmdStatus(_ context.Context, cmd *cli.Command) error {
 	}
 
 	return nil
+}
+
+func cmdTail(_ context.Context, cmd *cli.Command) error {
+	args := []string{"--user", "-u", serviceName}
+	args = append(args, cmd.Args().Slice()...)
+	c := exec.Command("journalctl", args...)
+	c.Stdout = os.Stdout
+	c.Stderr = os.Stderr
+	return c.Run()
 }

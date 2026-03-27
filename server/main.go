@@ -20,25 +20,38 @@ var version = "dev"
 
 func main() {
 	app := &cli.Command{
-		Name:    "termd",
-		Usage:   "terminal multiplexer server",
+		Name:      "termd",
+		Usage:     "terminal multiplexer server",
+		ArgsUsage: "[listen-spec ...]",
+		Description: `LISTEN SPECS:
+  unix:/path/to/sock     Unix socket
+  tcp://host:port        TCP
+  ws://host:port         WebSocket
+  ssh://host:port        SSH (requires --ssh-host-key)
+
+  Default: unix:/tmp/termd.sock`,
 		Version: version,
+		CustomRootCommandHelpTemplate: `NAME:
+   {{template "helpNameTemplate" .}}
+
+USAGE:
+   {{.FullName}} {{if .VisibleFlags}}[global options]{{end}}{{if .VisibleCommands}} [command [command options]]{{end}} {{.ArgsUsage}}{{if .Version}}{{if not .HideVersion}}
+
+VERSION:
+   {{.Version}}{{end}}{{end}}{{if .VisibleCommands}}
+
+COMMANDS:{{template "visibleCommandCategoryTemplate" .}}{{end}}{{if .VisibleFlagCategories}}
+
+GLOBAL OPTIONS:{{template "visibleFlagCategoryTemplate" .}}{{else if .VisibleFlags}}
+
+GLOBAL OPTIONS:{{template "visibleFlagTemplate" .}}{{end}}{{if .Description}}
+
+{{template "descriptionTemplate" .}}{{end}}
+`,
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:  "config",
 				Usage: "config file path (default: ~/.config/termd/server.toml)",
-			},
-			&cli.StringSliceFlag{
-				Name:    "listen",
-				Aliases: []string{"l"},
-				Usage:   "listen address (repeatable; schemes: unix, tcp, ws, ssh)",
-				Sources: cli.EnvVars("TERMD_LISTEN"),
-			},
-			&cli.StringFlag{
-				Name:    "socket",
-				Aliases: []string{"s"},
-				Usage:   "shorthand for --listen unix:<path>",
-				Sources: cli.EnvVars("TERMD_SOCKET"),
 			},
 			&cli.StringFlag{
 				Name:  "ssh-host-key",
@@ -62,9 +75,10 @@ func main() {
 		Action: runServer,
 		Commands: []*cli.Command{
 			{
-				Name:   "start",
-				Usage:  "install and start termd as a systemd user service",
-				Action: cmdStart,
+				Name:      "start",
+				Usage:     "install and start termd as a systemd user service",
+				ArgsUsage: "[listen-spec ...]",
+				Action:    cmdStart,
 			},
 			{
 				Name:   "stop",
@@ -76,6 +90,12 @@ func main() {
 				Usage:  "show the termd systemd user service status",
 				Action: cmdStatus,
 			},
+			{
+				Name:            "tail",
+				Usage:           "tail the termd service logs (extra args passed to journalctl)",
+				SkipFlagParsing: true,
+				Action:          cmdTail,
+			},
 		},
 	}
 
@@ -85,12 +105,26 @@ func main() {
 	}
 }
 
-func runServer(_ context.Context, cmd *cli.Command) error {
+// listenSpecs returns the listen addresses from positional args, config, or default.
+// Returns an error if any spec is missing a scheme.
+func listenSpecs(cmd *cli.Command, cfg config.ServerConfig) ([]string, error) {
+	var specs []string
 	if cmd.NArg() > 0 {
-		cli.ShowAppHelp(cmd)
-		return fmt.Errorf("unknown command: %s", cmd.Args().First())
+		specs = cmd.Args().Slice()
+	} else if len(cfg.Listen) > 0 {
+		specs = cfg.Listen
+	} else {
+		return []string{"unix:/tmp/termd.sock"}, nil
 	}
+	for _, s := range specs {
+		if !strings.Contains(s, ":") {
+			return nil, fmt.Errorf("invalid listen spec %q (missing scheme, e.g. unix:/path or tcp://host:port)", s)
+		}
+	}
+	return specs, nil
+}
 
+func runServer(_ context.Context, cmd *cli.Command) error {
 	// Load config file (provides defaults for unset flags)
 	cfg, err := config.LoadServerConfig(cmd.String("config"))
 	if err != nil {
@@ -107,16 +141,9 @@ func runServer(_ context.Context, cmd *cli.Command) error {
 
 	transport.InstallStackDump("termd")
 
-	// Build listen specs: CLI flags > config > default
-	listenSpecs := cmd.StringSlice("listen")
-	if sock := cmd.String("socket"); sock != "" {
-		listenSpecs = append([]string{"unix:" + sock}, listenSpecs...)
-	}
-	if len(listenSpecs) == 0 && len(cfg.Listen) > 0 {
-		listenSpecs = cfg.Listen
-	}
-	if len(listenSpecs) == 0 {
-		listenSpecs = []string{"unix:/tmp/termd.sock"}
+	specs, err := listenSpecs(cmd, cfg)
+	if err != nil {
+		return err
 	}
 
 	sshHostKey := cmd.String("ssh-host-key")
@@ -129,8 +156,8 @@ func runServer(_ context.Context, cmd *cli.Command) error {
 	}
 	sshNoAuth := cmd.Bool("ssh-no-auth") || cfg.SSH.NoAuth
 
-	listeners := make([]net.Listener, 0, len(listenSpecs))
-	for _, spec := range listenSpecs {
+	listeners := make([]net.Listener, 0, len(specs))
+	for _, spec := range specs {
 		var ln net.Listener
 		var err error
 		if strings.HasPrefix(spec, "ssh:") || strings.HasPrefix(spec, "ssh://") {

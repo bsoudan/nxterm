@@ -19,7 +19,7 @@ func startServer(t *testing.T) (string, func()) {
 	t.Helper()
 
 	socketPath := filepath.Join(t.TempDir(), "termd.sock")
-	cmd := exec.Command("termd", "--socket", socketPath)
+	cmd := exec.Command("termd", "unix:"+socketPath)
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start server: %v (is termd in PATH?)", err)
@@ -50,10 +50,8 @@ func startServerWithListeners(t *testing.T, extraListens ...string) (socketPath 
 	t.Helper()
 
 	socketPath = filepath.Join(t.TempDir(), "termd.sock")
-	args := []string{"--socket", socketPath}
-	for _, l := range extraListens {
-		args = append(args, "--listen", l)
-	}
+	args := []string{"unix:" + socketPath}
+	args = append(args, extraListens...)
 	cmd := exec.Command("termd", args...)
 
 	// Capture stderr to extract listen addresses
@@ -117,7 +115,7 @@ func startServerWithListeners(t *testing.T, extraListens ...string) (socketPath 
 // startServerWithTCP is a convenience wrapper for startServerWithListeners.
 func startServerWithTCP(t *testing.T) (socketPath, tcpAddr string, cleanup func()) {
 	t.Helper()
-	sock, addrs, cl := startServerWithListeners(t, "tcp:127.0.0.1:0")
+	sock, addrs, cl := startServerWithListeners(t, "tcp://127.0.0.1:0")
 	for _, a := range addrs {
 		tcpAddr = a
 	}
