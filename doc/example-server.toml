@@ -1,0 +1,26 @@
+# termd server configuration
+# Place at ~/.config/termd/server.toml
+
+# Listen addresses (same as --listen flag, repeatable)
+# listen = ["unix:/tmp/termd.sock"]
+# listen = ["unix:/tmp/termd.sock", "tcp:0.0.0.0:9090"]
+
+# Enable debug logging
+# debug = false
+
+[ssh]
+# SSH host key file (auto-generated if missing)
+# host-key = "~/.config/termd/host_key"
+
+# SSH authorized_keys file (default: ~/.ssh/authorized_keys)
+# authorized-keys = "~/.ssh/authorized_keys"
+
+# Disable SSH authentication (insecure, for dev only)
+# no-auth = false
+
+[termctl]
+# Default server address for termctl commands
+# connect = "unix:/tmp/termd.sock"
+
+# Enable debug logging for termctl
+# debug = false

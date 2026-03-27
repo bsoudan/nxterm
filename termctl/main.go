@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/urfave/cli/v3"
+	"termd/config"
 	"termd/frontend/client"
 	termlog "termd/frontend/log"
 	"termd/frontend/protocol"
@@ -26,6 +27,10 @@ func main() {
 		Version: version,
 		Flags: []cli.Flag{
 			&cli.StringFlag{
+				Name:  "config",
+				Usage: "config file path (default: ~/.config/termd/server.toml)",
+			},
+			&cli.StringFlag{
 				Name:    "socket",
 				Aliases: []string{"s"},
 				Value:   "/tmp/termd.sock",
@@ -40,8 +45,18 @@ func main() {
 			},
 		},
 		Before: func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
+			// Load config and apply defaults for unset flags
+			cfg, err := config.LoadServerConfig(cmd.String("config"))
+			if err != nil {
+				return ctx, fmt.Errorf("config: %w", err)
+			}
+			if !cmd.IsSet("socket") && cfg.Termctl.Connect != "" {
+				cmd.Set("socket", cfg.Termctl.Connect)
+			}
+
+			debug := cmd.Bool("debug") || cfg.Termctl.Debug
 			level := slog.LevelWarn
-			if cmd.Bool("debug") {
+			if debug {
 				level = slog.LevelDebug
 			}
 			slog.SetDefault(slog.New(termlog.NewHandler(os.Stderr, level, nil)))

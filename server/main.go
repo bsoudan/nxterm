@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/urfave/cli/v3"
+	"termd/config"
 	tlog "termd/frontend/log"
 	"termd/transport"
 )
@@ -23,6 +24,10 @@ func main() {
 		Usage:   "terminal multiplexer server",
 		Version: version,
 		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:  "config",
+				Usage: "config file path (default: ~/.config/termd/server.toml)",
+			},
 			&cli.StringSliceFlag{
 				Name:    "listen",
 				Aliases: []string{"l"},
@@ -86,8 +91,15 @@ func runServer(_ context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("unknown command: %s", cmd.Args().First())
 	}
 
+	// Load config file (provides defaults for unset flags)
+	cfg, err := config.LoadServerConfig(cmd.String("config"))
+	if err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
+
+	debug := cmd.Bool("debug") || cfg.Debug
 	level := slog.LevelInfo
-	if cmd.Bool("debug") {
+	if debug {
 		level = slog.LevelDebug
 	}
 	handler := tlog.NewHandler(os.Stderr, level, nil)
@@ -95,18 +107,27 @@ func runServer(_ context.Context, cmd *cli.Command) error {
 
 	transport.InstallStackDump("termd")
 
-	// Build listen specs: --socket prepends to --listen, default if neither given
+	// Build listen specs: CLI flags > config > default
 	listenSpecs := cmd.StringSlice("listen")
 	if sock := cmd.String("socket"); sock != "" {
 		listenSpecs = append([]string{"unix:" + sock}, listenSpecs...)
+	}
+	if len(listenSpecs) == 0 && len(cfg.Listen) > 0 {
+		listenSpecs = cfg.Listen
 	}
 	if len(listenSpecs) == 0 {
 		listenSpecs = []string{"unix:/tmp/termd.sock"}
 	}
 
 	sshHostKey := cmd.String("ssh-host-key")
+	if sshHostKey == "" {
+		sshHostKey = cfg.SSH.HostKey
+	}
 	sshAuthKeys := cmd.String("ssh-auth-keys")
-	sshNoAuth := cmd.Bool("ssh-no-auth")
+	if sshAuthKeys == "" {
+		sshAuthKeys = cfg.SSH.AuthorizedKeys
+	}
+	sshNoAuth := cmd.Bool("ssh-no-auth") || cfg.SSH.NoAuth
 
 	listeners := make([]net.Listener, 0, len(listenSpecs))
 	for _, spec := range listenSpecs {

@@ -12,6 +12,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/colorprofile"
 	"github.com/urfave/cli/v3"
+	"termd/config"
 	"termd/frontend/client"
 	termlog "termd/frontend/log"
 	"termd/frontend/ui"
@@ -26,6 +27,10 @@ func main() {
 		Usage:   "terminal multiplexer TUI client",
 		Version: version,
 		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:  "config",
+				Usage: "config file path (default: ~/.config/termd-tui/config.toml)",
+			},
 			&cli.StringFlag{
 				Name:    "socket",
 				Aliases: []string{"s"},
@@ -60,8 +65,15 @@ func main() {
 }
 
 func runFrontend(_ context.Context, cmd *cli.Command) error {
+	// Load config file (provides defaults for unset flags)
+	cfg, err := config.LoadFrontendConfig(cmd.String("config"))
+	if err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
+
+	debug := cmd.Bool("debug") || cfg.Debug
 	level := slog.LevelWarn
-	if cmd.Bool("debug") {
+	if debug {
 		level = slog.LevelDebug
 	}
 	logRing := termlog.NewLogRingBuffer(1000)
@@ -79,13 +91,22 @@ func runFrontend(_ context.Context, cmd *cli.Command) error {
 		parts := strings.Fields(c)
 		shell = parts[0]
 		shellArgs = parts[1:]
+	} else if cfg.Command != "" {
+		parts := strings.Fields(cfg.Command)
+		shell = parts[0]
+		shellArgs = parts[1:]
 	} else {
 		shell, shellArgs = defaultShell()
 	}
 
 	transport.InstallStackDump("termd-frontend")
 
-	endpoint := inferEndpoint(cmd.String("socket"))
+	// CLI --socket > config connect > platform default
+	socketVal := cmd.String("socket")
+	if socketVal == defaultSocket && cfg.Connect != "" {
+		socketVal = cfg.Connect
+	}
+	endpoint := inferEndpoint(socketVal)
 
 	dialFn := func() (net.Conn, error) { return transport.Dial(endpoint) }
 	conn, err := dialFn()

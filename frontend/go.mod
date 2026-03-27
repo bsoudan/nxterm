@@ -11,12 +11,16 @@ require (
 	github.com/rcarmo/go-te v0.1.0
 	github.com/urfave/cli/v3 v3.8.0
 	golang.org/x/sys v0.42.0
+	termd/config v0.0.0
 	termd/transport v0.0.0
 )
+
+replace termd/config => ../config
 
 replace termd/transport => ../transport
 
 require (
+	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20260205113103-524a6607adb8 // indirect
 	github.com/charmbracelet/x/ansi v0.11.6 // indirect
 	github.com/charmbracelet/x/termios v0.1.1 // indirect
