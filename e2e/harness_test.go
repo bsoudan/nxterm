@@ -15,11 +15,19 @@ import (
 	"github.com/rcarmo/go-te/pkg/te"
 )
 
+// testEnv returns os.Environ with XDG_CONFIG_HOME set to a temp dir,
+// isolating tests from the user's local configuration files.
+func testEnv(t *testing.T) []string {
+	t.Helper()
+	return append(os.Environ(), "XDG_CONFIG_HOME="+t.TempDir())
+}
+
 func startServer(t *testing.T) (string, func()) {
 	t.Helper()
 
 	socketPath := filepath.Join(t.TempDir(), "termd.sock")
 	cmd := exec.Command("termd", "unix:"+socketPath)
+	cmd.Env = testEnv(t)
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start server: %v (is termd in PATH?)", err)
@@ -53,6 +61,7 @@ func startServerWithListeners(t *testing.T, extraListens ...string) (socketPath 
 	args := []string{"unix:" + socketPath}
 	args = append(args, extraListens...)
 	cmd := exec.Command("termd", args...)
+	cmd.Env = testEnv(t)
 
 	// Capture stderr to extract listen addresses
 	stderrR, stderrW, _ := os.Pipe()
@@ -132,7 +141,7 @@ func startFrontend(t *testing.T, socketPath string) (*ptyIO, func()) {
 	// TERM=dumb prevents bubbletea's package init() from sending an OSC
 	// terminal query that times out after 5 seconds in a raw PTY with no
 	// terminal emulator behind it.
-	cmd.Env = append(os.Environ(), "TERM=dumb")
+	cmd.Env = append(testEnv(t), "TERM=dumb")
 
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 80})
 	if err != nil {
@@ -288,6 +297,7 @@ func runTermctl(t *testing.T, socketPath string, args ...string) string {
 	t.Helper()
 	fullArgs := append([]string{"--socket", socketPath}, args...)
 	cmd := exec.Command("termctl", fullArgs...)
+	cmd.Env = testEnv(t)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("termctl %v failed: %v\n%s", args, err, out)

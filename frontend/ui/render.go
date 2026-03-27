@@ -36,6 +36,7 @@ func renderView(m Model) string {
 	// Right side of tab bar: connection info, or mode indicator when active
 	rightInfo := m.Endpoint
 	rightBold := false
+	rightRed := false
 	if m.connStatus != "connected" && m.connStatus != "" {
 		rightInfo = m.connStatus
 	}
@@ -57,12 +58,17 @@ func renderView(m Model) string {
 	} else if m.showHint {
 		rightInfo = "ctrl+b ? for help"
 		rightBold = true
+	} else if m.connStatus == "reconnecting" {
+		secs := int(time.Until(m.retryAt).Seconds()) + 1
+		rightInfo = fmt.Sprintf("reconnecting to %s in %ds...", m.Endpoint, secs)
+		rightBold = true
+		rightRed = true
 	}
 	suffix := "termd-tui"
 	if m.Version != "" && (m.showHint || m.showHelp) {
 		suffix = "termd-tui " + m.Version
 	}
-	sb.WriteString(renderTabBar(m.regionName, rightInfo, suffix, rightBold, width))
+	sb.WriteString(renderTabBar(m.regionName, rightInfo, suffix, rightBold, rightRed, width))
 	sb.WriteByte('\n')
 
 	contentHeight := height - 1 // tab bar only
@@ -70,6 +76,7 @@ func renderView(m Model) string {
 		contentHeight = 1
 	}
 	showCursor := !m.showLogView
+	disconnected := m.connStatus == "reconnecting"
 
 	if m.localScreen != nil {
 		cells := m.localScreen.LinesCells()
@@ -78,7 +85,7 @@ func renderView(m Model) string {
 			if i < len(cells) {
 				row = cells[i]
 			}
-			renderCellLine(&sb, row, width, i, m.cursorRow, m.cursorCol, showCursor)
+			renderCellLine(&sb, row, width, i, m.cursorRow, m.cursorCol, showCursor, disconnected)
 			if i < contentHeight-1 {
 				sb.WriteByte('\n')
 			}
@@ -115,7 +122,7 @@ func renderView(m Model) string {
 	base := sb.String()
 
 	if m.showStatus {
-		return renderStatusOverlay(base, m.Version, m.Endpoint, m.localHostname, m.serverStatus, width, height)
+		return renderStatusOverlay(base, m, width, height)
 	}
 	if m.showHelp {
 		return renderHelpOverlay(base, m.helpCursor, width, height)
@@ -127,7 +134,7 @@ func renderView(m Model) string {
 }
 
 // renderCellLine writes one row of cells with ANSI color/attribute sequences.
-func renderCellLine(sb *strings.Builder, row []te.Cell, width, rowIdx, cursorRow, cursorCol int, showCursor bool) {
+func renderCellLine(sb *strings.Builder, row []te.Cell, width, rowIdx, cursorRow, cursorCol int, showCursor bool, disconnected bool) {
 	var cur te.Attr // tracks current SGR state (zero = default)
 	for col := range width {
 		var cell te.Cell
@@ -142,7 +149,16 @@ func renderCellLine(sb *strings.Builder, row []te.Cell, width, rowIdx, cursorRow
 		// Determine target attributes for this cell
 		target := cell.Attr
 		if isCursor {
-			target.Reverse = !target.Reverse
+			if disconnected {
+				// Red inverse X to show the cursor is inactive
+				target = te.Attr{
+					Reverse: true,
+					Fg:      te.Color{Mode: te.ColorANSI16, Name: "red"},
+				}
+				cell.Data = "X"
+			} else {
+				target.Reverse = !target.Reverse
+			}
 		}
 
 		if target != cur {
@@ -336,15 +352,58 @@ func renderLogOverlay(m Model, base string, width, height int) string {
 	return lipgloss.NewCompositor(baseLayer, dialogLayer).Render()
 }
 
-func renderStatusOverlay(base, version, endpoint, localHostname string, status *protocol.StatusResponse, width, height int) string {
+func renderStatusOverlay(base string, m Model, width, height int) string {
 	var lines []string
 
 	lines = append(lines, "termd-tui:")
-	lines = append(lines, fmt.Sprintf("  Hostname:  %s", localHostname))
-	lines = append(lines, fmt.Sprintf("  Version:   %s", version))
-	lines = append(lines, fmt.Sprintf("  Endpoint:  %s", endpoint))
+	lines = append(lines, fmt.Sprintf("  Hostname:  %s", m.localHostname))
+	lines = append(lines, fmt.Sprintf("  Version:   %s", m.Version))
+	endpointStr := m.Endpoint
+	if m.connStatus == "reconnecting" {
+		endpointStr += " (disconnected)"
+	}
+	lines = append(lines, fmt.Sprintf("  Endpoint:  %s", endpointStr))
 	lines = append(lines, "")
+
+	lines = append(lines, "terminal:")
+	if term, ok := m.termEnv["TERM"]; ok {
+		lines = append(lines, fmt.Sprintf("  TERM:      %s", term))
+	}
+	if ct, ok := m.termEnv["COLORTERM"]; ok {
+		lines = append(lines, fmt.Sprintf("  COLORTERM: %s", ct))
+	}
+	if tp, ok := m.termEnv["TERM_PROGRAM"]; ok {
+		lines = append(lines, fmt.Sprintf("  Program:   %s", tp))
+	}
+	if m.keyboardFlags > 0 {
+		var caps []string
+		if m.keyboardFlags&1 != 0 {
+			caps = append(caps, "disambiguate")
+		}
+		if m.keyboardFlags&2 != 0 {
+			caps = append(caps, "event-types")
+		}
+		if m.keyboardFlags&4 != 0 {
+			caps = append(caps, "alt-keys")
+		}
+		if m.keyboardFlags&8 != 0 {
+			caps = append(caps, "all-as-escapes")
+		}
+		lines = append(lines, fmt.Sprintf("  Keyboard:  kitty (%s)", strings.Join(caps, ", ")))
+	} else {
+		lines = append(lines, "  Keyboard:  legacy")
+	}
+	if m.bgDark != nil {
+		if *m.bgDark {
+			lines = append(lines, "  Background: dark")
+		} else {
+			lines = append(lines, "  Background: light")
+		}
+	}
+	lines = append(lines, "")
+
 	lines = append(lines, "termd:")
+	status := m.serverStatus
 	if status != nil {
 		d := time.Duration(status.UptimeSeconds) * time.Second
 		lines = append(lines, fmt.Sprintf("  Hostname:  %s", status.Hostname))
@@ -429,14 +488,15 @@ func renderHelpOverlay(base string, cursor, width, height int) string {
 }
 
 var (
-	barStyle     = lipgloss.NewStyle().Faint(true)
-	barBoldStyle = lipgloss.NewStyle().Bold(true)
+	barStyle        = lipgloss.NewStyle().Faint(true)
+	barBoldStyle    = lipgloss.NewStyle().Bold(true)
+	barRedBoldStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1"))
 )
 
 // renderChromeBar renders a line like: ─ left ──── right ─ suffix ─
 // left, right, and suffix are optional. suffix is rendered bold (not faint).
 // The line fills to width with ─ characters.
-func renderChromeBar(left, right, suffix string, rightBold bool, width int) string {
+func renderChromeBar(left, right, suffix string, rightBold, rightRed bool, width int) string {
 	var sb strings.Builder
 	used := 0
 
@@ -476,9 +536,13 @@ func renderChromeBar(left, right, suffix string, rightBold bool, width int) stri
 	// Right content
 	var result string
 	if right != "" && rightBold {
-		// Faint everything up to here, then bold "• right •"
+		// Faint everything up to here, then bold (or red+bold) "• right •"
 		result = barStyle.Render(sb.String())
-		result += barBoldStyle.Render("• " + right + " •")
+		style := barBoldStyle
+		if rightRed {
+			style = barRedBoldStyle
+		}
+		result += style.Render("• " + right + " •")
 	} else {
 		if right != "" {
 			sb.WriteString("• ")
@@ -498,7 +562,7 @@ func renderChromeBar(left, right, suffix string, rightBold bool, width int) stri
 	return result
 }
 
-func renderTabBar(regionName, status, suffix string, prefixMode bool, width int) string {
-	return renderChromeBar(regionName, status, suffix, prefixMode, width)
+func renderTabBar(regionName, status, suffix string, rightBold, rightRed bool, width int) string {
+	return renderChromeBar(regionName, status, suffix, rightBold, rightRed, width)
 }
 

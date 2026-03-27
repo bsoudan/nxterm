@@ -21,6 +21,7 @@ type LogEntryMsg struct{}
 
 type showHintMsg struct{}
 type hideHintMsg struct{}
+type reconnectTickMsg struct{}
 
 type Model struct {
 	client      *client.Client
@@ -44,9 +45,13 @@ type Model struct {
 	LogRing     *termlog.LogRingBuffer
 	regionID    string
 	regionName  string
-	connStatus    string
-	localHostname string
-	localScreen   *te.Screen
+	connStatus  string
+	retryAt     time.Time
+	localHostname  string
+	termEnv        map[string]string
+	keyboardFlags  int  // kitty keyboard protocol flags (0 = not supported)
+	bgDark         *bool // nil = unknown, true = dark, false = light
+	localScreen    *te.Screen
 	lines       []string
 	cursorRow   int
 	cursorCol   int
@@ -307,11 +312,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case DisconnectedMsg:
-		m.connStatus = "reconnecting..."
-		return m, waitForUpdate(m.client)
+		m.connStatus = "reconnecting"
+		m.retryAt = msg.RetryAt
+		return m, tea.Batch(
+			waitForUpdate(m.client),
+			tea.Tick(time.Second, func(time.Time) tea.Msg { return reconnectTickMsg{} }),
+		)
 
 	case ReconnectedMsg:
 		m.connStatus = "connected"
+		m.retryAt = time.Time{}
 		// Re-subscribe to the previous region
 		if m.regionID != "" {
 			return m, tea.Batch(
@@ -348,8 +358,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.showHint = false
 		return m, nil
 
+	case reconnectTickMsg:
+		if m.connStatus == "reconnecting" {
+			return m, tea.Tick(time.Second, func(time.Time) tea.Msg { return reconnectTickMsg{} })
+		}
+		return m, nil
+
 	case protocol.StatusResponse:
 		m.serverStatus = &msg
+		return m, nil
+
+	case tea.KeyboardEnhancementsMsg:
+		m.keyboardFlags = msg.Flags
+		return m, nil
+
+	case tea.BackgroundColorMsg:
+		dark := msg.IsDark()
+		m.bgDark = &dark
+		return m, nil
+
+	case tea.EnvMsg:
+		m.termEnv = make(map[string]string)
+		for _, key := range []string{"TERM", "COLORTERM", "TERM_PROGRAM"} {
+			if v := msg.Getenv(key); v != "" {
+				m.termEnv[key] = v
+			}
+		}
 		return m, nil
 
 	case prefixStartedMsg:

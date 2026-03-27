@@ -587,7 +587,7 @@ func TestLogViewerOverlay(t *testing.T) {
 	defer serverCleanup()
 
 	cmd := exec.Command("termd-tui", "--socket", socketPath, "--debug", "--command", "bash --norc")
-	cmd.Env = append(os.Environ(), "TERM=dumb")
+	cmd.Env = append(testEnv(t), "TERM=dumb")
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 80})
 	if err != nil {
 		t.Fatalf("start frontend: %v", err)
@@ -790,7 +790,7 @@ func TestTCPTransport(t *testing.T) {
 
 	// Connect frontend via TCP
 	cmd := exec.Command("termd-tui", "--socket", "tcp:"+tcpAddr, "--command", "bash --norc")
-	cmd.Env = append(os.Environ(), "TERM=dumb")
+	cmd.Env = append(testEnv(t), "TERM=dumb")
 
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 80})
 	if err != nil {
@@ -831,7 +831,7 @@ func TestWebSocketTransport(t *testing.T) {
 
 	// Connect frontend via WebSocket
 	cmd := exec.Command("termd-tui", "--socket", "ws://"+wsAddr, "--command", "bash --norc")
-	cmd.Env = append(os.Environ(), "TERM=dumb")
+	cmd.Env = append(testEnv(t), "TERM=dumb")
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 80})
 	if err != nil {
 		t.Fatalf("start frontend via WS: %v", err)
@@ -856,6 +856,7 @@ func TestSSHTransport(t *testing.T) {
 		"--ssh-host-key", hostKeyPath,
 		"--ssh-no-auth",
 		"unix:"+socketPath, "ssh://127.0.0.1:0")
+	cmd.Env = testEnv(t)
 	stderrR, stderrW, _ := os.Pipe()
 	cmd.Stderr = stderrW
 	if err := cmd.Start(); err != nil {
@@ -904,7 +905,7 @@ func TestSSHTransport(t *testing.T) {
 
 	// Connect frontend via SSH
 	feCmd := exec.Command("termd-tui", "--socket", "ssh://"+sshAddr, "--command", "bash --norc")
-	feCmd.Env = append(os.Environ(), "TERM=dumb")
+	feCmd.Env = append(testEnv(t), "TERM=dumb")
 	ptmx, err := pty.StartWithSize(feCmd, &pty.Winsize{Rows: 24, Cols: 80})
 	if err != nil {
 		t.Fatalf("start frontend via SSH: %v", err)
@@ -996,7 +997,7 @@ func TestReconnectTCP(t *testing.T) {
 
 	// Connect frontend via TCP
 	cmd := exec.Command("termd-tui", "--socket", "tcp:"+tcpAddr, "--command", "bash --norc")
-	cmd.Env = append(os.Environ(), "TERM=dumb")
+	cmd.Env = append(testEnv(t), "TERM=dumb")
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 80})
 	if err != nil {
 		t.Fatalf("start frontend via TCP: %v", err)
@@ -1053,7 +1054,7 @@ func TestMultiTransportSharedRegion(t *testing.T) {
 
 	// Start frontend 2 via TCP (subscribes to the same region)
 	cmd := exec.Command("termd-tui", "--socket", "tcp:"+tcpAddr, "--command", "bash --norc")
-	cmd.Env = append(os.Environ(), "TERM=dumb")
+	cmd.Env = append(testEnv(t), "TERM=dumb")
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 80})
 	if err != nil {
 		t.Fatalf("start frontend 2 via TCP: %v", err)

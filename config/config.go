@@ -88,11 +88,14 @@ func LoadFrontendConfig(explicit string) (FrontendConfig, error) {
 func findConfig(appDir, filename string) string {
 	xdg := os.Getenv("XDG_CONFIG_HOME")
 	if xdg != "" {
+		// XDG_CONFIG_HOME is set — only look there.
 		p := filepath.Join(xdg, appDir, filename)
 		if _, err := os.Stat(p); err == nil {
 			return p
 		}
+		return ""
 	}
+	// Fall back to ~/.config
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""

@@ -18,8 +18,10 @@ import (
 	"termd/frontend/protocol"
 )
 
-// DisconnectedMsg is sent on the updates channel when the connection drops.
-type DisconnectedMsg struct{}
+// DisconnectedMsg is sent on the updates channel before each reconnect attempt.
+type DisconnectedMsg struct {
+	RetryAt time.Time // when the next reconnect attempt will happen
+}
 
 // ReconnectedMsg is sent on the updates channel when the connection is restored.
 type ReconnectedMsg struct{}
@@ -33,9 +35,9 @@ type Client struct {
 	conn     net.Conn
 	connDone chan struct{} // closed when the current connection's loops should stop
 
-	sendCh  chan []byte // stable across reconnects
-	updates chan any
-	closed  chan struct{} // closed on explicit Close()
+	sendCh    chan []byte // stable across reconnects
+	updates   chan any
+	closed    chan struct{} // closed on explicit Close()
 	closeOnce sync.Once
 }
 
@@ -45,7 +47,7 @@ func New(conn net.Conn, dialFn func() (net.Conn, error), processName string) *Cl
 	c := &Client{
 		dialFn:      dialFn,
 		processName: processName,
-		conn:        conn,
+		conn:     conn,
 		sendCh:      make(chan []byte, 64),
 		connDone:    make(chan struct{}),
 		updates:     make(chan any, 128),
@@ -73,6 +75,10 @@ func (c *Client) Send(msg any) error {
 		return nil
 	case <-c.closed:
 		return fmt.Errorf("client closed")
+	default:
+		// Channel full (disconnected, writeLoop not draining) — drop
+		// to keep callers like the raw input loop unblocked.
+		return nil
 	}
 }
 
@@ -96,7 +102,12 @@ func (c *Client) Close() {
 				conn.Write(data)
 			default:
 				c.mu.Lock()
-				close(c.connDone)
+				select {
+				case <-c.connDone:
+					// already closed by reconnect
+				default:
+					close(c.connDone)
+				}
 				c.conn.Close()
 				c.mu.Unlock()
 				return
@@ -177,25 +188,36 @@ func (c *Client) writeLoop() {
 }
 
 func (c *Client) reconnect() {
-	// Notify the model that the connection was lost.
-	select {
-	case c.updates <- DisconnectedMsg{}:
-	case <-c.closed:
-		close(c.updates)
-		return
-	}
-
 	// Close the old connection's loops.
 	c.mu.Lock()
 	close(c.connDone)
 	c.conn.Close()
 	c.mu.Unlock()
 
+	// Drain any queued sends — they're stale.
+	for {
+		select {
+		case <-c.sendCh:
+		default:
+			goto drained
+		}
+	}
+drained:
+
 	// Exponential backoff: 100ms, 200ms, 400ms, ... capped at 60s.
 	backoff := 100 * time.Millisecond
 	maxBackoff := 60 * time.Second
 
 	for {
+		// Notify the model with the time of the next retry.
+		retryAt := time.Now().Add(backoff)
+		select {
+		case c.updates <- DisconnectedMsg{RetryAt: retryAt}:
+		case <-c.closed:
+			close(c.updates)
+			return
+		}
+
 		select {
 		case <-c.closed:
 			close(c.updates)

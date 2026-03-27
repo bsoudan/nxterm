@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"log/slog"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"termd/frontend/client"
@@ -67,7 +68,9 @@ type ServerErrorMsg struct {
 	Message string
 }
 
-type DisconnectedMsg struct{}
+type DisconnectedMsg struct {
+	RetryAt time.Time
+}
 type ReconnectedMsg struct{}
 
 // convertProtocolMsg converts a protocol-layer message to the corresponding
@@ -107,7 +110,7 @@ func convertProtocolMsg(msg any) tea.Msg {
 	case protocol.StatusResponse:
 		return m
 	case client.DisconnectedMsg:
-		return DisconnectedMsg{}
+		return DisconnectedMsg{RetryAt: m.RetryAt}
 	case client.ReconnectedMsg:
 		return ReconnectedMsg{}
 	default:

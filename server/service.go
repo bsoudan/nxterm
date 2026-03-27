@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/urfave/cli/v3"
 )
@@ -127,6 +128,7 @@ func cmdStart(_ context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("start: %s", out)
 	}
 
+	time.Sleep(1 * time.Second)
 	return cmdStatus(context.Background(), cmd)
 }
 
@@ -220,6 +222,7 @@ func cmdRestart(ctx context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("start: %s", out)
 	}
 
+	time.Sleep(1 * time.Second)
 	return cmdStatus(ctx, cmd)
 }
 
