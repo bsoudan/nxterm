@@ -1,8 +1,10 @@
 package e2e
 
 import (
+	"bufio"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -836,6 +838,78 @@ func TestWebSocketTransport(t *testing.T) {
 
 	pio.Write([]byte("echo ws_works\r"))
 	pio.WaitFor(t, "ws_works", 10*time.Second)
+}
+
+func TestSSHTransport(t *testing.T) {
+	dir := t.TempDir()
+	hostKeyPath := filepath.Join(dir, "host_key")
+
+	// Start server with Unix + SSH (no auth keys = accept all for test)
+	socketPath := filepath.Join(dir, "termd.sock")
+	cmd := exec.Command("termd", "--socket", socketPath,
+		"--listen", "ssh:127.0.0.1:0",
+		"--ssh-host-key", hostKeyPath)
+	stderrR, stderrW, _ := os.Pipe()
+	cmd.Stderr = stderrW
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	stderrW.Close()
+
+	// Parse SSH listen address from stderr
+	lines := make(chan string, 16)
+	go func() {
+		scanner := bufio.NewScanner(stderrR)
+		for scanner.Scan() {
+			lines <- scanner.Text()
+		}
+		close(lines)
+		stderrR.Close()
+	}()
+
+	var sshAddr string
+	deadline := time.Now().Add(5 * time.Second)
+	found := 0
+	for found < 2 && time.Now().Before(deadline) {
+		select {
+		case line := <-lines:
+			if idx := strings.Index(line, "addr="); idx >= 0 {
+				addr := line[idx+len("addr="):]
+				if sp := strings.IndexByte(addr, ' '); sp >= 0 {
+					addr = addr[:sp]
+				}
+				if strings.Contains(addr, ":") {
+					sshAddr = addr
+				}
+				found++
+			}
+		case <-time.After(5 * time.Second):
+		}
+	}
+	defer func() { cmd.Process.Kill(); cmd.Wait() }()
+
+	if sshAddr == "" {
+		t.Fatal("could not find SSH listen address")
+	}
+
+	// Spawn a region via Unix socket
+	_ = runTermctl(t, socketPath, "region", "spawn", "bash", "--norc")
+
+	// Connect frontend via SSH
+	feCmd := exec.Command("termd-frontend", "--socket", "ssh://"+sshAddr, "--command", "bash --norc")
+	feCmd.Env = append(os.Environ(), "TERM=dumb")
+	ptmx, err := pty.StartWithSize(feCmd, &pty.Winsize{Rows: 24, Cols: 80})
+	if err != nil {
+		t.Fatalf("start frontend via SSH: %v", err)
+	}
+	pio := newPtyIO(ptmx, 80, 24)
+	defer func() { feCmd.Process.Kill(); feCmd.Wait(); ptmx.Close() }()
+
+	pio.WaitFor(t, "bash", 10*time.Second)
+	pio.WaitFor(t, "termd$ ", 10*time.Second)
+
+	pio.Write([]byte("echo ssh_works\r"))
+	pio.WaitFor(t, "ssh_works", 10*time.Second)
 }
 
 func TestRegionKilledExternally(t *testing.T) {

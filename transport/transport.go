@@ -42,6 +42,10 @@ func Dial(spec string) (net.Conn, error) {
 		return dialWS("ws://" + addr)
 	case "wss":
 		return dialWS("wss://" + addr)
+	case "ssh":
+		// Parse user@host:port from addr
+		user, host := parseSSHAddr(addr)
+		return DialSSH(host, user)
 	default:
 		return nil, fmt.Errorf("unsupported dial scheme: %q", scheme)
 	}
@@ -54,6 +58,13 @@ func Cleanup(spec string) {
 	if scheme == "unix" {
 		os.Remove(addr)
 	}
+}
+
+func parseSSHAddr(addr string) (user, host string) {
+	if at := strings.Index(addr, "@"); at >= 0 {
+		return addr[:at], addr[at+1:]
+	}
+	return "", addr
 }
 
 func parseSpec(spec string) (scheme, addr string) {

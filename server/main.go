@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	tlog "termd/frontend/log"
@@ -16,16 +17,19 @@ func printUsage() {
 	fmt.Fprint(os.Stderr, `Usage: termd [options]
 
 Options:
-  -l, --listen <spec>  Listen address (repeatable; default: unix:/tmp/termd.sock)
-                       Schemes: unix:<path>, tcp:<host:port>
-  -s, --socket <path>  Shorthand for --listen unix:<path>
-  -d, --debug          Enable debug logging (env: TERMD_DEBUG=1)
-  -h, --help           Show this help
+  -l, --listen <spec>       Listen address (repeatable; default: unix:/tmp/termd.sock)
+                             Schemes: unix:<path>, tcp:<host:port>, ws:<host:port>, ssh:<host:port>
+  -s, --socket <path>       Shorthand for --listen unix:<path>
+      --ssh-host-key <path> SSH host key file (auto-generated if missing)
+      --ssh-auth-keys <path> SSH authorized_keys file (if omitted, accepts all keys)
+  -d, --debug               Enable debug logging (env: TERMD_DEBUG=1)
+  -h, --help                Show this help
 `)
 }
 
 func main() {
 	var listenSpecs []string
+	var sshHostKey, sshAuthKeys string
 	debug := false
 
 	args := os.Args[1:]
@@ -50,6 +54,20 @@ func main() {
 				os.Exit(1)
 			}
 			listenSpecs = append(listenSpecs, args[i])
+		case "--ssh-host-key":
+			i++
+			if i >= len(args) {
+				fmt.Fprintln(os.Stderr, "error: --ssh-host-key requires a path argument")
+				os.Exit(1)
+			}
+			sshHostKey = args[i]
+		case "--ssh-auth-keys":
+			i++
+			if i >= len(args) {
+				fmt.Fprintln(os.Stderr, "error: --ssh-auth-keys requires a path argument")
+				os.Exit(1)
+			}
+			sshAuthKeys = args[i]
 		default:
 			fmt.Fprintf(os.Stderr, "error: unknown option: %s\n", args[i])
 			printUsage()
@@ -79,7 +97,17 @@ func main() {
 
 	listeners := make([]net.Listener, 0, len(listenSpecs))
 	for _, spec := range listenSpecs {
-		ln, err := transport.Listen(spec)
+		var ln net.Listener
+		var err error
+		if strings.HasPrefix(spec, "ssh:") || strings.HasPrefix(spec, "ssh://") {
+			addr := strings.TrimPrefix(strings.TrimPrefix(spec, "ssh:"), "//")
+			ln, err = transport.ListenSSH(addr, transport.SSHListenerConfig{
+				HostKeyPath:        sshHostKey,
+				AuthorizedKeysPath: sshAuthKeys,
+			})
+		} else {
+			ln, err = transport.Listen(spec)
+		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: listen %s: %v\n", spec, err)
 			os.Exit(1)
