@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net"
+	"os"
 	"sync"
 
 	"termd/frontend/protocol"
@@ -177,6 +178,16 @@ func (c *Client) handleMessage(line []byte) {
 	default:
 		slog.Debug("unknown message type", "client_id", c.id, "type", env.Type)
 	}
+}
+
+func (c *Client) sendIdentify() {
+	hostname, _ := os.Hostname()
+	c.SendMessage(protocol.Identify{
+		Type:     "identify",
+		Hostname: hostname,
+		Process:  "termd",
+		Pid:      os.Getpid(),
+	})
 }
 
 func (c *Client) handleIdentify(msg protocol.Identify) {

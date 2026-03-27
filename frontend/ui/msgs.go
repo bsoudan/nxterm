@@ -58,6 +58,10 @@ type ListRegionsResponseMsg struct {
 	Message string
 }
 
+type ServerIdentifyMsg struct {
+	Hostname string
+}
+
 type ServerErrorMsg struct {
 	Context string
 	Message string
@@ -70,6 +74,8 @@ type ReconnectedMsg struct{}
 // tea.Msg. Returns nil for unrecognized types.
 func convertProtocolMsg(msg any) tea.Msg {
 	switch m := msg.(type) {
+	case protocol.Identify:
+		return ServerIdentifyMsg{Hostname: m.Hostname}
 	case protocol.ScreenUpdate:
 		return ScreenUpdateMsg{RegionID: m.RegionID, CursorRow: m.CursorRow, CursorCol: m.CursorCol, Lines: m.Lines, Cells: m.Cells}
 	case protocol.TerminalEvents:

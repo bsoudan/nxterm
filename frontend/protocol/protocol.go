@@ -212,6 +212,9 @@ func ParseInbound(line []byte) (any, error) {
 	}
 
 	switch env.Type {
+	case "identify":
+		var msg Identify
+		return msg, json.Unmarshal(line, &msg)
 	case "spawn_response":
 		var msg SpawnResponse
 		return msg, json.Unmarshal(line, &msg)

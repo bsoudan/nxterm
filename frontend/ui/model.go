@@ -3,6 +3,7 @@ package ui
 import (
 	"encoding/base64"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -40,8 +41,9 @@ type Model struct {
 	LogRing     *termlog.LogRingBuffer
 	regionID    string
 	regionName  string
-	connStatus  string
-	localScreen *te.Screen
+	connStatus    string
+	localHostname string
+	localScreen   *te.Screen
 	lines       []string
 	cursorRow   int
 	cursorCol   int
@@ -62,16 +64,18 @@ func (m Model) contentHeight() int {
 }
 
 func NewModel(c *client.Client, cmd string, args []string, ring *termlog.LogRingBuffer, endpoint string) Model {
+	hostname, _ := os.Hostname()
 	return Model{
-		client:     c,
-		cmd:        cmd,
-		cmdArgs:    args,
-		Endpoint:   endpoint,
-		RegionReady: make(chan string, 1),
-		FocusCh:    make(chan chan struct{}, 1),
-		LogRing:    ring,
-		connStatus: "connected",
-		status:     "connecting...",
+		client:        c,
+		cmd:           cmd,
+		cmdArgs:       args,
+		Endpoint:      endpoint,
+		localHostname: hostname,
+		RegionReady:   make(chan string, 1),
+		FocusCh:       make(chan chan struct{}, 1),
+		LogRing:       ring,
+		connStatus:    "connected",
+		status:        "connecting...",
 	}
 }
 
@@ -93,6 +97,12 @@ func (m Model) Init() tea.Cmd {
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case ServerIdentifyMsg:
+		if msg.Hostname != m.localHostname {
+			m.Endpoint = m.localHostname + " -> " + m.Endpoint
+		}
+		return m, waitForUpdate(m.client)
+
 	case tea.WindowSizeMsg:
 		m.termWidth = msg.Width
 		m.termHeight = msg.Height

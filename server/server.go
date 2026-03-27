@@ -103,6 +103,7 @@ func (s *Server) acceptClient(conn net.Conn) {
 	s.mu.Unlock()
 
 	slog.Debug("client connected", "id", id)
+	client.sendIdentify()
 	go client.ReadLoop()
 }
 
