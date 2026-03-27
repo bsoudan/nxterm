@@ -15,11 +15,11 @@ changelog:
 	@if git diff --quiet HEAD 2>/dev/null && test -z "$$(git ls-files --others --exclude-standard)"; then \
 		:; \
 	else \
-		printf '%-20s %s\n' "$$(git describe --tags --always --dirty 2>/dev/null)" "$$(git status --short | tr '\n' ' ')" > frontend/changelog.txt; \
+		printf '%18s %s\n' "$$(git describe --tags --always --dirty='*' 2>/dev/null):" "$$(git status --short | tr '\n' ' ')" > frontend/changelog.txt; \
 	fi
 	git log --format='%H %s' -100 | while read hash rest; do \
 		ver=$$(git describe --tags --always $$hash 2>/dev/null); \
-		printf '%-20s %s\n' "$$ver" "$$rest"; \
+		printf '%18s %s\n' "$$ver:" "$$rest"; \
 	done >> frontend/changelog.txt
 
 build-tui: changelog
