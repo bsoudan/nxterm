@@ -18,10 +18,13 @@ import (
 	"termd/transport"
 )
 
+var version = "dev"
+
 func main() {
 	app := &cli.Command{
-		Name:  "termd-frontend",
-		Usage: "terminal multiplexer TUI client",
+		Name:    "termd-frontend",
+		Usage:   "terminal multiplexer TUI client",
+		Version: version,
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:    "socket",
@@ -100,7 +103,7 @@ func runFrontend(_ context.Context, cmd *cli.Command) error {
 
 	pipeR, pipeW := io.Pipe()
 
-	model := ui.NewModel(c, shell, shellArgs, logRing, endpoint)
+	model := ui.NewModel(c, shell, shellArgs, logRing, endpoint, version)
 	p := tea.NewProgram(model,
 		tea.WithInput(pipeR),
 		tea.WithColorProfile(colorprofile.TrueColor),

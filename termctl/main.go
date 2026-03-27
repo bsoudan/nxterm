@@ -17,10 +17,13 @@ import (
 	"termd/transport"
 )
 
+var version = "dev"
+
 func main() {
 	app := &cli.Command{
-		Name:  "termctl",
-		Usage: "control the termd server",
+		Name:    "termctl",
+		Usage:   "control the termd server",
+		Version: version,
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:    "socket",

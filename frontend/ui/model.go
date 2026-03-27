@@ -27,6 +27,7 @@ type Model struct {
 	cmd         string
 	cmdArgs     []string
 	Endpoint    string
+	Version     string
 	RegionReady chan string
 	FocusCh     chan chan struct{} // raw loop reads this to enter focus mode
 	Detached    bool
@@ -63,13 +64,14 @@ func (m Model) contentHeight() int {
 	return h
 }
 
-func NewModel(c *client.Client, cmd string, args []string, ring *termlog.LogRingBuffer, endpoint string) Model {
+func NewModel(c *client.Client, cmd string, args []string, ring *termlog.LogRingBuffer, endpoint, version string) Model {
 	hostname, _ := os.Hostname()
 	return Model{
 		client:        c,
 		cmd:           cmd,
 		cmdArgs:       args,
 		Endpoint:      endpoint,
+		Version:       version,
 		localHostname: hostname,
 		RegionReady:   make(chan string, 1),
 		FocusCh:       make(chan chan struct{}, 1),

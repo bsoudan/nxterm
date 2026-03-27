@@ -57,7 +57,11 @@ func renderView(m Model) string {
 		rightInfo = "ctrl+b ? for help"
 		rightBold = true
 	}
-	sb.WriteString(renderTabBar(m.regionName, rightInfo, rightBold, width))
+	suffix := "termd-tui"
+	if m.Version != "" && (m.showHint || m.showHelp) {
+		suffix = "termd-tui " + m.Version
+	}
+	sb.WriteString(renderTabBar(m.regionName, rightInfo, suffix, rightBold, width))
 	sb.WriteByte('\n')
 
 	contentHeight := height - 1 // tab bar only
@@ -438,7 +442,7 @@ func renderChromeBar(left, right, suffix string, rightBold bool, width int) stri
 	return result
 }
 
-func renderTabBar(regionName, status string, prefixMode bool, width int) string {
-	return renderChromeBar(regionName, status, "termd-tui", prefixMode, width)
+func renderTabBar(regionName, status, suffix string, prefixMode bool, width int) string {
+	return renderChromeBar(regionName, status, suffix, prefixMode, width)
 }
 
