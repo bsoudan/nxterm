@@ -43,15 +43,20 @@ func startServer(t *testing.T) (string, func()) {
 	}
 }
 
-// startServerWithTCP starts a server listening on both a Unix socket and TCP.
-// Returns the socket path, the TCP address (e.g., "127.0.0.1:12345"), and a cleanup func.
-func startServerWithTCP(t *testing.T) (socketPath, tcpAddr string, cleanup func()) {
+// startServerWithListeners starts a server with the Unix socket plus extra --listen specs.
+// It parses the assigned addresses from server stderr.
+// Returns the socket path, a map of scheme→address for each extra listener, and a cleanup func.
+func startServerWithListeners(t *testing.T, extraListens ...string) (socketPath string, addrs map[string]string, cleanup func()) {
 	t.Helper()
 
 	socketPath = filepath.Join(t.TempDir(), "termd.sock")
-	cmd := exec.Command("termd", "--socket", socketPath, "--listen", "tcp:127.0.0.1:0")
+	args := []string{"--socket", socketPath}
+	for _, l := range extraListens {
+		args = append(args, "--listen", l)
+	}
+	cmd := exec.Command("termd", args...)
 
-	// Capture stderr to extract the TCP listen address
+	// Capture stderr to extract listen addresses
 	stderrR, stderrW, _ := os.Pipe()
 	cmd.Stderr = stderrW
 	if err := cmd.Start(); err != nil {
@@ -59,34 +64,43 @@ func startServerWithTCP(t *testing.T) (socketPath, tcpAddr string, cleanup func(
 	}
 	stderrW.Close()
 
-	// Read stderr lines until we find the TCP address
-	scanner := bufio.NewScanner(stderrR)
-	deadline := time.Now().Add(5 * time.Second)
-	for scanner.Scan() && time.Now().Before(deadline) {
-		line := scanner.Text()
-		// Look for "listening addr=127.0.0.1:NNNNN"
-		if idx := strings.Index(line, "addr=127.0.0.1:"); idx >= 0 {
-			tcpAddr = line[idx+len("addr="):]
-			// Trim any trailing fields (slog format: key=value pairs)
-			if sp := strings.IndexByte(tcpAddr, ' '); sp >= 0 {
-				tcpAddr = tcpAddr[:sp]
-			}
-			break
-		}
-	}
-	// Continue draining stderr in background
+	// Read stderr lines in a goroutine, send them to a channel.
+	addrs = make(map[string]string)
+	lines := make(chan string, 16)
 	go func() {
+		scanner := bufio.NewScanner(stderrR)
 		for scanner.Scan() {
+			lines <- scanner.Text()
 		}
+		close(lines)
 		stderrR.Close()
 	}()
 
-	if tcpAddr == "" {
-		cmd.Process.Kill()
-		t.Fatal("could not find TCP listen address in server stderr")
+	// Wait for N+1 "listening" lines (1 unix + N extra)
+	need := len(extraListens) + 1
+	deadline := time.Now().Add(5 * time.Second)
+	for need > 0 && time.Now().Before(deadline) {
+		select {
+		case line, ok := <-lines:
+			if !ok {
+				break
+			}
+			if idx := strings.Index(line, "addr="); idx >= 0 {
+				addr := line[idx+len("addr="):]
+				if sp := strings.IndexByte(addr, ' '); sp >= 0 {
+					addr = addr[:sp]
+				}
+				if strings.Contains(addr, ":") {
+					addrs[addr] = addr
+				}
+				need--
+			}
+		case <-time.After(5 * time.Second):
+			break
+		}
 	}
 
-	// Wait for Unix socket too
+	// Wait for Unix socket
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(socketPath); err == nil {
 			break
@@ -94,10 +108,23 @@ func startServerWithTCP(t *testing.T) (socketPath, tcpAddr string, cleanup func(
 		runtime.Gosched()
 	}
 
-	return socketPath, tcpAddr, func() {
+	return socketPath, addrs, func() {
 		cmd.Process.Kill()
 		cmd.Wait()
 	}
+}
+
+// startServerWithTCP is a convenience wrapper for startServerWithListeners.
+func startServerWithTCP(t *testing.T) (socketPath, tcpAddr string, cleanup func()) {
+	t.Helper()
+	sock, addrs, cl := startServerWithListeners(t, "tcp:127.0.0.1:0")
+	for _, a := range addrs {
+		tcpAddr = a
+	}
+	if tcpAddr == "" {
+		t.Fatal("could not find TCP listen address")
+	}
+	return sock, tcpAddr, cl
 }
 
 func startFrontend(t *testing.T, socketPath string) (*ptyIO, func()) {

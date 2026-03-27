@@ -806,6 +806,38 @@ func TestTCPTransport(t *testing.T) {
 	pio.WaitFor(t, "tcp_works", 10*time.Second)
 }
 
+func TestWebSocketTransport(t *testing.T) {
+	socketPath, addrs, serverCleanup := startServerWithListeners(t, "ws:127.0.0.1:0")
+	defer serverCleanup()
+
+	var wsAddr string
+	for _, a := range addrs {
+		wsAddr = a
+	}
+	if wsAddr == "" {
+		t.Fatal("could not find WS listen address")
+	}
+
+	// Spawn a region via Unix socket
+	_ = runTermctl(t, socketPath, "region", "spawn", "bash", "--norc")
+
+	// Connect frontend via WebSocket
+	cmd := exec.Command("termd-frontend", "--socket", "ws://"+wsAddr, "--command", "bash --norc")
+	cmd.Env = append(os.Environ(), "TERM=dumb")
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 80})
+	if err != nil {
+		t.Fatalf("start frontend via WS: %v", err)
+	}
+	pio := newPtyIO(ptmx, 80, 24)
+	defer func() { cmd.Process.Kill(); cmd.Wait(); ptmx.Close() }()
+
+	pio.WaitFor(t, "bash", 10*time.Second)
+	pio.WaitFor(t, "termd$ ", 10*time.Second)
+
+	pio.Write([]byte("echo ws_works\r"))
+	pio.WaitFor(t, "ws_works", 10*time.Second)
+}
+
 func TestRegionKilledExternally(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()

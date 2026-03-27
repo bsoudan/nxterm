@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"fmt"
 	"io"
 	"net"
 	"path/filepath"
@@ -20,6 +21,9 @@ func TestParseSpec(t *testing.T) {
 		{"tcp:0.0.0.0:0", "tcp", "0.0.0.0:0"},
 		{"tcp://127.0.0.1:9090", "tcp", "127.0.0.1:9090"},
 		{"unix:///tmp/termd.sock", "unix", "/tmp/termd.sock"},
+		{"ws:127.0.0.1:8080", "ws", "127.0.0.1:8080"},
+		{"ws://127.0.0.1:8080", "ws", "127.0.0.1:8080"},
+		{"wss://host:443/ws", "wss", "host:443/ws"},
 	}
 	for _, tt := range tests {
 		scheme, addr := parseSpec(tt.spec)
@@ -117,6 +121,18 @@ func TestListenUnknownScheme(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unknown scheme")
 	}
+}
+
+func TestWSRoundTrip(t *testing.T) {
+	ln, err := Listen("ws:127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	addr := ln.Addr().(*net.TCPAddr)
+	spec := "ws://127.0.0.1:" + fmt.Sprintf("%d", addr.Port)
+	roundTrip(t, ln, spec)
 }
 
 // bidirectional verifies data flows both ways.

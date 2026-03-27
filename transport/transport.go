@@ -23,6 +23,8 @@ func Listen(spec string) (net.Listener, error) {
 		return net.Listen("unix", addr)
 	case "tcp":
 		return net.Listen("tcp", addr)
+	case "ws":
+		return listenWS(addr)
 	default:
 		return nil, fmt.Errorf("unsupported listener scheme: %q", scheme)
 	}
@@ -36,6 +38,10 @@ func Dial(spec string) (net.Conn, error) {
 		return net.Dial("unix", addr)
 	case "tcp":
 		return net.Dial("tcp", addr)
+	case "ws":
+		return dialWS("ws://" + addr)
+	case "wss":
+		return dialWS("wss://" + addr)
 	default:
 		return nil, fmt.Errorf("unsupported dial scheme: %q", scheme)
 	}
