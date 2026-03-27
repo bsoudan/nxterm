@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/creack/pty"
 )
 
@@ -381,8 +382,13 @@ func TestColorRendering(t *testing.T) {
 
 	pio.WaitFor(t, "termd$ ", 10*time.Second)
 
-	// Produce colored output. The output line will start with "RED" at col 0.
-	pio.Write([]byte("echo -e '\\033[31mRED\\033[0m \\033[32mGRN\\033[0m \\033[1mBLD\\033[0m \\033[38;5;208mORNG\\033[0m'\r"))
+	// Produce colored output via printf using ansi constants converted to shell notation.
+	pio.Write([]byte("printf '" +
+		shellSGR(ansi.AttrRedForegroundColor) + "RED" + shellResetStyle + " " +
+		shellSGR(ansi.AttrGreenForegroundColor) + "GRN" + shellResetStyle + " " +
+		shellSGR(ansi.AttrBold) + "BLD" + shellResetStyle + " " +
+		shellSGR(ansi.AttrExtendedForegroundColor, 5, 208) + "ORNG" + shellResetStyle +
+		`\n'` + "\r"))
 
 	// Wait for the output line (starts with "RED" at col 0, not the command echo)
 	pio.WaitForScreen(t, func(lines []string) bool {
@@ -659,7 +665,9 @@ func TestSessionPersistence(t *testing.T) {
 	pio1.WaitFor(t, "termd$ ", 10*time.Second)
 
 	// Output colored text before detaching
-	pio1.Write([]byte("echo -e '\\033[31mCOLOR_PERSIST\\033[0m'\r"))
+	pio1.Write([]byte("printf '" +
+		shellSGR(ansi.AttrRedForegroundColor) + "COLOR_PERSIST" + shellResetStyle +
+		`\n'` + "\r"))
 	pio1.WaitForScreen(t, func(lines []string) bool {
 		for _, line := range lines {
 			if strings.HasPrefix(line, "COLOR_PERSIST") {

@@ -1,6 +1,10 @@
 package protocol
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/charmbracelet/x/ansi"
+)
 
 func TestColorSpecToSGR(t *testing.T) {
 	tests := []struct {
@@ -47,7 +51,7 @@ func TestCellSGR(t *testing.T) {
 		a    uint8
 		want string
 	}{
-		{"all defaults", "", "", 0, "\x1b[m"},
+		{"all defaults", "", "", 0, ansi.ResetStyle},
 		{"bold red fg", "red", "", 1, "\x1b[0;1;31m"},
 		{"underline blue bg", "", "blue", 4, "\x1b[0;4;44m"},
 		{"bold underline red fg blue bg", "red", "blue", 1 | 4, "\x1b[0;1;4;31;44m"},

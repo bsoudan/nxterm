@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	te "github.com/rcarmo/go-te/pkg/te"
 	"termd/frontend/protocol"
 )
@@ -109,9 +110,9 @@ func renderView(m Model) string {
 					ch = runes[col]
 				}
 				if showCursor && i == m.cursorRow && col == m.cursorCol {
-					sb.WriteString("\x1b[7m")
+					sb.WriteString(ansi.SGR(ansi.AttrReverse))
 					sb.WriteRune(ch)
-					sb.WriteString("\x1b[27m")
+					sb.WriteString(ansi.SGR(ansi.AttrNoReverse))
 				} else {
 					sb.WriteRune(ch)
 				}
@@ -178,7 +179,7 @@ func renderCellLine(sb *strings.Builder, row []te.Cell, width, rowIdx, cursorRow
 
 	// Reset at end of line so state doesn't leak
 	if cur != (te.Attr{}) {
-		sb.WriteString("\x1b[m")
+		sb.WriteString(ansi.ResetStyle)
 	}
 }
 
@@ -186,10 +187,10 @@ func renderCellLine(sb *strings.Builder, row []te.Cell, width, rowIdx, cursorRow
 func sgrTransition(from, to te.Attr) string {
 	// If going back to default, just reset
 	if to == (te.Attr{}) {
-		return "\x1b[m"
+		return ansi.ResetStyle
 	}
 
-	var params []string
+	var attrs []ansi.Attr
 
 	// If any attribute was turned OFF that can't be individually disabled,
 	// or if it's simpler, do a full reset first.
@@ -198,88 +199,89 @@ func sgrTransition(from, to te.Attr) string {
 		(from.Conceal && !to.Conceal)
 
 	if needsReset {
-		params = append(params, "0")
+		attrs = append(attrs, ansi.AttrReset)
 		from = te.Attr{} // reset baseline
 	}
 
 	if to.Bold && !from.Bold {
-		params = append(params, "1")
+		attrs = append(attrs, ansi.AttrBold)
 	}
 	if to.Italics && !from.Italics {
-		params = append(params, "3")
+		attrs = append(attrs, ansi.AttrItalic)
 	} else if !to.Italics && from.Italics {
-		params = append(params, "23")
+		attrs = append(attrs, ansi.AttrNoItalic)
 	}
 	if to.Underline && !from.Underline {
-		params = append(params, "4")
+		attrs = append(attrs, ansi.AttrUnderline)
 	} else if !to.Underline && from.Underline {
-		params = append(params, "24")
+		attrs = append(attrs, ansi.AttrNoUnderline)
 	}
 	if to.Blink && !from.Blink {
-		params = append(params, "5")
+		attrs = append(attrs, ansi.AttrBlink)
 	}
 	if to.Reverse && !from.Reverse {
-		params = append(params, "7")
+		attrs = append(attrs, ansi.AttrReverse)
 	} else if !to.Reverse && from.Reverse {
-		params = append(params, "27")
+		attrs = append(attrs, ansi.AttrNoReverse)
 	}
 	if to.Conceal && !from.Conceal {
-		params = append(params, "8")
+		attrs = append(attrs, ansi.AttrConceal)
 	}
 	if to.Strikethrough && !from.Strikethrough {
-		params = append(params, "9")
+		attrs = append(attrs, ansi.AttrStrikethrough)
 	} else if !to.Strikethrough && from.Strikethrough {
-		params = append(params, "29")
+		attrs = append(attrs, ansi.AttrNoStrikethrough)
 	}
 
 	if to.Fg != from.Fg {
-		params = append(params, teColorSGR(to.Fg, false))
+		attrs = append(attrs, teColorAttrs(to.Fg, false)...)
 	}
 	if to.Bg != from.Bg {
-		params = append(params, teColorSGR(to.Bg, true))
+		attrs = append(attrs, teColorAttrs(to.Bg, true)...)
 	}
 
-	if len(params) == 0 {
+	if len(attrs) == 0 {
 		return ""
 	}
-	return "\x1b[" + strings.Join(params, ";") + "m"
+
+	return ansi.SGR(attrs...)
 }
 
-// teColorSGR converts a go-te Color directly to its SGR parameter string.
-func teColorSGR(c te.Color, isBg bool) string {
+// teColorAttrs converts a go-te Color to ansi.Attr values for use with ansi.SGR.
+func teColorAttrs(c te.Color, isBg bool) []ansi.Attr {
 	switch c.Mode {
 	case te.ColorDefault:
 		if isBg {
-			return "49"
+			return []ansi.Attr{ansi.AttrDefaultBackgroundColor}
 		}
-		return "39"
+		return []ansi.Attr{ansi.AttrDefaultForegroundColor}
 	case te.ColorANSI16:
 		if isBg {
-			if code, ok := protocol.BgSGR[c.Name]; ok {
-				return code
+			if code, ok := protocol.BgSGRCode[c.Name]; ok {
+				return []ansi.Attr{code}
 			}
-			return "49"
+			return []ansi.Attr{ansi.AttrDefaultBackgroundColor}
 		}
-		if code, ok := protocol.FgSGR[c.Name]; ok {
-			return code
+		if code, ok := protocol.FgSGRCode[c.Name]; ok {
+			return []ansi.Attr{code}
 		}
-		return "39"
+		return []ansi.Attr{ansi.AttrDefaultForegroundColor}
 	case te.ColorANSI256:
 		if isBg {
-			return fmt.Sprintf("48;5;%d", c.Index)
+			return []ansi.Attr{ansi.AttrExtendedBackgroundColor, 5, ansi.Attr(c.Index)}
 		}
-		return fmt.Sprintf("38;5;%d", c.Index)
+		return []ansi.Attr{ansi.AttrExtendedForegroundColor, 5, ansi.Attr(c.Index)}
 	case te.ColorTrueColor:
 		r, g, b := protocol.ParseHexColor(c.Name)
 		if isBg {
-			return fmt.Sprintf("48;2;%d;%d;%d", r, g, b)
+			return []ansi.Attr{ansi.AttrExtendedBackgroundColor, 2, ansi.Attr(r), ansi.Attr(g), ansi.Attr(b)}
 		}
-		return fmt.Sprintf("38;2;%d;%d;%d", r, g, b)
+		return []ansi.Attr{ansi.AttrExtendedForegroundColor, 2, ansi.Attr(r), ansi.Attr(g), ansi.Attr(b)}
 	}
 	if isBg {
-		return "49"
+		return []ansi.Attr{ansi.AttrDefaultBackgroundColor}
 	}
-	return "39"
+	return []ansi.Attr{ansi.AttrDefaultForegroundColor}
 }
 
 func renderScrollableOverlay(m Model, base string, width, height int) string {

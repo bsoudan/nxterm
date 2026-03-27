@@ -1,6 +1,10 @@
 package protocol
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/charmbracelet/x/ansi"
+)
 
 // ANSI16 color names used by go-te, mapped to their palette index (0-15).
 var ANSI16NameToIndex = map[string]uint8{
@@ -10,7 +14,7 @@ var ANSI16NameToIndex = map[string]uint8{
 	"brightblue": 12, "brightmagenta": 13, "brightcyan": 14, "brightwhite": 15,
 }
 
-// Foreground SGR codes for ANSI16 color names.
+// Foreground SGR codes for ANSI16 color names (string form, used by ColorSpecToSGR).
 var FgSGR = map[string]string{
 	"black": "30", "red": "31", "green": "32", "brown": "33",
 	"blue": "34", "magenta": "35", "cyan": "36", "white": "37",
@@ -19,13 +23,31 @@ var FgSGR = map[string]string{
 	"brightblue": "94", "brightmagenta": "95", "brightcyan": "96", "brightwhite": "97",
 }
 
-// Background SGR codes for ANSI16 color names.
+// Background SGR codes for ANSI16 color names (string form, used by ColorSpecToSGR).
 var BgSGR = map[string]string{
 	"black": "40", "red": "41", "green": "42", "brown": "43",
 	"blue": "44", "magenta": "45", "cyan": "46", "white": "47",
 	"default": "49",
 	"brightblack": "100", "brightred": "101", "brightgreen": "102", "brightbrown": "103",
 	"brightblue": "104", "brightmagenta": "105", "brightcyan": "106", "brightwhite": "107",
+}
+
+// FgSGRCode maps ANSI16 color names to integer SGR codes (used by teColorAttrs).
+var FgSGRCode = map[string]int{
+	"black": 30, "red": 31, "green": 32, "brown": 33,
+	"blue": 34, "magenta": 35, "cyan": 36, "white": 37,
+	"default": 39,
+	"brightblack": 90, "brightred": 91, "brightgreen": 92, "brightbrown": 93,
+	"brightblue": 94, "brightmagenta": 95, "brightcyan": 96, "brightwhite": 97,
+}
+
+// BgSGRCode maps ANSI16 color names to integer SGR codes (used by teColorAttrs).
+var BgSGRCode = map[string]int{
+	"black": 40, "red": 41, "green": 42, "brown": 43,
+	"blue": 44, "magenta": 45, "cyan": 46, "white": 47,
+	"default": 49,
+	"brightblack": 100, "brightred": 101, "brightgreen": 102, "brightbrown": 103,
+	"brightblue": 104, "brightmagenta": 105, "brightcyan": 106, "brightwhite": 107,
 }
 
 // ColorSpecToSGR converts a color spec string to its SGR parameter string.
@@ -72,6 +94,51 @@ func ColorSpecToSGR(spec string, isBg bool) string {
 	return "39"
 }
 
+// ColorSpecToAttrs converts a color spec string to ansi.Attr values.
+func ColorSpecToAttrs(spec string, isBg bool) []ansi.Attr {
+	if spec == "" {
+		if isBg {
+			return []ansi.Attr{ansi.AttrDefaultBackgroundColor}
+		}
+		return []ansi.Attr{ansi.AttrDefaultForegroundColor}
+	}
+
+	// ANSI16 name
+	if isBg {
+		if code, ok := BgSGRCode[spec]; ok {
+			return []ansi.Attr{code}
+		}
+	} else {
+		if code, ok := FgSGRCode[spec]; ok {
+			return []ansi.Attr{code}
+		}
+	}
+
+	// "5;N" → 256-color
+	if len(spec) > 2 && spec[0] == '5' && spec[1] == ';' {
+		var idx uint8
+		fmt.Sscanf(spec[2:], "%d", &idx)
+		if isBg {
+			return []ansi.Attr{ansi.AttrExtendedBackgroundColor, 5, ansi.Attr(idx)}
+		}
+		return []ansi.Attr{ansi.AttrExtendedForegroundColor, 5, ansi.Attr(idx)}
+	}
+
+	// "2;rrggbb" → true color
+	if len(spec) > 2 && spec[0] == '2' && spec[1] == ';' {
+		r, g, b := ParseHexColor(spec[2:])
+		if isBg {
+			return []ansi.Attr{ansi.AttrExtendedBackgroundColor, 2, ansi.Attr(r), ansi.Attr(g), ansi.Attr(b)}
+		}
+		return []ansi.Attr{ansi.AttrExtendedForegroundColor, 2, ansi.Attr(r), ansi.Attr(g), ansi.Attr(b)}
+	}
+
+	if isBg {
+		return []ansi.Attr{ansi.AttrDefaultBackgroundColor}
+	}
+	return []ansi.Attr{ansi.AttrDefaultForegroundColor}
+}
+
 // ParseHexColor parses a 6-digit hex color string into RGB components.
 func ParseHexColor(hex string) (r, g, b uint8) {
 	if len(hex) >= 6 {
@@ -84,55 +151,39 @@ func ParseHexColor(hex string) (r, g, b uint8) {
 // and attribute bitfield. Always resets first, then sets the active attributes.
 func CellSGR(fg, bg string, a uint8) string {
 	if fg == "" && bg == "" && a == 0 {
-		return "\x1b[m"
+		return ansi.ResetStyle
 	}
 
-	params := []string{"0"} // reset first
+	attrs := []ansi.Attr{ansi.AttrReset}
 
 	if a&1 != 0 {
-		params = append(params, "1") // bold
+		attrs = append(attrs, ansi.AttrBold)
 	}
 	if a&2 != 0 {
-		params = append(params, "3") // italic
+		attrs = append(attrs, ansi.AttrItalic)
 	}
 	if a&4 != 0 {
-		params = append(params, "4") // underline
+		attrs = append(attrs, ansi.AttrUnderline)
 	}
 	if a&8 != 0 {
-		params = append(params, "9") // strikethrough
+		attrs = append(attrs, ansi.AttrStrikethrough)
 	}
 	if a&16 != 0 {
-		params = append(params, "7") // reverse
+		attrs = append(attrs, ansi.AttrReverse)
 	}
 	if a&32 != 0 {
-		params = append(params, "5") // blink
+		attrs = append(attrs, ansi.AttrBlink)
 	}
 	if a&64 != 0 {
-		params = append(params, "8") // conceal
+		attrs = append(attrs, ansi.AttrConceal)
 	}
 
 	if fg != "" {
-		params = append(params, ColorSpecToSGR(fg, false))
+		attrs = append(attrs, ColorSpecToAttrs(fg, false)...)
 	}
 	if bg != "" {
-		params = append(params, ColorSpecToSGR(bg, true))
+		attrs = append(attrs, ColorSpecToAttrs(bg, true)...)
 	}
 
-	return "\x1b[" + joinParams(params) + "m"
-}
-
-func joinParams(params []string) string {
-	n := 0
-	for _, p := range params {
-		n += len(p)
-	}
-	n += len(params) - 1 // semicolons
-	buf := make([]byte, 0, n)
-	for i, p := range params {
-		if i > 0 {
-			buf = append(buf, ';')
-		}
-		buf = append(buf, p...)
-	}
-	return string(buf)
+	return ansi.SGR(attrs...)
 }

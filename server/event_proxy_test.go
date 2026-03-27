@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
 	te "github.com/rcarmo/go-te/pkg/te"
 	"termd/frontend/protocol"
 	"termd/frontend/ui"
@@ -44,31 +45,31 @@ func TestEventProxyReplay(t *testing.T) {
 	input += "top\r\n" // Type "top" + enter
 
 	// Top startup: home, clear, draw header
-	input += "\x1b[?1h"   // DECCKM
-	input += "\x1b[?25l"  // Hide cursor
-	input += "\x1b[H"     // Cursor home
-	input += "\x1b[2J"    // Erase display
+	input += ansi.SetModeCursorKeys   // DECCKM
+	input += ansi.HideCursor          // Hide cursor
+	input += ansi.CursorHomePosition  // Cursor home
+	input += ansi.EraseDisplay(2)     // Erase display
 
 	// Draw top's display
 	for row := range rows {
-		input += fmt.Sprintf("\x1b[%d;1H", row+1) // Position cursor
-		input += fmt.Sprintf("top line %02d", row) // Draw content
-		input += "\x1b[K"                          // Erase to end of line
+		input += ansi.CursorPosition(1, row+1) // Position cursor
+		input += fmt.Sprintf("top line %02d", row)
+		input += ansi.EraseLine(0)              // Erase to end of line
 	}
 
 	// Simulate a second refresh cycle (top refreshes)
-	input += "\x1b[H" // Home
+	input += ansi.CursorHomePosition
 	for row := range rows {
-		input += fmt.Sprintf("\x1b[%d;1H", row+1)
+		input += ansi.CursorPosition(1, row+1)
 		input += fmt.Sprintf("top refresh %02d", row)
-		input += "\x1b[K"
+		input += ansi.EraseLine(0)
 	}
 
 	// Top exits: move to bottom, show cursor, reset DECCKM
-	input += fmt.Sprintf("\x1b[%d;1H", rows) // Move to last row
-	input += "\x1b[K"                         // Clear last line
-	input += "\x1b[?25h"                      // Show cursor
-	input += "\x1b[?1l"                       // Reset DECCKM
+	input += ansi.CursorPosition(1, rows) // Move to last row
+	input += ansi.EraseLine(0)
+	input += ansi.ShowCursor
+	input += ansi.ResetModeCursorKeys
 
 	// Bash prompt after top exits
 	input += "\r\n"
@@ -130,18 +131,18 @@ func TestEventProxyReplayWithAltScreen(t *testing.T) {
 	input += "termd$ " // Initial prompt
 
 	// Enter alt screen
-	input += "\x1b[?1049h"
-	input += "\x1b[H\x1b[2J" // Home + clear
+	input += ansi.SetModeAltScreenSaveCursor
+	input += ansi.CursorHomePosition + ansi.EraseDisplay(2)
 
 	// Draw on alt screen
-	for row := 0; row < rows; row++ {
-		input += fmt.Sprintf("\x1b[%d;1H", row+1)
+	for row := range rows {
+		input += ansi.CursorPosition(1, row+1)
 		input += fmt.Sprintf("alt line %02d", row)
-		input += "\x1b[K"
+		input += ansi.EraseLine(0)
 	}
 
 	// Exit alt screen
-	input += "\x1b[?1049l"
+	input += ansi.ResetModeAltScreenSaveCursor
 
 	// New prompt
 	input += "termd$ "
@@ -193,7 +194,11 @@ func TestEventProxyReplayColors(t *testing.T) {
 	stream := te.NewStream(proxy, false)
 
 	// ANSI16 red, green, bold, 256-color orange (208), true-color
-	input := "\x1b[31mRED\x1b[0m \x1b[32mGRN\x1b[0m \x1b[1mBLD\x1b[0m \x1b[38;5;208mIDX\x1b[0m \x1b[38;2;255;128;0mRGB\x1b[0m"
+	input := ansi.SGR(ansi.AttrRedForegroundColor) + "RED" + ansi.ResetStyle + " " +
+		ansi.SGR(ansi.AttrGreenForegroundColor) + "GRN" + ansi.ResetStyle + " " +
+		ansi.SGR(ansi.AttrBold) + "BLD" + ansi.ResetStyle + " " +
+		ansi.SGR(ansi.AttrExtendedForegroundColor, 5, 208) + "IDX" + ansi.ResetStyle + " " +
+		ansi.SGR(ansi.AttrExtendedForegroundColor, 2, 255, 128, 0) + "RGB" + ansi.ResetStyle
 	stream.FeedBytes([]byte(input))
 
 	allEvents, _ := proxy.Flush()
@@ -247,10 +252,10 @@ func TestSyncOutputSnapshot(t *testing.T) {
 
 	// Enter sync mode, draw content, exit sync mode, draw trailing content
 	stream.FeedBytes([]byte(
-		"\x1b[?2026h" + // begin synchronized output
-			"\x1b[H\x1b[2J" + // home + clear (inside sync)
+		ansi.SetModeSynchronizedOutput + // begin synchronized output
+			ansi.CursorHomePosition + ansi.EraseDisplay(2) + // home + clear (inside sync)
 			"synced content" + // draw inside sync
-			"\x1b[?2026l" + // end synchronized output
+			ansi.ResetModeSynchronizedOutput + // end synchronized output
 			"trailing", // draw AFTER sync
 	))
 
@@ -291,7 +296,7 @@ func TestSyncOutputHoldsDuringSync(t *testing.T) {
 	stream := te.NewStream(proxy, false)
 
 	// Enter sync mode and draw
-	stream.FeedBytes([]byte("\x1b[?2026h" + "inside sync"))
+	stream.FeedBytes([]byte(ansi.SetModeSynchronizedOutput + "inside sync"))
 
 	// Flush while sync is active — should return nothing
 	events, needsSnap := proxy.Flush()
@@ -303,7 +308,7 @@ func TestSyncOutputHoldsDuringSync(t *testing.T) {
 	}
 
 	// End sync with no trailing content
-	stream.FeedBytes([]byte("\x1b[?2026l"))
+	stream.FeedBytes([]byte(ansi.ResetModeSynchronizedOutput))
 
 	events, needsSnap = proxy.Flush()
 	if !needsSnap {

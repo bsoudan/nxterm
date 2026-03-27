@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/charmbracelet/x/ansi"
 	te "github.com/rcarmo/go-te/pkg/te"
 	"termd/frontend/protocol"
 )
@@ -133,7 +134,7 @@ func (p *EventProxy) SetMode(modes []int, private bool) {
 	p.batch = append(p.batch, protocol.TerminalEvent{Op: "sm", Params: cp, Private: private})
 	if private {
 		for _, m := range modes {
-			if m == 2026 {
+			if m == ansi.ModeSynchronizedOutput.Mode() {
 				p.syncMode = true
 			}
 		}
@@ -146,7 +147,7 @@ func (p *EventProxy) ResetMode(modes []int, private bool) {
 	p.batch = append(p.batch, protocol.TerminalEvent{Op: "rm", Params: cp, Private: private})
 	if private {
 		for _, m := range modes {
-			if m == 2026 {
+			if m == ansi.ModeSynchronizedOutput.Mode() {
 				if p.syncMode {
 					p.syncMode = false
 					// Mark where sync ended — everything before this is

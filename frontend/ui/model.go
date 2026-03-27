@@ -9,6 +9,7 @@ import (
 
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	te "github.com/rcarmo/go-te/pkg/te"
 	termlog "termd/frontend/log"
 	"termd/frontend/client"
@@ -18,6 +19,10 @@ import (
 // LogEntryMsg is sent by the log handler to trigger a re-render when new
 // log entries arrive (throttled to 100ms).
 type LogEntryMsg struct{}
+
+// modeAltScreenLegacy is the original xterm alternate screen mode (DEC private 47).
+// Not defined in charmbracelet/x/ansi which only has 1047 and 1049.
+const modeAltScreenLegacy = 47
 
 type showHintMsg struct{}
 type hideHintMsg struct{}
@@ -847,7 +852,7 @@ func ReplayEvents(screen *te.Screen, events []protocol.TerminalEvent) bool {
 			screen.SetMode(ev.Params, ev.Private)
 			if ev.Private {
 				for _, m := range ev.Params {
-					if m == 1049 || m == 1047 || m == 47 {
+					if m == ansi.ModeAltScreenSaveCursor.Mode() || m == ansi.ModeAltScreen.Mode() || m == modeAltScreenLegacy {
 						needsClear = true
 					}
 				}
@@ -856,7 +861,7 @@ func ReplayEvents(screen *te.Screen, events []protocol.TerminalEvent) bool {
 			screen.ResetMode(ev.Params, ev.Private)
 			if ev.Private {
 				for _, m := range ev.Params {
-					if m == 1049 || m == 1047 || m == 47 {
+					if m == ansi.ModeAltScreenSaveCursor.Mode() || m == ansi.ModeAltScreen.Mode() || m == modeAltScreenLegacy {
 						needsClear = true
 					}
 				}

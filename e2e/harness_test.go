@@ -11,9 +11,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/creack/pty"
 	"github.com/rcarmo/go-te/pkg/te"
 )
+
+// shellSGR converts ansi.SGR() output to shell printf \e notation.
+// e.g., "\x1b[31m" → `\e[31m`
+func shellSGR(attrs ...ansi.Attr) string {
+	return strings.ReplaceAll(ansi.SGR(attrs...), "\x1b", `\e`)
+}
+
+// shellResetStyle is ansi.ResetStyle in shell \e notation.
+var shellResetStyle = strings.ReplaceAll(ansi.ResetStyle, "\x1b", `\e`)
 
 // testEnv returns os.Environ with XDG_CONFIG_HOME set to a temp dir,
 // isolating tests from the user's local configuration files.

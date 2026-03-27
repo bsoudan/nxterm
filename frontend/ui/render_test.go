@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
 	te "github.com/rcarmo/go-te/pkg/te"
 )
 
@@ -35,13 +36,13 @@ func TestSgrTransition(t *testing.T) {
 			name: "default to default",
 			from: defaultAttr,
 			to:   defaultAttr,
-			want: "\x1b[m", // reset is emitted because to == zero Attr
+			want: ansi.ResetStyle, // reset is emitted because to == zero Attr
 		},
 		{
 			name: "default to bold",
 			from: defaultAttr,
 			to:   boldOnly,
-			want: "\x1b[1m",
+			want: ansi.SGR(ansi.AttrBold),
 		},
 		{
 			name:         "default to red fg",
@@ -53,7 +54,7 @@ func TestSgrTransition(t *testing.T) {
 			name: "bold+red to default",
 			from: boldRed,
 			to:   defaultAttr,
-			want: "\x1b[m",
+			want: ansi.ResetStyle,
 		},
 		{
 			name:         "bold+red to bold+green",
