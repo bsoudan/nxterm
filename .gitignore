@@ -1,2 +1,6 @@
 .claude-config
 .local
+server/webstatic/termd.wasm
+server/webstatic/wasm_exec.js
+web/changelog.txt
+e2e/node_modules

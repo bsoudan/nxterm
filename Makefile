@@ -1,4 +1,4 @@
-.PHONY: all build-server changelog build-tui build-tui-windows build-termctl check-windows test test-e2e clean
+.PHONY: all build-server changelog build-tui build-tui-windows build-wasm build-termctl check-windows check-wasm test test-e2e clean
 
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/-g[0-9a-f]*//;s/-dirty/*/' || echo "dev")
 LDFLAGS := -X main.version=$(VERSION)
@@ -8,7 +8,7 @@ endif
 
 all: build-server build-tui build-tui-windows build-termctl
 
-build-server:
+build-server: build-wasm
 	cd server && go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o ../.local/bin/termd .
 
 changelog:
@@ -28,8 +28,18 @@ build-tui: changelog
 build-tui-windows: changelog
 	cd frontend && GOOS=windows GOARCH=amd64 go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o ../.local/bin/termd-tui.exe .
 
+build-wasm: changelog
+	rm -f server/webstatic/wasm_exec.js
+	cp $$(go env GOROOT)/lib/wasm/wasm_exec.js server/webstatic/wasm_exec.js
+	cp frontend/changelog.txt web/changelog.txt
+	cd web && GOOS=js GOARCH=wasm CGO_ENABLED=0 go build -tags osusergo \
+		-ldflags "$(LDFLAGS)" -o ../server/webstatic/termd.wasm .
+
 build-termctl:
 	cd termctl && go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o ../.local/bin/termctl .
+
+check-wasm:
+	cd web && GOOS=js GOARCH=wasm CGO_ENABLED=0 go build -tags osusergo -o /dev/null .
 
 check-windows:
 	cd frontend && GOOS=windows GOARCH=amd64 go build -o /dev/null .

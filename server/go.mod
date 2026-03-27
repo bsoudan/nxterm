@@ -17,6 +17,8 @@ replace termd/frontend => ../frontend
 
 replace termd/transport => ../transport
 
+replace charm.land/bubbletea/v2 => ../_vendor/bubbletea
+
 require (
 	charm.land/bubbles/v2 v2.0.0 // indirect
 	charm.land/bubbletea/v2 v2.0.2 // indirect

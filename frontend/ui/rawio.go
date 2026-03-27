@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"io"
 	"log/slog"
-	"os"
 
 	tea "charm.land/bubbletea/v2"
 	"termd/frontend/client"
@@ -21,7 +20,7 @@ const prefixKey = 0x02 // ctrl+b
 // command handling. If bubbletea requests extended input focus (e.g., for
 // the log viewer), it sends a done channel on focusCh; the raw loop stays
 // in focus mode until that channel is closed.
-func RawInputLoop(stdin *os.File, c *client.Client, regionReady <-chan string, pipeW io.WriteCloser, program *tea.Program, focusCh <-chan chan struct{}) {
+func RawInputLoop(stdin io.Reader, c *client.Client, regionReady <-chan string, pipeW io.WriteCloser, program *tea.Program, focusCh <-chan chan struct{}) {
 	defer pipeW.Close()
 
 	regionID, ok := <-regionReady

@@ -30,6 +30,9 @@
             jq
             netcat-gnu  # nc for manual socket interaction
 
+            # Web UI testing (xterm.js headless)
+            nodejs
+
             # Version control
             git
 
@@ -43,6 +46,7 @@
             export PATH="$PWD/.local/bin:$PATH"
             export GOPATH="$PWD/.local/go"
             export GOCACHE="$PWD/.local/var/cache/go"
+            export npm_config_cache="$PWD/.local/var/cache/npm"
             export NIX_SHELL=termd
 
             echo

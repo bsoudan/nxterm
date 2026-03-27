@@ -5,10 +5,15 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/coder/websocket"
 )
+
+// WSFallback is an optional HTTP handler for non-WebSocket requests on
+// a ws: listener (e.g., serving a web UI).
+var WSFallback http.Handler
 
 // wsListener implements net.Listener by running an HTTP server that upgrades
 // connections to WebSocket. Each accepted WebSocket is wrapped as a net.Conn.
@@ -42,7 +47,25 @@ func listenWS(host string) (net.Listener, error) {
 	return wl, nil
 }
 
+func isWebSocketUpgrade(r *http.Request) bool {
+	for _, v := range r.Header["Upgrade"] {
+		if strings.EqualFold(v, "websocket") {
+			return true
+		}
+	}
+	return false
+}
+
 func (wl *wsListener) handleUpgrade(w http.ResponseWriter, r *http.Request) {
+	if !isWebSocketUpgrade(r) {
+		if WSFallback != nil {
+			WSFallback.ServeHTTP(w, r)
+		} else {
+			http.Error(w, "WebSocket upgrade required", http.StatusUpgradeRequired)
+		}
+		return
+	}
+
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		InsecureSkipVerify: true,
 	})
