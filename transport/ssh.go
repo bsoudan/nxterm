@@ -314,9 +314,6 @@ func loadAuthorizedKeys(path string) (map[string]bool, error) {
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
 		return nil, err
 	}
 
@@ -324,7 +321,7 @@ func loadAuthorizedKeys(path string) (map[string]bool, error) {
 	for len(data) > 0 {
 		key, _, _, rest, err := ssh.ParseAuthorizedKey(data)
 		if err != nil {
-			break
+			return nil, fmt.Errorf("parse %s: %w", path, err)
 		}
 		keys[string(key.Marshal())] = true
 		data = rest
