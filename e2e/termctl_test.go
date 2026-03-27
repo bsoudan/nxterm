@@ -48,7 +48,7 @@ func TestTermctlRegionView(t *testing.T) {
 	id := spawnRegion(t, socketPath, shell)
 
 	// Send a command and wait a moment for bash to process it
-	runTermctl(t, socketPath, "region", "send", "-e", id, "echo viewtest_marker\r")
+	runTermctl(t, socketPath, "region", "send", "-e", id, `echo viewtest_marker\r`)
 	// Poll region view until the marker appears
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
@@ -93,7 +93,7 @@ func TestTermctlRegionSend(t *testing.T) {
 	id := spawnRegion(t, socketPath, shell)
 
 	// -e interprets \n as newline (acts as Enter)
-	runTermctl(t, socketPath, "region", "send", "-e", id, "echo sendtest_ok\r")
+	runTermctl(t, socketPath, "region", "send", "-e", id, `echo sendtest_ok\r`)
 
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {

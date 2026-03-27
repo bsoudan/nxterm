@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net"
@@ -9,95 +10,78 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/urfave/cli/v3"
 	tlog "termd/frontend/log"
 	"termd/transport"
 )
 
-func printUsage() {
-	fmt.Fprint(os.Stderr, `Usage: termd [options]
+func main() {
+	app := &cli.Command{
+		Name:  "termd",
+		Usage: "terminal multiplexer server",
+		Flags: []cli.Flag{
+			&cli.StringSliceFlag{
+				Name:    "listen",
+				Aliases: []string{"l"},
+				Usage:   "listen address (repeatable; schemes: unix, tcp, ws, ssh)",
+				Sources: cli.EnvVars("TERMD_LISTEN"),
+			},
+			&cli.StringFlag{
+				Name:    "socket",
+				Aliases: []string{"s"},
+				Usage:   "shorthand for --listen unix:<path>",
+				Sources: cli.EnvVars("TERMD_SOCKET"),
+			},
+			&cli.StringFlag{
+				Name:  "ssh-host-key",
+				Usage: "SSH host key file (auto-generated if missing)",
+			},
+			&cli.StringFlag{
+				Name:  "ssh-auth-keys",
+				Usage: "SSH authorized_keys file (default: ~/.ssh/authorized_keys)",
+			},
+			&cli.BoolFlag{
+				Name:  "ssh-no-auth",
+				Usage: "disable SSH authentication (insecure)",
+			},
+			&cli.BoolFlag{
+				Name:    "debug",
+				Aliases: []string{"d"},
+				Usage:   "enable debug logging",
+				Sources: cli.EnvVars("TERMD_DEBUG"),
+			},
+		},
+		Action: runServer,
+	}
 
-Options:
-  -l, --listen <spec>       Listen address (repeatable; default: unix:/tmp/termd.sock)
-                             Schemes: unix:<path>, tcp:<host:port>, ws:<host:port>, ssh:<host:port>
-  -s, --socket <path>       Shorthand for --listen unix:<path>
-      --ssh-host-key <path>  SSH host key file (auto-generated if missing)
-      --ssh-auth-keys <path> SSH authorized_keys file (default: ~/.ssh/authorized_keys)
-      --ssh-no-auth          Disable SSH authentication (insecure)
-  -d, --debug               Enable debug logging (env: TERMD_DEBUG=1)
-  -h, --help                Show this help
-`)
+	if err := app.Run(context.Background(), os.Args); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
 }
 
-func main() {
-	var listenSpecs []string
-	var sshHostKey, sshAuthKeys string
-	sshNoAuth := false
-	debug := false
-
-	args := os.Args[1:]
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "-h", "--help":
-			printUsage()
-			return
-		case "-d", "--debug":
-			debug = true
-		case "-s", "--socket":
-			i++
-			if i >= len(args) {
-				fmt.Fprintln(os.Stderr, "error: --socket requires a path argument")
-				os.Exit(1)
-			}
-			listenSpecs = append(listenSpecs, "unix:"+args[i])
-		case "-l", "--listen":
-			i++
-			if i >= len(args) {
-				fmt.Fprintln(os.Stderr, "error: --listen requires an address argument")
-				os.Exit(1)
-			}
-			listenSpecs = append(listenSpecs, args[i])
-		case "--ssh-host-key":
-			i++
-			if i >= len(args) {
-				fmt.Fprintln(os.Stderr, "error: --ssh-host-key requires a path argument")
-				os.Exit(1)
-			}
-			sshHostKey = args[i]
-		case "--ssh-auth-keys":
-			i++
-			if i >= len(args) {
-				fmt.Fprintln(os.Stderr, "error: --ssh-auth-keys requires a path argument")
-				os.Exit(1)
-			}
-			sshAuthKeys = args[i]
-		case "--ssh-no-auth":
-			sshNoAuth = true
-		default:
-			fmt.Fprintf(os.Stderr, "error: unknown option: %s\n", args[i])
-			printUsage()
-			os.Exit(1)
-		}
-	}
-
-	if !debug && os.Getenv("TERMD_DEBUG") == "1" {
-		debug = true
-	}
-	if len(listenSpecs) == 0 {
-		if v := os.Getenv("TERMD_SOCKET"); v != "" {
-			listenSpecs = append(listenSpecs, "unix:"+v)
-		} else {
-			listenSpecs = append(listenSpecs, "unix:/tmp/termd.sock")
-		}
-	}
-
+func runServer(_ context.Context, cmd *cli.Command) error {
 	level := slog.LevelInfo
-	if debug {
+	if cmd.Bool("debug") {
 		level = slog.LevelDebug
 	}
 	handler := tlog.NewHandler(os.Stderr, level, nil)
 	slog.SetDefault(slog.New(handler))
 
 	transport.InstallStackDump("termd")
+
+	// Build listen specs: --socket prepends to --listen, default if neither given
+	listenSpecs := cmd.StringSlice("listen")
+	if sock := cmd.String("socket"); sock != "" {
+		listenSpecs = append([]string{"unix:" + sock}, listenSpecs...)
+	}
+	if len(listenSpecs) == 0 {
+		listenSpecs = []string{"unix:/tmp/termd.sock"}
+	}
+
+	sshHostKey := cmd.String("ssh-host-key")
+	sshAuthKeys := cmd.String("ssh-auth-keys")
+	sshNoAuth := cmd.Bool("ssh-no-auth")
 
 	listeners := make([]net.Listener, 0, len(listenSpecs))
 	for _, spec := range listenSpecs {
@@ -114,8 +98,7 @@ func main() {
 			ln, err = transport.Listen(spec)
 		}
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: listen %s: %v\n", spec, err)
-			os.Exit(1)
+			return fmt.Errorf("listen %s: %w", spec, err)
 		}
 		listeners = append(listeners, ln)
 	}
@@ -133,4 +116,5 @@ func main() {
 	}()
 
 	srv.Run()
+	return nil
 }

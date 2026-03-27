@@ -9,6 +9,7 @@ require (
 	github.com/charmbracelet/colorprofile v0.4.2
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/rcarmo/go-te v0.1.0
+	github.com/urfave/cli/v3 v3.8.0
 	golang.org/x/sys v0.42.0
 	termd/transport v0.0.0
 )

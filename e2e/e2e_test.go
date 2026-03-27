@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -151,18 +150,18 @@ func TestAltScreenRestore(t *testing.T) {
 	id := spawnRegion(t, socketPath, shell)
 
 	// Type a marker
-	runTermctl(t, socketPath, "region", "send", "-e", id, "echo alt_screen_marker\r")
+	runTermctl(t, socketPath, "region", "send", "-e", id, `echo alt_screen_marker\r`)
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		view := runTermctl(t, socketPath, "region", "view", id)
 		if strings.Contains(view, "alt_screen_marker") {
 			break
 		}
-		runtime.Gosched()
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	// Enter alt screen via less
-	runTermctl(t, socketPath, "region", "send", "-e", id, "echo 'line1\\nline2\\nline3' | less\r")
+	runTermctl(t, socketPath, "region", "send", "-e", id, `echo 'line1\nline2\nline3' | less\r`)
 
 	// Wait for less to show "line1" AND marker to be gone (alt screen active)
 	deadline = time.Now().Add(10 * time.Second)
@@ -171,9 +170,12 @@ func TestAltScreenRestore(t *testing.T) {
 		if strings.Contains(view, "line1") && !strings.Contains(view, "alt_screen_marker") {
 			goto inAlt
 		}
-		runtime.Gosched()
+		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("timeout waiting for less to enter alt screen")
+	{
+		view := runTermctl(t, socketPath, "region", "view", id)
+		t.Fatalf("timeout waiting for less to enter alt screen\nscreen:\n%s", view)
+	}
 
 inAlt:
 	// Quit less
@@ -186,9 +188,12 @@ inAlt:
 		if strings.Contains(view, "alt_screen_marker") {
 			return // success
 		}
-		runtime.Gosched()
+		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("timeout waiting for marker to reappear after less exits")
+	{
+		view := runTermctl(t, socketPath, "region", "view", id)
+		t.Fatalf("timeout waiting for marker to reappear after less exits\nscreen:\n%s", view)
+	}
 }
 
 func TestScreenSyncAfterHeavyOutput(t *testing.T) {

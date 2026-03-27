@@ -5,6 +5,7 @@ go 1.25.7
 require (
 	github.com/creack/pty v1.1.24
 	github.com/rcarmo/go-te v0.1.0
+	github.com/urfave/cli/v3 v3.8.0
 	termd/frontend v0.0.0
 	termd/transport v0.0.0
 )

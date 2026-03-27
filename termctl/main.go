@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"log/slog"
@@ -9,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/urfave/cli/v2"
+	"github.com/urfave/cli/v3"
 	"termd/frontend/client"
 	termlog "termd/frontend/log"
 	"termd/frontend/protocol"
@@ -17,7 +18,7 @@ import (
 )
 
 func main() {
-	app := &cli.App{
+	app := &cli.Command{
 		Name:  "termctl",
 		Usage: "control the termd server",
 		Flags: []cli.Flag{
@@ -25,44 +26,44 @@ func main() {
 				Name:    "socket",
 				Aliases: []string{"s"},
 				Value:   "/tmp/termd.sock",
-				Usage:   "server socket path",
-				EnvVars: []string{"TERMD_SOCKET"},
+				Usage:   "server address (unix path or transport spec)",
+				Sources: cli.EnvVars("TERMD_SOCKET"),
 			},
 			&cli.BoolFlag{
 				Name:    "debug",
 				Aliases: []string{"d"},
 				Usage:   "enable debug logging",
-				EnvVars: []string{"TERMD_DEBUG"},
+				Sources: cli.EnvVars("TERMD_DEBUG"),
 			},
 		},
-		Before: func(c *cli.Context) error {
+		Before: func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
 			level := slog.LevelWarn
-			if c.Bool("debug") {
+			if cmd.Bool("debug") {
 				level = slog.LevelDebug
 			}
 			slog.SetDefault(slog.New(termlog.NewHandler(os.Stderr, level, nil)))
 			transport.InstallStackDump("termctl")
-			return nil
+			return ctx, nil
 		},
 		Commands: []*cli.Command{
 			{
-				Name:  "status",
-				Usage: "show server status",
+				Name:   "status",
+				Usage:  "show server status",
 				Action: cmdStatus,
 			},
 			{
 				Name:  "region",
 				Usage: "manage regions",
-				Subcommands: []*cli.Command{
+				Commands: []*cli.Command{
 					{Name: "list", Usage: "list regions", Action: cmdRegionList},
-					{Name: "spawn", Usage: "spawn a new region", ArgsUsage: "<cmd> [args...]", Action: cmdRegionSpawn},
+					{Name: "spawn", Usage: "spawn a new region", ArgsUsage: "<cmd> [args...]", SkipFlagParsing: true, Action: cmdRegionSpawn},
 					{
-					Name: "view", Usage: "view region screen", ArgsUsage: "<region_id>",
-					Flags: []cli.Flag{
-						&cli.BoolFlag{Name: "plain", Aliases: []string{"p"}, Usage: "plain text (no colors)"},
+						Name: "view", Usage: "view region screen", ArgsUsage: "<region_id>",
+						Flags: []cli.Flag{
+							&cli.BoolFlag{Name: "plain", Aliases: []string{"p"}, Usage: "plain text (no colors)"},
+						},
+						Action: cmdRegionView,
 					},
-					Action: cmdRegionView,
-				},
 					{Name: "kill", Usage: "kill a region", ArgsUsage: "<region_id>", Action: cmdRegionKill},
 					{
 						Name: "send", Usage: "send input to a region", ArgsUsage: "<region_id> <input>",
@@ -76,7 +77,7 @@ func main() {
 			{
 				Name:  "client",
 				Usage: "manage clients",
-				Subcommands: []*cli.Command{
+				Commands: []*cli.Command{
 					{Name: "list", Usage: "list clients", Action: cmdClientList},
 					{Name: "kill", Usage: "disconnect a client", ArgsUsage: "<client_id>", Action: cmdClientKill},
 				},
@@ -84,14 +85,14 @@ func main() {
 		},
 	}
 
-	if err := app.Run(os.Args); err != nil {
+	if err := app.Run(context.Background(), os.Args); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func connect(c *cli.Context) (*client.Client, error) {
-	spec := c.String("socket")
+func connect(cmd *cli.Command) (*client.Client, error) {
+	spec := cmd.String("socket")
 	if !strings.Contains(spec, ":") {
 		spec = "unix:" + spec
 	}
@@ -112,8 +113,8 @@ func recvType[T any](cl *client.Client) (T, error) {
 	return zero, fmt.Errorf("connection closed")
 }
 
-func cmdStatus(c *cli.Context) error {
-	cl, err := connect(c)
+func cmdStatus(_ context.Context, cmd *cli.Command) error {
+	cl, err := connect(cmd)
 	if err != nil {
 		return err
 	}
@@ -137,8 +138,8 @@ func cmdStatus(c *cli.Context) error {
 	return nil
 }
 
-func cmdRegionList(c *cli.Context) error {
-	cl, err := connect(c)
+func cmdRegionList(_ context.Context, cmd *cli.Command) error {
+	cl, err := connect(cmd)
 	if err != nil {
 		return err
 	}
@@ -165,20 +166,20 @@ func cmdRegionList(c *cli.Context) error {
 	return nil
 }
 
-func cmdRegionSpawn(c *cli.Context) error {
-	if c.NArg() < 1 {
+func cmdRegionSpawn(_ context.Context, cmd *cli.Command) error {
+	if cmd.NArg() < 1 {
 		return fmt.Errorf("usage: termctl region spawn <cmd> [args...]")
 	}
-	cmd := c.Args().First()
-	args := c.Args().Tail()
+	spawnCmd := cmd.Args().First()
+	args := cmd.Args().Tail()
 
-	cl, err := connect(c)
+	cl, err := connect(cmd)
 	if err != nil {
 		return err
 	}
 	defer cl.Close()
 
-	_ = cl.Send(protocol.SpawnRequest{Type: "spawn_request", Cmd: cmd, Args: args})
+	_ = cl.Send(protocol.SpawnRequest{Type: "spawn_request", Cmd: spawnCmd, Args: args})
 	resp, err := recvType[protocol.SpawnResponse](cl)
 	if err != nil {
 		return err
@@ -191,13 +192,13 @@ func cmdRegionSpawn(c *cli.Context) error {
 	return nil
 }
 
-func cmdRegionView(c *cli.Context) error {
-	if c.NArg() < 1 {
+func cmdRegionView(_ context.Context, cmd *cli.Command) error {
+	if cmd.NArg() < 1 {
 		return fmt.Errorf("usage: termctl region view <region_id>")
 	}
-	regionID := c.Args().First()
+	regionID := cmd.Args().First()
 
-	cl, err := connect(c)
+	cl, err := connect(cmd)
 	if err != nil {
 		return err
 	}
@@ -212,14 +213,13 @@ func cmdRegionView(c *cli.Context) error {
 		return fmt.Errorf("%s", resp.Message)
 	}
 
-	if c.Bool("plain") || len(resp.Cells) == 0 {
+	if cmd.Bool("plain") || len(resp.Cells) == 0 {
 		for _, line := range resp.Lines {
 			fmt.Println(strings.TrimRight(line, " "))
 		}
 		return nil
 	}
 
-	// Render with ANSI color sequences
 	for _, row := range resp.Cells {
 		fmt.Println(renderColoredLine(row))
 	}
@@ -249,13 +249,13 @@ func renderColoredLine(row []protocol.ScreenCell) string {
 	return strings.TrimRight(sb.String(), " ")
 }
 
-func cmdRegionKill(c *cli.Context) error {
-	if c.NArg() < 1 {
+func cmdRegionKill(_ context.Context, cmd *cli.Command) error {
+	if cmd.NArg() < 1 {
 		return fmt.Errorf("usage: termctl region kill <region_id>")
 	}
-	regionID := c.Args().First()
+	regionID := cmd.Args().First()
 
-	cl, err := connect(c)
+	cl, err := connect(cmd)
 	if err != nil {
 		return err
 	}
@@ -274,18 +274,18 @@ func cmdRegionKill(c *cli.Context) error {
 	return nil
 }
 
-func cmdRegionSend(c *cli.Context) error {
-	if c.NArg() < 2 {
+func cmdRegionSend(_ context.Context, cmd *cli.Command) error {
+	if cmd.NArg() < 2 {
 		return fmt.Errorf("usage: termctl region send [-e] <region_id> <input>")
 	}
-	regionID := c.Args().Get(0)
-	input := c.Args().Get(1)
+	regionID := cmd.Args().Get(0)
+	input := cmd.Args().Get(1)
 
-	if c.Bool("e") {
+	if cmd.Bool("e") {
 		input = interpretEscapes(input)
 	}
 
-	cl, err := connect(c)
+	cl, err := connect(cmd)
 	if err != nil {
 		return err
 	}
@@ -296,8 +296,8 @@ func cmdRegionSend(c *cli.Context) error {
 	return nil
 }
 
-func cmdClientList(c *cli.Context) error {
-	cl, err := connect(c)
+func cmdClientList(_ context.Context, cmd *cli.Command) error {
+	cl, err := connect(cmd)
 	if err != nil {
 		return err
 	}
@@ -324,16 +324,16 @@ func cmdClientList(c *cli.Context) error {
 	return nil
 }
 
-func cmdClientKill(c *cli.Context) error {
-	if c.NArg() < 1 {
+func cmdClientKill(_ context.Context, cmd *cli.Command) error {
+	if cmd.NArg() < 1 {
 		return fmt.Errorf("usage: termctl client kill <client_id>")
 	}
-	id, err := strconv.ParseUint(c.Args().First(), 10, 32)
+	id, err := strconv.ParseUint(cmd.Args().First(), 10, 32)
 	if err != nil {
 		return fmt.Errorf("invalid client_id: %w", err)
 	}
 
-	cl, err := connect(c)
+	cl, err := connect(cmd)
 	if err != nil {
 		return err
 	}
@@ -378,7 +378,6 @@ func interpretEscapes(s string) string {
 					}
 				}
 			case '0':
-				// Octal: up to 3 digits
 				end := i + 1
 				for end < len(s) && end < i+4 && s[end] >= '0' && s[end] <= '7' {
 					end++
