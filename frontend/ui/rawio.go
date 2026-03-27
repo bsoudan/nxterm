@@ -8,8 +8,6 @@ import (
 	"os"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/x/term"
-	"golang.org/x/sys/unix"
 	"termd/frontend/client"
 	"termd/frontend/protocol"
 )
@@ -17,22 +15,6 @@ import (
 type prefixStartedMsg struct{}
 
 const prefixKey = 0x02 // ctrl+b
-
-func SetupRawTerminal() (restore func(), err error) {
-	fd := os.Stdin.Fd()
-	oldState, err := term.MakeRaw(fd)
-	if err != nil {
-		return nil, err
-	}
-	// MakeRaw clears OPOST which disables ONLCR (\n → \r\n translation).
-	// Re-enable it so terminal output renders correctly.
-	termios, err := unix.IoctlGetTermios(int(fd), unix.TCGETS)
-	if err == nil {
-		termios.Oflag |= unix.OPOST | unix.ONLCR
-		unix.IoctlSetTermios(int(fd), unix.TCSETS, termios)
-	}
-	return func() { term.Restore(fd, oldState) }, nil
-}
 
 // RawInputLoop reads raw bytes from stdin and forwards them to the server.
 // When ctrl+b is pressed, one byte is diverted to bubbletea for prefix

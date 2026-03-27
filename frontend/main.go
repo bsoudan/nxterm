@@ -7,9 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
-	"os/exec"
 	"strings"
-	"syscall"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/colorprofile"
@@ -35,8 +33,11 @@ func main() {
 	if *socketPath == "" {
 		if env := os.Getenv("TERMD_SOCKET"); env != "" {
 			*socketPath = env
+		} else if defaultSocket != "" {
+			*socketPath = defaultSocket
 		} else {
-			*socketPath = "/tmp/termd.sock"
+			fmt.Fprintln(os.Stderr, "error: --socket or TERMD_SOCKET required (e.g. tcp:host:port)")
+			os.Exit(1)
 		}
 	}
 
@@ -60,23 +61,12 @@ func main() {
 		shell = parts[0]
 		shellArgs = parts[1:]
 	} else {
-		shell = os.Getenv("SHELL")
-		if shell == "" {
-			var err error
-			shell, err = exec.LookPath("bash")
-			if err != nil {
-				slog.Error("cannot find shell", "error", err)
-				os.Exit(1)
-			}
-		}
+		shell, shellArgs = defaultShell()
 	}
 
 	transport.InstallStackDump("termd-frontend")
 
-	endpoint := *socketPath
-	if !strings.Contains(endpoint, ":") {
-		endpoint = "unix:" + endpoint
-	}
+	endpoint := inferEndpoint(*socketPath)
 	dialFn := func() (net.Conn, error) { return transport.Dial(endpoint) }
 	conn, err := dialFn()
 	if err != nil {
@@ -101,12 +91,11 @@ func main() {
 		tea.WithColorProfile(colorprofile.TrueColor),
 	)
 
-	stdinDupFd, err := syscall.Dup(int(os.Stdin.Fd()))
+	stdinDup, err := dupStdin()
 	if err != nil {
 		slog.Error("dup stdin failed", "error", err)
 		os.Exit(1)
 	}
-	stdinDup := os.NewFile(uintptr(stdinDupFd), "stdin-dup")
 
 	logHandler.SetNotifyFn(func() { p.Send(ui.LogEntryMsg{}) })
 	go ui.RawInputLoop(stdinDup, c, model.RegionReady, pipeW, p, model.FocusCh)

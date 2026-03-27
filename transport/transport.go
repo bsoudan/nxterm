@@ -10,7 +10,6 @@ package transport
 import (
 	"fmt"
 	"net"
-	"os"
 	"strings"
 )
 
@@ -19,8 +18,7 @@ func Listen(spec string) (net.Listener, error) {
 	scheme, addr := parseSpec(spec)
 	switch scheme {
 	case "unix":
-		os.Remove(addr)
-		return net.Listen("unix", addr)
+		return listenUnix(addr)
 	case "tcp":
 		return net.Listen("tcp", addr)
 	case "ws":
@@ -35,7 +33,7 @@ func Dial(spec string) (net.Conn, error) {
 	scheme, addr := parseSpec(spec)
 	switch scheme {
 	case "unix":
-		return net.Dial("unix", addr)
+		return dialUnix(addr)
 	case "tcp":
 		return net.Dial("tcp", addr)
 	case "ws":
@@ -56,7 +54,7 @@ func Dial(spec string) (net.Conn, error) {
 func Cleanup(spec string) {
 	scheme, addr := parseSpec(spec)
 	if scheme == "unix" {
-		os.Remove(addr)
+		cleanupUnix(addr)
 	}
 }
 

@@ -1,4 +1,4 @@
-.PHONY: all build-server build-frontend build-termctl test test-e2e clean
+.PHONY: all build-server build-frontend build-termctl check-windows test test-e2e clean
 
 all: build-server build-frontend build-termctl
 
@@ -10,6 +10,10 @@ build-frontend:
 
 build-termctl:
 	cd termctl && go build -o ../.local/bin/termctl .
+
+check-windows:
+	cd frontend && GOOS=windows GOARCH=amd64 go build -o /dev/null .
+	cd transport && GOOS=windows GOARCH=amd64 go build -o /dev/null .
 
 test: test-e2e
 
