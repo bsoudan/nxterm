@@ -117,11 +117,8 @@ Use `github.com/BurntSushi/toml` — standard, minimal, well-maintained.
 
 ### Tests
 
-- Unit test: parse a sample server.toml, verify all fields.
-- Unit test: parse a sample frontend config.toml.
-- Unit test: frontend fallback reads listen address from server.toml.
-- Unit test: missing file returns zero config, no error.
-- Unit test: explicit path that doesn't exist returns an error.
+- Unit test: frontend fallback reads first listen address from server.toml when no
+  frontend config exists.
 
 ---
 
@@ -160,6 +157,8 @@ debug:    CLI --debug || env TERMD_DEBUG || config debug
 - Existing e2e tests pass (they don't use config files).
 - Add a test that writes a config file to a temp dir and verifies the server reads listen
   addresses from it.
+- Add a test that writes a frontend config file with a connect address and verifies the
+  frontend uses it.
 
 ---
 
