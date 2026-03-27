@@ -29,6 +29,7 @@ type Model struct {
 	cmdArgs     []string
 	Endpoint    string
 	Version     string
+	Changelog   string
 	RegionReady chan string
 	FocusCh     chan chan struct{} // raw loop reads this to enter focus mode
 	Detached    bool
@@ -37,11 +38,12 @@ type Model struct {
 	showHelp    bool
 	helpCursor  int
 	showHint    bool
-	showStatus   bool
-	serverStatus *protocol.StatusResponse
-	showLogView bool
-	logViewport viewport.Model
-	logHScroll  int
+	showStatus    bool
+	serverStatus  *protocol.StatusResponse
+	// Scrollable overlay viewer — used for log viewer and changelog
+	overlayMode    string // "" = hidden, "log", "changelog"
+	overlayVP      viewport.Model
+	overlayHScroll int
 	LogRing     *termlog.LogRingBuffer
 	regionID    string
 	regionName  string
@@ -72,7 +74,7 @@ func (m Model) contentHeight() int {
 	return h
 }
 
-func NewModel(c *client.Client, cmd string, args []string, ring *termlog.LogRingBuffer, endpoint, version string) Model {
+func NewModel(c *client.Client, cmd string, args []string, ring *termlog.LogRingBuffer, endpoint, version, changelog string) Model {
 	hostname, _ := os.Hostname()
 	return Model{
 		client:        c,
@@ -80,6 +82,7 @@ func NewModel(c *client.Client, cmd string, args []string, ring *termlog.LogRing
 		cmdArgs:       args,
 		Endpoint:      endpoint,
 		Version:       version,
+		Changelog:     changelog,
 		localHostname: hostname,
 		RegionReady:   make(chan string, 1),
 		FocusCh:       make(chan chan struct{}, 1),
@@ -240,8 +243,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Position cursor to match server
 		m.localScreen.CursorPosition(int(msg.CursorRow)+1, int(msg.CursorCol)+1)
-		if m.showLogView {
-			m.refreshLogViewport()
+		if m.overlayMode == "log" {
+			m.refreshOverlay()
 		}
 		if m.pendingClear {
 			m.pendingClear = false
@@ -301,8 +304,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				)
 			}
 		}
-		if m.showLogView {
-			m.refreshLogViewport()
+		if m.overlayMode == "log" {
+			m.refreshOverlay()
 		}
 		return m, waitForUpdate(m.client)
 
@@ -353,8 +356,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case LogEntryMsg:
-		if m.showLogView {
-			m.refreshLogViewport()
+		if m.overlayMode == "log" {
+			m.refreshOverlay()
 		}
 		return m, nil
 
@@ -399,14 +402,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyPressMsg:
+		if m.overlayMode != "" {
+			return m.updateOverlayViewer(msg)
+		}
 		if m.showStatus {
 			return m.updateStatusViewer(msg)
 		}
 		if m.showHelp {
 			return m.updateHelpViewer(msg)
-		}
-		if m.showLogView {
-			return m.updateLogViewer(msg)
 		}
 		return m.updatePrefixCommand(msg)
 
@@ -430,8 +433,8 @@ func (m Model) updatePrefixCommand(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "l":
-		m.showLogView = true
-		m.initLogViewport()
+		m.overlayMode = "log"
+		m.initOverlay(m.LogRing.String(), true)
 		done := make(chan struct{})
 		m.focusDone = done
 		select {
@@ -462,6 +465,16 @@ func (m Model) updatePrefixCommand(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			_ = m.client.Send(protocol.StatusRequest{Type: "status_request"})
 			return nil
 		}
+	case "n":
+		m.overlayMode = "changelog"
+		m.initOverlay(strings.TrimRight(m.Changelog, "\n"), false)
+		done := make(chan struct{})
+		m.focusDone = done
+		select {
+		case m.FocusCh <- done:
+		default:
+		}
+		return m, nil
 	case "r":
 		// Request a full screen refresh from the server.
 		// The ClearScreen happens when the response arrives (in ScreenUpdateMsg).
@@ -496,8 +509,8 @@ var helpItems = []helpItem{
 		return m, tea.Quit
 	}},
 	{"l", "log viewer", func(m Model) (Model, tea.Cmd) {
-		m.showLogView = true
-		m.initLogViewport()
+		m.overlayMode = "log"
+		m.initOverlay(m.LogRing.String(), true)
 		done := make(chan struct{})
 		m.focusDone = done
 		select {
@@ -516,6 +529,17 @@ var helpItems = []helpItem{
 		default:
 		}
 		_ = m.client.Send(protocol.StatusRequest{Type: "status_request"})
+		return m, nil
+	}},
+	{"n", "release notes", func(m Model) (Model, tea.Cmd) {
+		m.overlayMode = "changelog"
+		m.initOverlay(strings.TrimRight(m.Changelog, "\n"), false)
+		done := make(chan struct{})
+		m.focusDone = done
+		select {
+		case m.FocusCh <- done:
+		default:
+		}
 		return m, nil
 	}},
 	{"r", "refresh screen", func(m Model) (Model, tea.Cmd) {
@@ -549,6 +573,8 @@ func (m Model) closeHelp() Model {
 	}
 	return m
 }
+
+
 
 func (m Model) updateStatusViewer(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
@@ -596,36 +622,36 @@ func (m Model) updateHelpViewer(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
-func (m Model) updateLogViewer(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+func (m Model) updateOverlayViewer(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q", "esc":
-		m.showLogView = false
-		m.logHScroll = 0
+		m.overlayMode = ""
+		m.overlayHScroll = 0
 		if m.focusDone != nil {
 			close(m.focusDone)
 			m.focusDone = nil
 		}
 		return m, nil
 	case "left":
-		if m.logHScroll > 0 {
-			m.logHScroll--
+		if m.overlayHScroll > 0 {
+			m.overlayHScroll--
 		}
 		return m, nil
 	case "right":
-		m.logHScroll++
+		m.overlayHScroll++
 		return m, nil
 	case "home":
-		m.logHScroll = 0
-		m.logViewport.GotoTop()
+		m.overlayHScroll = 0
+		m.overlayVP.GotoTop()
 		return m, nil
 	default:
 		var cmd tea.Cmd
-		m.logViewport, cmd = m.logViewport.Update(msg)
+		m.overlayVP, cmd = m.overlayVP.Update(msg)
 		return m, cmd
 	}
 }
 
-func (m *Model) initLogViewport() {
+func (m *Model) initOverlay(content string, gotoBottom bool) {
 	w := m.termWidth * 80 / 100
 	h := m.termHeight * 80 / 100
 	if w < 20 {
@@ -634,21 +660,22 @@ func (m *Model) initLogViewport() {
 	if h < 5 {
 		h = 5
 	}
-	// Wide viewport — horizontal truncation is handled in the render step
-	// so horizontal scrolling can access the full line content.
-	m.logViewport = viewport.New(viewport.WithWidth(10000), viewport.WithHeight(h-3))
-	m.refreshLogViewport()
-	m.logViewport.GotoBottom()
+	m.overlayHScroll = 0
+	m.overlayVP = viewport.New(viewport.WithWidth(10000), viewport.WithHeight(h-3))
+	m.overlayVP.SetContent(content)
+	if gotoBottom {
+		m.overlayVP.GotoBottom()
+	}
 }
 
-func (m *Model) refreshLogViewport() {
-	if m.LogRing == nil {
+func (m *Model) refreshOverlay() {
+	if m.overlayMode != "log" || m.LogRing == nil {
 		return
 	}
-	atBottom := m.logViewport.AtBottom()
-	m.logViewport.SetContent(m.LogRing.String())
+	atBottom := m.overlayVP.AtBottom()
+	m.overlayVP.SetContent(m.LogRing.String())
 	if atBottom {
-		m.logViewport.GotoBottom()
+		m.overlayVP.GotoBottom()
 	}
 }
 

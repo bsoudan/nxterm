@@ -43,13 +43,16 @@ func renderView(m Model) string {
 	if m.status != "" {
 		rightInfo = m.status
 	}
-	if m.showStatus {
+	if m.overlayMode == "changelog" {
+		rightInfo = "release notes"
+		rightBold = true
+	} else if m.showStatus {
 		rightInfo = "status"
 		rightBold = true
 	} else if m.showHelp {
 		rightInfo = "help"
 		rightBold = true
-	} else if m.showLogView {
+	} else if m.overlayMode == "log" {
 		rightInfo = "logviewer"
 		rightBold = true
 	} else if m.prefixMode {
@@ -65,7 +68,7 @@ func renderView(m Model) string {
 		rightRed = true
 	}
 	suffix := "termd-tui"
-	if m.Version != "" && (m.showHint || m.showHelp) {
+	if m.Version != "" && (m.showHint || m.showHelp || m.overlayMode == "changelog") {
 		suffix = "termd-tui " + m.Version
 	}
 	sb.WriteString(renderTabBar(m.regionName, rightInfo, suffix, rightBold, rightRed, width))
@@ -75,7 +78,7 @@ func renderView(m Model) string {
 	if contentHeight < 1 {
 		contentHeight = 1
 	}
-	showCursor := !m.showLogView
+	showCursor := m.overlayMode == ""
 	disconnected := m.connStatus == "reconnecting"
 
 	if m.localScreen != nil {
@@ -121,14 +124,14 @@ func renderView(m Model) string {
 
 	base := sb.String()
 
+	if m.overlayMode != "" {
+		return renderScrollableOverlay(m, base, width, height)
+	}
 	if m.showStatus {
 		return renderStatusOverlay(base, m, width, height)
 	}
 	if m.showHelp {
 		return renderHelpOverlay(base, m.helpCursor, width, height)
-	}
-	if m.showLogView {
-		return renderLogOverlay(m, base, width, height)
 	}
 	return base
 }
@@ -279,7 +282,7 @@ func teColorSGR(c te.Color, isBg bool) string {
 	return "39"
 }
 
-func renderLogOverlay(m Model, base string, width, height int) string {
+func renderScrollableOverlay(m Model, base string, width, height int) string {
 	overlayW := width * 80 / 100
 	overlayH := height * 80 / 100
 	if overlayW < 20 {
@@ -289,21 +292,20 @@ func renderLogOverlay(m Model, base string, width, height int) string {
 		overlayH = 5
 	}
 
-	content := m.logViewport.View()
+	content := m.overlayVP.View()
 
-	// overlayH = border(2) + log content + help(1)
-	maxLogLines := overlayH - 3
+	maxLines := overlayH - 3
 	maxContentWidth := overlayW - 4
 
 	contentLines := strings.Split(content, "\n")
-	if len(contentLines) > maxLogLines {
-		contentLines = contentLines[:maxLogLines]
+	if len(contentLines) > maxLines {
+		contentLines = contentLines[:maxLines]
 	}
 	for i, line := range contentLines {
 		runes := []rune(line)
-		if m.logHScroll > 0 && m.logHScroll < len(runes) {
-			runes = runes[m.logHScroll:]
-		} else if m.logHScroll >= len(runes) {
+		if m.overlayHScroll > 0 && m.overlayHScroll < len(runes) {
+			runes = runes[m.overlayHScroll:]
+		} else if m.overlayHScroll >= len(runes) {
 			runes = nil
 		}
 		if len(runes) > maxContentWidth {
@@ -316,19 +318,17 @@ func renderLogOverlay(m Model, base string, width, height int) string {
 
 	dialog := overlayBorder.
 		Width(overlayW).
-		Height(maxLogLines).
+		Height(maxLines).
 		Render(content)
 
-	// lipgloss Height doesn't truncate — hard-clamp and re-add bottom border
 	dialogLines := strings.Split(dialog, "\n")
-	maxBoxLines := maxLogLines + 2 // content + border top/bottom
+	maxBoxLines := maxLines + 2
 	if len(dialogLines) > maxBoxLines {
 		lastLine := dialogLines[len(dialogLines)-1]
 		dialogLines = dialogLines[:maxBoxLines-1]
 		dialogLines = append(dialogLines, lastLine)
 	}
 
-	// Add help text below the border in dot-bar style
 	help := barStyle.Render("• q/esc: close • ↑↓/pgup/pgdn: scroll • ←→: pan • home: top •")
 	helpPad := (overlayW + 2 - lipgloss.Width(help)) / 2
 	if helpPad < 0 {

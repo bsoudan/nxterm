@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"io"
 	"log/slog"
@@ -20,6 +21,9 @@ import (
 )
 
 var version = "dev"
+
+//go:embed changelog.txt
+var changelog string
 
 func main() {
 	app := &cli.Command{
@@ -124,7 +128,7 @@ func runFrontend(_ context.Context, cmd *cli.Command) error {
 
 	pipeR, pipeW := io.Pipe()
 
-	model := ui.NewModel(c, shell, shellArgs, logRing, endpoint, version)
+	model := ui.NewModel(c, shell, shellArgs, logRing, endpoint, version, changelog)
 	p := tea.NewProgram(model,
 		tea.WithInput(pipeR),
 		tea.WithColorProfile(colorprofile.TrueColor),
