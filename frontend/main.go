@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -76,12 +77,13 @@ func main() {
 	if !strings.Contains(endpoint, ":") {
 		endpoint = "unix:" + endpoint
 	}
-	conn, err := transport.Dial(endpoint)
+	dialFn := func() (net.Conn, error) { return transport.Dial(endpoint) }
+	conn, err := dialFn()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: connect %s: %v\n", endpoint, err)
 		os.Exit(1)
 	}
-	c := client.New(conn, "termd-frontend")
+	c := client.New(conn, dialFn, "termd-frontend")
 	defer c.Close()
 
 	restore, err := ui.SetupRawTerminal()

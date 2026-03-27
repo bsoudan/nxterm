@@ -99,7 +99,7 @@ func connect(c *cli.Context) (*client.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return client.New(conn, "termctl"), nil
+	return client.New(conn, nil, "termctl"), nil
 }
 
 func recvType[T any](cl *client.Client) (T, error) {

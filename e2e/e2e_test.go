@@ -846,6 +846,84 @@ func TestRegionKilledExternally(t *testing.T) {
 	}
 }
 
+func TestReconnectUnix(t *testing.T) {
+	socketPath, serverCleanup := startServer(t)
+	defer serverCleanup()
+
+	pio, frontendCleanup := startFrontend(t, socketPath)
+	defer frontendCleanup()
+
+	pio.WaitFor(t, "termd$ ", 10*time.Second)
+
+	// Type a marker so we can verify content persists
+	pio.Write([]byte("echo reconnect_marker\r"))
+	pio.WaitFor(t, "reconnect_marker", 10*time.Second)
+	pio.WaitFor(t, "termd$ ", 10*time.Second)
+
+	// Find the frontend's client ID
+	clientID := findFrontendClientID(t, socketPath)
+
+	// Kill the client connection
+	runTermctl(t, socketPath, "client", "kill", clientID)
+
+	// Should see "reconnecting..." in the tab bar
+	pio.WaitFor(t, "reconnecting", 10*time.Second)
+
+	// Should reconnect and show the prompt again
+	pio.WaitFor(t, "termd$ ", 10*time.Second)
+
+	// Verify typing still works after reconnect
+	pio.Write([]byte("echo after_reconnect\r"))
+	pio.WaitFor(t, "after_reconnect", 10*time.Second)
+}
+
+func TestReconnectTCP(t *testing.T) {
+	socketPath, tcpAddr, serverCleanup := startServerWithTCP(t)
+	defer serverCleanup()
+
+	// Connect frontend via TCP
+	cmd := exec.Command("termd-frontend", "--socket", "tcp:"+tcpAddr, "--command", "bash --norc")
+	cmd.Env = append(os.Environ(), "TERM=dumb")
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 80})
+	if err != nil {
+		t.Fatalf("start frontend via TCP: %v", err)
+	}
+	pio := newPtyIO(ptmx, 80, 24)
+	defer func() { cmd.Process.Kill(); cmd.Wait(); ptmx.Close() }()
+
+	pio.WaitFor(t, "termd$ ", 10*time.Second)
+
+	// Find the frontend's client ID (use Unix socket for termctl)
+	clientID := findFrontendClientID(t, socketPath)
+
+	// Kill the client connection
+	runTermctl(t, socketPath, "client", "kill", clientID)
+
+	// Should reconnect
+	pio.WaitFor(t, "reconnecting", 10*time.Second)
+	pio.WaitFor(t, "termd$ ", 10*time.Second)
+
+	// Verify typing works
+	pio.Write([]byte("echo tcp_reconnected\r"))
+	pio.WaitFor(t, "tcp_reconnected", 10*time.Second)
+}
+
+// findFrontendClientID returns the client ID of the termd-frontend process.
+func findFrontendClientID(t *testing.T, socketPath string) string {
+	t.Helper()
+	out := runTermctl(t, socketPath, "client", "list")
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "termd-frontend") {
+			fields := strings.Fields(line)
+			if len(fields) > 0 {
+				return fields[0]
+			}
+		}
+	}
+	t.Fatal("could not find termd-frontend client ID")
+	return ""
+}
+
 func TestExit(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()

@@ -63,6 +63,9 @@ type ServerErrorMsg struct {
 	Message string
 }
 
+type DisconnectedMsg struct{}
+type ReconnectedMsg struct{}
+
 // convertProtocolMsg converts a protocol-layer message to the corresponding
 // tea.Msg. Returns nil for unrecognized types.
 func convertProtocolMsg(msg any) tea.Msg {
@@ -95,6 +98,10 @@ func convertProtocolMsg(msg any) tea.Msg {
 			Regions: m.Regions,
 			Error: m.Error, Message: m.Message,
 		}
+	case client.DisconnectedMsg:
+		return DisconnectedMsg{}
+	case client.ReconnectedMsg:
+		return ReconnectedMsg{}
 	default:
 		slog.Debug("convertProtocolMsg: unrecognized message", "type", fmt.Sprintf("%T", m))
 		return nil

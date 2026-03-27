@@ -292,6 +292,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = "region destroyed"
 		return m, tea.Quit
 
+	case DisconnectedMsg:
+		m.connStatus = "reconnecting..."
+		return m, waitForUpdate(m.client)
+
+	case ReconnectedMsg:
+		m.connStatus = "connected"
+		// Re-subscribe to the previous region
+		if m.regionID != "" {
+			return m, tea.Batch(
+				func() tea.Msg {
+					err := m.client.Send(protocol.SubscribeRequest{
+						Type:     "subscribe_request",
+						RegionID: m.regionID,
+					})
+					if err != nil {
+						return ServerErrorMsg{Context: "resubscribe", Message: err.Error()}
+					}
+					return nil
+				},
+				waitForUpdate(m.client),
+			)
+		}
+		return m, waitForUpdate(m.client)
+
 	case ServerErrorMsg:
 		m.err = msg.Context + ": " + msg.Message
 		return m, tea.Quit
