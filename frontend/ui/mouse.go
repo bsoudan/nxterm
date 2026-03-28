@@ -9,9 +9,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// sgrMousePrefix is the byte sequence that starts an SGR mouse event.
-var sgrMousePrefix = []byte{0x1b, '[', '<'}
-
 // chromeRows is the number of rows used by termd-tui's chrome (tab bar)
 // above the content area.
 const chromeRows = 1
@@ -135,42 +132,6 @@ func mouseButtonSGR(b tea.MouseButton) int {
 	}
 }
 
-// extractSGRMouseSequences splits a byte buffer into mouse sequences and
-// non-mouse chunks. Returns parsed mouse messages and remaining non-mouse bytes.
-func extractSGRMouseSequences(buf []byte) (mice []tea.MouseMsg, rest []byte) {
-	for len(buf) > 0 {
-		idx := bytes.Index(buf, sgrMousePrefix)
-		if idx < 0 {
-			rest = append(rest, buf...)
-			return
-		}
-		if idx > 0 {
-			rest = append(rest, buf[:idx]...)
-		}
-		buf = buf[idx:]
-
-		end := -1
-		for i := 3; i < len(buf); i++ {
-			if buf[i] == 'M' || buf[i] == 'm' {
-				end = i
-				break
-			}
-			if buf[i] != ';' && (buf[i] < '0' || buf[i] > '9') {
-				break
-			}
-		}
-		if end < 0 {
-			rest = append(rest, buf...)
-			return
-		}
-
-		if msg := parseSGRMouse(buf[:end+1]); msg != nil {
-			mice = append(mice, msg)
-		}
-		buf = buf[end+1:]
-	}
-	return
-}
 
 // handleMouse processes mouse events.
 // Overlay mouse handling is done by overlay layers above session.

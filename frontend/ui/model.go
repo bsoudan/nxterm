@@ -1,18 +1,20 @@
 package ui
 
 import (
+	"bytes"
 	"io"
 	"os"
 	"slices"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	termlog "termd/frontend/log"
 	"termd/frontend/protocol"
 )
 
 // Model is the top-level bubbletea model. It owns the layer stack and
-// dispatches messages top-down. Protocol message unwrapping and req_id
-// matching happen here so all layers see unwrapped payloads.
+// dispatches messages top-down. Protocol message unwrapping, req_id
+// matching, raw input routing, and overlay compositing happen here.
 type Model struct {
 	layers   []Layer
 	req      *requestState
@@ -56,15 +58,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Tell session whether focus mode is needed (overlay layer active).
-	// CommandLayer and HintLayer are transparent — they don't need focus mode.
-	session := m.layers[0].(*SessionLayer)
-	session.focusMode = false
-	for i := 1; i < len(m.layers); i++ {
-		if _, ok := m.layers[i].(OverlayViewer); ok {
-			session.focusMode = true
-			break
+	// RawInputMsg: Model handles focus mode routing and ctrl+b detection.
+	// This must happen before the normal layer iteration because:
+	//  - Focus mode needs to feed one sequence at a time through pipeW
+	//    so overlay/command layers can pop between keystrokes.
+	//  - ctrl+b detection pushes CommandLayer before delivering the
+	//    remaining bytes, ensuring proper sequencing.
+	if raw, ok := msg.(RawInputMsg); ok {
+		session := m.layers[0].(*SessionLayer)
+		if m.hasFocusLayer(session) {
+			return m.handleFocusInput(raw, session.pipeW)
 		}
+		if idx := bytes.IndexByte([]byte(raw), prefixKey); idx >= 0 {
+			return m.handlePrefixDetected(raw, idx, session)
+		}
+		// Normal mode — fall through to layer iteration.
+		// Session handles mouse routing and server forwarding.
 	}
 
 	var cmds []tea.Cmd
@@ -84,6 +93,68 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, tea.Batch(cmds...)
+}
+
+// hasFocusLayer returns true if any overlay or scrollback mode is active,
+// meaning raw input should be routed through pipeW for key event parsing
+// rather than forwarded to the server.
+func (m Model) hasFocusLayer(session *SessionLayer) bool {
+	for i := 1; i < len(m.layers); i++ {
+		if _, ok := m.layers[i].(OverlayViewer); ok {
+			return true
+		}
+		if _, ok := m.layers[i].(*CommandLayer); ok {
+			return true
+		}
+	}
+	return session.term != nil && session.term.ScrollbackActive()
+}
+
+// handleFocusInput routes raw input through pipeW one sequence at a time.
+// This allows layers to pop between keystrokes — for example, CommandLayer
+// handles one key and pops, then remaining bytes arrive as a new RawInputMsg
+// in the next Update cycle where CommandLayer is no longer on the stack.
+func (m Model) handleFocusInput(raw RawInputMsg, pipeW io.Writer) (tea.Model, tea.Cmd) {
+	_, _, n, _ := ansi.DecodeSequence([]byte(raw), ansi.NormalState, nil)
+	if n <= 0 {
+		n = len(raw)
+	}
+
+	first := make([]byte, n)
+	copy(first, raw[:n])
+	writeCmd := func() tea.Msg {
+		pipeW.Write(first)
+		return nil
+	}
+
+	if n < len(raw) {
+		rest := make([]byte, len(raw)-n)
+		copy(rest, raw[n:])
+		resendCmd := func() tea.Msg { return RawInputMsg(rest) }
+		return m, tea.Sequence(writeCmd, resendCmd)
+	}
+	return m, writeCmd
+}
+
+// handlePrefixDetected handles a RawInputMsg that contains ctrl+b.
+// Bytes before ctrl+b are forwarded to the server. A CommandLayer is
+// pushed, then any bytes after ctrl+b are re-sent as a new RawInputMsg
+// for CommandLayer to process. tea.Sequence guarantees the push happens
+// before the re-send.
+func (m Model) handlePrefixDetected(raw RawInputMsg, idx int, session *SessionLayer) (tea.Model, tea.Cmd) {
+	if idx > 0 {
+		session.sendRawToServer(raw[:idx])
+	}
+
+	pushCmd := func() tea.Msg { return PushLayerMsg{Layer: NewCommandLayer(session)} }
+	rest := raw[idx+1:]
+	if len(rest) > 0 {
+		restCopy := make([]byte, len(rest))
+		copy(restCopy, rest)
+		resendCmd := func() tea.Msg { return RawInputMsg(restCopy) }
+		return m, tea.Sequence(pushCmd, resendCmd)
+	}
+	return m, pushCmd
 }
 
 func (m Model) View() tea.View {

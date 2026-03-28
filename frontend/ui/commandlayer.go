@@ -8,8 +8,10 @@ import (
 )
 
 // CommandLayer is a temporary layer pushed when ctrl+b is detected.
-// It captures the next RawInputMsg byte, dispatches the command,
-// and pops itself.
+// It captures the next KeyPressMsg, dispatches the command via session,
+// and pops itself. Model routes raw input through pipeW when
+// CommandLayer is on the stack, so bubbletea parses the next byte
+// into a KeyPressMsg.
 type CommandLayer struct {
 	session *SessionLayer
 }
@@ -19,38 +21,33 @@ func NewCommandLayer(session *SessionLayer) *CommandLayer {
 }
 
 func (c *CommandLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
-	raw, ok := msg.(RawInputMsg)
+	key, ok := msg.(tea.KeyPressMsg)
 	if !ok {
-		return nil, nil, false // pass through to layers below
+		return nil, nil, false
 	}
 
-	resp, cmd := c.dispatch(raw[0])
-	if rest := raw[1:]; len(rest) > 0 {
-		c.session.sendRawToServer(rest)
-	}
-
-	// Pop self unless detaching (DetachMsg + tea.Quit handles exit)
+	resp, cmd := c.dispatch(key)
 	if resp == nil {
 		resp = QuitLayerMsg{}
 	}
 	return resp, cmd, true
 }
 
-func (c *CommandLayer) dispatch(key byte) (tea.Msg, tea.Cmd) {
+func (c *CommandLayer) dispatch(msg tea.KeyPressMsg) (tea.Msg, tea.Cmd) {
 	s := c.session
-	switch key {
-	case 'd':
+	switch msg.String() {
+	case "d":
 		return s.detach()
-	case prefixKey: // ctrl+b ctrl+b → send literal ctrl+b
+	case "ctrl+b":
 		s.sendRawToServer([]byte{prefixKey})
 		return nil, nil
-	case 'l':
+	case "l":
 		layer := NewScrollableLayer("logviewer", s.logRing.String(), true, s.logRing, s.termWidth, s.termHeight)
 		return nil, func() tea.Msg { return PushLayerMsg{Layer: layer} }
-	case '?':
+	case "?":
 		layer := NewHelpLayer(helpItems, s)
 		return nil, func() tea.Msg { return PushLayerMsg{Layer: layer} }
-	case 's':
+	case "s":
 		layer := NewStatusLayer(s.buildStatusCaps())
 		s.requestFn(protocol.StatusRequest{}, func(payload any) {
 			if resp, ok := payload.(*protocol.StatusResponse); ok {
@@ -58,15 +55,15 @@ func (c *CommandLayer) dispatch(key byte) (tea.Msg, tea.Cmd) {
 			}
 		})
 		return nil, func() tea.Msg { return PushLayerMsg{Layer: layer} }
-	case 'n':
+	case "n":
 		layer := NewScrollableLayer("release notes", strings.TrimRight(s.changelog, "\n"), false, nil, s.termWidth, s.termHeight)
 		return nil, func() tea.Msg { return PushLayerMsg{Layer: layer} }
-	case '[':
+	case "[":
 		if s.term != nil {
 			s.term.EnterScrollback(0)
 		}
 		return nil, nil
-	case 'r':
+	case "r":
 		if s.term != nil {
 			s.term.SetPendingClear()
 			s.server.Send(protocol.GetScreenRequest{
