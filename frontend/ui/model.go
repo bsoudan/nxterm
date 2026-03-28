@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"charm.land/bubbles/v2/viewport"
@@ -41,8 +42,9 @@ type Model struct {
 	Endpoint    string
 	Version     string
 	Changelog   string
-	RegionReady chan string
-	FocusCh     chan chan struct{} // raw loop reads this to enter focus mode
+	RegionReady    chan string
+	FocusCh        chan chan struct{} // raw loop reads this to enter focus mode
+	ChildWantsMouse *atomic.Bool      // raw loop checks this to route mouse events
 	Detached    bool
 	prefixMode  bool
 	focusDone   chan struct{}
@@ -92,18 +94,19 @@ func (m Model) contentHeight() int {
 func NewModel(c *client.Client, cmd string, args []string, ring *termlog.LogRingBuffer, endpoint, version, changelog string) Model {
 	hostname, _ := os.Hostname()
 	return Model{
-		client:        c,
-		cmd:           cmd,
-		cmdArgs:       args,
-		Endpoint:      endpoint,
-		Version:       version,
-		Changelog:     changelog,
-		localHostname: hostname,
-		RegionReady:   make(chan string, 1),
-		FocusCh:       make(chan chan struct{}, 1),
-		LogRing:       ring,
-		connStatus:    "connected",
-		status:        "connecting...",
+		client:          c,
+		cmd:             cmd,
+		cmdArgs:         args,
+		Endpoint:        endpoint,
+		Version:         version,
+		Changelog:       changelog,
+		localHostname:   hostname,
+		RegionReady:     make(chan string, 1),
+		FocusCh:         make(chan chan struct{}, 1),
+		ChildWantsMouse: &atomic.Bool{},
+		LogRing:         ring,
+		connStatus:      "connected",
+		status:          "connecting...",
 	}
 }
 
@@ -396,8 +399,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ScrollbackResponseMsg:
 		m.scrollbackCells = msg.Lines
-		// Start at the bottom of scrollback (most recent history)
-		m.scrollbackOffset = 0
 		return m, waitForUpdate(m.client)
 
 	case tea.KeyboardEnhancementsMsg:
@@ -814,36 +815,31 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	// Child doesn't want mouse — scroll wheel enters/navigates scrollback
 	if wheel, ok := msg.(tea.MouseWheelMsg); ok {
 		if m.scrollbackMode {
-			maxOffset := len(m.scrollbackCells)
 			switch wheel.Button {
 			case tea.MouseWheelUp:
 				m.scrollbackOffset += 3
-				if m.scrollbackOffset > maxOffset {
-					m.scrollbackOffset = maxOffset
-				}
 			case tea.MouseWheelDown:
 				m.scrollbackOffset -= 3
-				if m.scrollbackOffset < 0 {
-					m.scrollbackOffset = 0
+				if m.scrollbackOffset <= 0 {
+					// Scrolled back to live — exit scrollback
+					m = m.exitScrollback()
+					return m, nil
 				}
 			}
 			return m, nil
 		}
-		// Scroll up activates scrollback mode
+		// Scroll up activates scrollback mode (no focus mode —
+		// scroll wheel events always arrive via program.Send)
 		if wheel.Button == tea.MouseWheelUp && m.regionID != "" {
 			m.scrollbackMode = true
 			m.scrollbackOffset = 3
-			done := make(chan struct{})
-			m.focusDone = done
-			select {
-			case m.FocusCh <- done:
-			default:
+			return m, func() tea.Msg {
+				_ = m.client.Send(protocol.GetScrollbackRequest{
+					Type:     "get_scrollback_request",
+					RegionID: m.regionID,
+				})
+				return nil
 			}
-			_ = m.client.Send(protocol.GetScrollbackRequest{
-				Type:     "get_scrollback_request",
-				RegionID: m.regionID,
-			})
-			return m, nil
 		}
 	}
 	return m, nil
@@ -1186,11 +1182,18 @@ func (m Model) View() tea.View {
 	// Enable mouse on the real terminal when the child app requests it,
 	// or for scroll wheel support in termd-tui's own UI.
 	if m.localScreen != nil {
-		if _, ok := m.localScreen.Mode[privateModeKey(ansi.ModeMouseAnyEvent.Mode())]; ok {
+		_, m1000 := m.localScreen.Mode[privateModeKey(ansi.ModeMouseNormal.Mode())]
+		_, m1002 := m.localScreen.Mode[privateModeKey(ansi.ModeMouseButtonEvent.Mode())]
+		_, m1003 := m.localScreen.Mode[privateModeKey(ansi.ModeMouseAnyEvent.Mode())]
+		childMouse := m1000 || m1002 || m1003
+
+		// Update the atomic flag so the raw input loop knows whether to
+		// forward mouse events to the server or route them to bubbletea.
+		m.ChildWantsMouse.Store(childMouse)
+
+		if m1003 {
 			v.MouseMode = tea.MouseModeAllMotion
-		} else if _, ok := m.localScreen.Mode[privateModeKey(ansi.ModeMouseButtonEvent.Mode())]; ok {
-			v.MouseMode = tea.MouseModeCellMotion
-		} else if _, ok := m.localScreen.Mode[privateModeKey(ansi.ModeMouseNormal.Mode())]; ok {
+		} else if m1002 || m1000 {
 			v.MouseMode = tea.MouseModeCellMotion
 		} else {
 			// Child doesn't want mouse — enable for scroll wheel / selection

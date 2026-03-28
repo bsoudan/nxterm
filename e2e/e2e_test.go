@@ -989,6 +989,67 @@ func TestScrollbackNavigation(t *testing.T) {
 	}, "prompt visible, scrollback gone from tab bar", 5*time.Second)
 }
 
+func TestScrollbackScrollWheel(t *testing.T) {
+	socketPath, serverCleanup := startServer(t)
+	defer serverCleanup()
+
+	pio, frontendCleanup := startFrontend(t, socketPath)
+	defer frontendCleanup()
+
+	pio.WaitFor(t, "termd$ ", 10*time.Second)
+
+	// Generate output that scrolls off screen
+	pio.Write([]byte("seq 1 200\r"))
+	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.WaitForSilence(200 * time.Millisecond)
+
+	// Send a scroll wheel up event to activate scrollback
+	pio.Write([]byte(fmt.Sprintf("%c[<64;5;5M", ansi.ESC)))
+
+	// Wait for scrollback data to arrive (not just mode activation)
+	pio.WaitForScreen(t, func(lines []string) bool {
+		// Tab bar should show scrollback with non-zero total
+		return strings.Contains(lines[0], "scrollback") &&
+			!strings.Contains(lines[0], "/0]")
+	}, "scrollback data loaded", 5*time.Second)
+
+	// Send more scroll wheel up events to scroll to the top
+	for range 70 {
+		pio.Write([]byte(fmt.Sprintf("%c[<64;5;5M", ansi.ESC)))
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Verify early numbers appear on screen
+	pio.WaitForScreen(t, func(lines []string) bool {
+		for _, line := range lines[1:] {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "1" || trimmed == "2" || trimmed == "3" {
+				return true
+			}
+		}
+		return false
+	}, "early numbers visible via scroll wheel", 5*time.Second)
+
+	// Scroll wheel down past offset 0 to auto-exit scrollback
+	for range 80 {
+		pio.Write([]byte(fmt.Sprintf("%c[<65;5;5M", ansi.ESC)))
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Verify scrollback exited and prompt is visible
+	pio.WaitForScreen(t, func(lines []string) bool {
+		if strings.Contains(lines[0], "scrollback") {
+			return false
+		}
+		for _, line := range lines {
+			if strings.Contains(line, "termd$ ") {
+				return true
+			}
+		}
+		return false
+	}, "prompt visible after scroll down exit", 5*time.Second)
+}
+
 func TestWebSocketTransport(t *testing.T) {
 	socketPath, addrs, serverCleanup := startServerWithListeners(t, "ws://127.0.0.1:0")
 	defer serverCleanup()

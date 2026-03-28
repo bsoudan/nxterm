@@ -54,7 +54,12 @@ func renderView(m Model) string {
 		rightInfo = "help"
 		rightBold = true
 	} else if m.scrollbackMode {
-		rightInfo = fmt.Sprintf("scrollback [%d/%d]", m.scrollbackOffset, len(m.scrollbackCells))
+		offset := m.scrollbackOffset
+		total := len(m.scrollbackCells)
+		if offset > total {
+			offset = total
+		}
+		rightInfo = fmt.Sprintf("scrollback [%d/%d]", offset, total)
 		rightBold = true
 	} else if m.overlayMode == "log" {
 		rightInfo = "logviewer"
@@ -149,11 +154,17 @@ func renderView(m Model) string {
 func renderScrollbackContent(sb *strings.Builder, m Model, width, contentHeight int) {
 	screenCells := m.localScreen.LinesCells()
 
+	// Clamp offset to available scrollback
+	offset := m.scrollbackOffset
+	if offset > len(m.scrollbackCells) {
+		offset = len(m.scrollbackCells)
+	}
+
 	// Build combined buffer: scrollback (oldest first) + screen
 	totalLines := len(m.scrollbackCells) + len(screenCells)
 
 	// The visible window starts at (totalLines - contentHeight - offset)
-	startIdx := totalLines - contentHeight - m.scrollbackOffset
+	startIdx := totalLines - contentHeight - offset
 	if startIdx < 0 {
 		startIdx = 0
 	}

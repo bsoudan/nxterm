@@ -140,7 +140,7 @@ func runFrontend(_ context.Context, cmd *cli.Command) error {
 	}
 
 	logHandler.SetNotifyFn(func() { p.Send(ui.LogEntryMsg{}) })
-	go ui.RawInputLoop(stdinDup, c, model.RegionReady, pipeW, p, model.FocusCh)
+	go ui.RawInputLoop(stdinDup, c, model.RegionReady, pipeW, p, model.FocusCh, model.ChildWantsMouse)
 
 	finalModel, err := p.Run()
 	stdinDup.Close()
