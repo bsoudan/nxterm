@@ -12,15 +12,15 @@ build-server:
 	cd server && go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o ../.local/bin/termd .
 
 changelog:
-	@if git diff --quiet HEAD 2>/dev/null && test -z "$$(git ls-files --others --exclude-standard)"; then \
-		:; \
-	else \
-		printf '%18s %s\n' "$$(git describe --tags --always --dirty='*' 2>/dev/null):" "$$(git status --short | tr '\n' ' ')" > frontend/changelog.txt; \
-	fi
+	@tmp=$$(mktemp); \
+	if ! git diff --quiet HEAD 2>/dev/null || test -n "$$(git ls-files --others --exclude-standard)"; then \
+		printf '%18s %s\n' "$$(git describe --tags --always --dirty='*' 2>/dev/null):" "$$(git status --short | tr '\n' ' ')" > "$$tmp"; \
+	fi; \
 	git log --format='%H %s' -100 | while read hash rest; do \
 		ver=$$(git describe --tags --always $$hash 2>/dev/null); \
 		printf '%18s %s\n' "$$ver:" "$$rest"; \
-	done >> frontend/changelog.txt
+	done >> "$$tmp"; \
+	mv "$$tmp" frontend/changelog.txt
 
 build-tui: changelog
 	cd frontend && go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o ../.local/bin/termd-tui .
