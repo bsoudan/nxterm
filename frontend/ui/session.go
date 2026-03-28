@@ -2,6 +2,7 @@ package ui
 
 import (
 	"io"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -105,6 +106,33 @@ func (s *SessionLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 	case RawInputMsg:
 		resp, cmd := s.handleRawInput([]byte(msg))
 		return resp, cmd, true
+
+	case DetachRequestMsg:
+		resp, cmd := s.detach()
+		return resp, cmd, true
+
+	case SendLiteralPrefixMsg:
+		s.sendRawToServer([]byte{prefixKey})
+		return nil, nil, true
+
+	case OpenOverlayMsg:
+		cmd := s.openOverlay(msg.Name)
+		return nil, cmd, true
+
+	case EnterScrollbackMsg:
+		if s.term != nil {
+			s.term.EnterScrollback(0)
+		}
+		return nil, nil, true
+
+	case RefreshScreenMsg:
+		if s.term != nil {
+			s.term.SetPendingClear()
+			s.server.Send(protocol.GetScreenRequest{
+				RegionID: s.term.RegionID(),
+			})
+		}
+		return nil, nil, true
 
 	case protocol.Identify:
 		if msg.Hostname != s.localHostname {
@@ -274,6 +302,30 @@ func (s *SessionLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 	default:
 		return nil, nil, true
 	}
+}
+
+func (s *SessionLayer) openOverlay(name string) tea.Cmd {
+	var layer Layer
+	switch name {
+	case "logviewer":
+		layer = NewScrollableLayer("logviewer", s.logRing.String(), true, s.logRing, s.termWidth, s.termHeight)
+	case "help":
+		layer = NewHelpLayer(helpItems)
+	case "status":
+		sl := NewStatusLayer(s.buildStatusCaps())
+		s.requestFn(protocol.StatusRequest{}, func(payload any) {
+			if resp, ok := payload.(*protocol.StatusResponse); ok {
+				sl.SetStatus(resp)
+			}
+		})
+		layer = sl
+	case "release notes":
+		layer = NewScrollableLayer("release notes", strings.TrimRight(s.changelog, "\n"), false, nil, s.termWidth, s.termHeight)
+	}
+	if layer == nil {
+		return nil
+	}
+	return func() tea.Msg { return PushLayerMsg{Layer: layer} }
 }
 
 func (s *SessionLayer) buildStatusCaps() StatusCaps {

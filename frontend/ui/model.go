@@ -146,7 +146,7 @@ func (m Model) handlePrefixDetected(raw RawInputMsg, idx int, session *SessionLa
 		session.sendRawToServer(raw[:idx])
 	}
 
-	pushCmd := func() tea.Msg { return PushLayerMsg{Layer: NewCommandLayer(session)} }
+	pushCmd := func() tea.Msg { return PushLayerMsg{Layer: &CommandLayer{}} }
 	rest := raw[idx+1:]
 	if len(rest) > 0 {
 		restCopy := make([]byte, len(rest))

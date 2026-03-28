@@ -138,14 +138,15 @@ func (s *StatusLayer) Status() (string, bool, bool) { return "status", true, fal
 // ── Help layer ──────────────────────────────────────────────────────────────
 
 // HelpLayer shows available ctrl+b commands and dispatches selections.
+// It has no reference to session — actions produce command messages that
+// session handles via the normal layer stack.
 type HelpLayer struct {
-	cursor  int
-	items   []helpItem
-	session *SessionLayer
+	cursor int
+	items  []helpItem
 }
 
-func NewHelpLayer(items []helpItem, session *SessionLayer) *HelpLayer {
-	return &HelpLayer{items: items, session: session}
+func NewHelpLayer(items []helpItem) *HelpLayer {
+	return &HelpLayer{items: items}
 }
 
 func (h *HelpLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
@@ -173,20 +174,11 @@ func (h *HelpLayer) handleKey(msg tea.KeyPressMsg) (tea.Msg, tea.Cmd, bool) {
 		}
 		return nil, nil, true
 	case "enter":
-		action := h.items[h.cursor].action
-		resp, cmd := action(h.session)
-		if resp == nil {
-			resp = QuitLayerMsg{}
-		}
-		return resp, cmd, true
+		return QuitLayerMsg{}, h.items[h.cursor].action(), true
 	default:
 		for _, item := range h.items {
 			if msg.String() == item.key {
-				resp, cmd := item.action(h.session)
-				if resp == nil {
-					resp = QuitLayerMsg{}
-				}
-				return resp, cmd, true
+				return QuitLayerMsg{}, item.action(), true
 			}
 		}
 		return nil, nil, true
