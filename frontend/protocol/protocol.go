@@ -233,16 +233,30 @@ type TerminalEvents struct {
 // ── Parsing ─────────────────────────────────────────────────────────────────
 
 type envelope struct {
-	Type string `json:"type,omitempty"`
+	Type  string `json:"type,omitempty"`
+	ReqID uint64 `json:"req_id,omitempty"`
 }
 
-func ParseInbound(line []byte) (any, error) {
+// Message wraps a parsed protocol message with its envelope metadata.
+type Message struct {
+	ReqID   uint64
+	Payload any
+}
+
+func ParseInbound(line []byte) (Message, error) {
 	var env envelope
 	if err := json.Unmarshal(line, &env); err != nil {
-		return nil, fmt.Errorf("parse type tag: %w", err)
+		return Message{}, fmt.Errorf("parse type tag: %w", err)
 	}
+	payload, err := parsePayload(env.Type, line)
+	if err != nil {
+		return Message{}, err
+	}
+	return Message{ReqID: env.ReqID, Payload: payload}, nil
+}
 
-	switch env.Type {
+func parsePayload(typ string, line []byte) (any, error) {
+	switch typ {
 	case "identify":
 		var msg Identify
 		return msg, json.Unmarshal(line, &msg)
@@ -292,31 +306,34 @@ func ParseInbound(line []byte) (any, error) {
 		var msg UnsubscribeResponse
 		return msg, json.Unmarshal(line, &msg)
 	default:
-		return nil, fmt.Errorf("unknown message type: %s", env.Type)
+		return nil, fmt.Errorf("unknown message type: %s", typ)
 	}
 }
 
 // tagged wraps a message with its type tag for JSON marshaling.
 // The Type field is set automatically so callers don't need to.
 type tagged struct {
-	Type string `json:"type,omitempty"`
-	Msg  any    `json:"-"`
+	Type  string `json:"type"`
+	ReqID uint64 `json:"req_id,omitempty"`
+	Msg   any    `json:"-"`
 }
 
 func (t tagged) MarshalJSON() ([]byte, error) {
-	// Marshal the inner message, then inject the type field.
 	data, err := json.Marshal(t.Msg)
 	if err != nil {
 		return nil, err
 	}
-	// Replace the opening { with {"type":"tag",
-	result := make([]byte, 0, len(data)+len(t.Type)+12)
+	result := make([]byte, 0, len(data)+len(t.Type)+30)
 	result = append(result, `{"type":"`...)
 	result = append(result, t.Type...)
 	result = append(result, '"')
-	if len(data) > 2 { // more than just {}
+	if t.ReqID > 0 {
+		result = append(result, `,"req_id":`...)
+		result = fmt.Appendf(result, "%d", t.ReqID)
+	}
+	if len(data) > 2 {
 		result = append(result, ',')
-		result = append(result, data[1:]...) // skip opening {
+		result = append(result, data[1:]...)
 	} else {
 		result = append(result, '}')
 	}
@@ -324,14 +341,21 @@ func (t tagged) MarshalJSON() ([]byte, error) {
 }
 
 // Tagged wraps a protocol message with its type tag for JSON marshaling.
-// If the type is not recognized, the message is returned as-is (it may
-// already have a Type field set).
 func Tagged(msg any) any {
 	tag := typeTag(msg)
 	if tag == "" {
 		return msg
 	}
 	return tagged{Type: tag, Msg: msg}
+}
+
+// TaggedWithReqID wraps a protocol message with its type tag and request ID.
+func TaggedWithReqID(msg any, reqID uint64) any {
+	tag := typeTag(msg)
+	if tag == "" {
+		return msg
+	}
+	return tagged{Type: tag, ReqID: reqID, Msg: msg}
 }
 
 func typeTag(msg any) string {

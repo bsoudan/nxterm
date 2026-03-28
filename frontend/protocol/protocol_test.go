@@ -11,7 +11,7 @@ func TestParseInboundSpawnResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	sr, ok := msg.(SpawnResponse)
+	sr, ok := msg.Payload.(SpawnResponse)
 	if !ok {
 		t.Fatalf("expected SpawnResponse, got %T", msg)
 	}
@@ -29,7 +29,7 @@ func TestParseInboundTerminalEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	te, ok := msg.(TerminalEvents)
+	te, ok := msg.Payload.(TerminalEvents)
 	if !ok {
 		t.Fatalf("expected TerminalEvents, got %T", msg)
 	}

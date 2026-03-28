@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net"
 	"os"
@@ -51,6 +52,29 @@ func (c *Client) ReadLoop() {
 	}
 }
 
+// replyFunc returns a function that sends a response with the given req_id.
+func (c *Client) replyFunc(reqID uint64) func(any) {
+	return func(msg any) {
+		c.sendReply(msg, reqID)
+	}
+}
+
+// sendReply marshals a response and injects req_id into the JSON.
+func (c *Client) sendReply(msg any, reqID uint64) {
+	data, err := json.Marshal(msg)
+	if err != nil {
+		slog.Debug("marshal error", "client_id", c.id, "err", err)
+		return
+	}
+	if reqID > 0 {
+		inject := fmt.Sprintf(`,"req_id":%d}`, reqID)
+		data = append(data[:len(data)-1], []byte(inject)...)
+	}
+	data = append(data, '\n')
+	c.writeRaw(data)
+}
+
+// SendMessage sends a message to the client (no req_id).
 func (c *Client) SendMessage(msg any) {
 	data, err := json.Marshal(msg)
 	if err != nil {
@@ -58,15 +82,16 @@ func (c *Client) SendMessage(msg any) {
 		return
 	}
 	data = append(data, '\n')
+	c.writeRaw(data)
+}
 
+func (c *Client) writeRaw(data []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
 		return
 	}
-
-	_, err = c.conn.Write(data)
-	if err != nil {
+	if _, err := c.conn.Write(data); err != nil {
 		slog.Debug("client write error", "client_id", c.id, "err", err)
 	}
 }
@@ -118,7 +143,8 @@ func (c *Client) GetProcess() string {
 }
 
 type envelope struct {
-	Type string `json:"type"`
+	Type  string `json:"type"`
+	ReqID uint64 `json:"req_id,omitempty"`
 }
 
 func (c *Client) handleMessage(line []byte) {
@@ -127,6 +153,8 @@ func (c *Client) handleMessage(line []byte) {
 		slog.Debug("parse error", "client_id", c.id, "err", err)
 		return
 	}
+
+	reply := c.replyFunc(env.ReqID)
 
 	switch env.Type {
 	case "identify":
@@ -137,12 +165,12 @@ func (c *Client) handleMessage(line []byte) {
 	case "spawn_request":
 		var msg protocol.SpawnRequest
 		if json.Unmarshal(line, &msg) == nil {
-			c.handleSpawn(msg)
+			c.handleSpawn(msg, reply)
 		}
 	case "subscribe_request":
 		var msg protocol.SubscribeRequest
 		if json.Unmarshal(line, &msg) == nil {
-			c.handleSubscribe(msg)
+			c.handleSubscribe(msg, reply)
 		}
 	case "input":
 		var msg protocol.InputMsg
@@ -152,38 +180,38 @@ func (c *Client) handleMessage(line []byte) {
 	case "resize_request":
 		var msg protocol.ResizeRequest
 		if json.Unmarshal(line, &msg) == nil {
-			c.handleResize(msg)
+			c.handleResize(msg, reply)
 		}
 	case "list_regions_request":
-		c.handleListRegions()
+		c.handleListRegions(reply)
 	case "status_request":
-		c.handleStatus()
+		c.handleStatus(reply)
 	case "get_screen_request":
 		var msg protocol.GetScreenRequest
 		if json.Unmarshal(line, &msg) == nil {
-			c.handleGetScreen(msg)
+			c.handleGetScreen(msg, reply)
 		}
 	case "get_scrollback_request":
 		var msg protocol.GetScrollbackRequest
 		if json.Unmarshal(line, &msg) == nil {
-			c.handleGetScrollback(msg)
+			c.handleGetScrollback(msg, reply)
 		}
 	case "kill_region_request":
 		var msg protocol.KillRegionRequest
 		if json.Unmarshal(line, &msg) == nil {
-			c.handleKillRegion(msg)
+			c.handleKillRegion(msg, reply)
 		}
 	case "list_clients_request":
-		c.handleListClients()
+		c.handleListClients(reply)
 	case "kill_client_request":
 		var msg protocol.KillClientRequest
 		if json.Unmarshal(line, &msg) == nil {
-			c.handleKillClient(msg)
+			c.handleKillClient(msg, reply)
 		}
 	case "unsubscribe_request":
 		var msg protocol.UnsubscribeRequest
 		if json.Unmarshal(line, &msg) == nil {
-			c.handleUnsubscribe(msg)
+			c.handleUnsubscribe(msg, reply)
 		}
 	case "disconnect":
 		slog.Info("client disconnecting gracefully", "client_id", c.id)
@@ -216,10 +244,10 @@ func (c *Client) handleIdentify(msg protocol.Identify) {
 		"pid", msg.Pid, "process", msg.Process)
 }
 
-func (c *Client) handleSpawn(msg protocol.SpawnRequest) {
+func (c *Client) handleSpawn(msg protocol.SpawnRequest, reply func(any)) {
 	region, err := c.server.SpawnRegion(msg.Cmd, msg.Args)
 	if err != nil {
-		c.SendMessage(protocol.SpawnResponse{
+		reply(protocol.SpawnResponse{
 			Type:     "spawn_response",
 			RegionID: "",
 			Name:     "",
@@ -229,7 +257,7 @@ func (c *Client) handleSpawn(msg protocol.SpawnRequest) {
 		return
 	}
 
-	c.SendMessage(protocol.SpawnResponse{
+	reply(protocol.SpawnResponse{
 		Type:     "spawn_response",
 		RegionID: region.id,
 		Name:     region.name,
@@ -244,9 +272,9 @@ func (c *Client) handleSpawn(msg protocol.SpawnRequest) {
 	})
 }
 
-func (c *Client) handleSubscribe(msg protocol.SubscribeRequest) {
+func (c *Client) handleSubscribe(msg protocol.SubscribeRequest, reply func(any)) {
 	if len(msg.RegionID) != 36 {
-		c.SendMessage(protocol.SubscribeResponse{
+		reply(protocol.SubscribeResponse{
 			Type:     "subscribe_response",
 			RegionID: msg.RegionID,
 			Error:    true,
@@ -257,7 +285,7 @@ func (c *Client) handleSubscribe(msg protocol.SubscribeRequest) {
 
 	region := c.server.FindRegion(msg.RegionID)
 	if region == nil {
-		c.SendMessage(protocol.SubscribeResponse{
+		reply(protocol.SubscribeResponse{
 			Type:     "subscribe_response",
 			RegionID: msg.RegionID,
 			Error:    true,
@@ -278,7 +306,7 @@ func (c *Client) handleSubscribe(msg protocol.SubscribeRequest) {
 		Cells:     snap.Cells,
 	})
 
-	c.SendMessage(protocol.SubscribeResponse{
+	reply(protocol.SubscribeResponse{
 		Type:     "subscribe_response",
 		RegionID: region.id,
 		Error:    false,
@@ -288,9 +316,9 @@ func (c *Client) handleSubscribe(msg protocol.SubscribeRequest) {
 	slog.Debug("client subscribed", "client_id", c.id, "region_id", region.id)
 }
 
-func (c *Client) handleUnsubscribe(msg protocol.UnsubscribeRequest) {
+func (c *Client) handleUnsubscribe(msg protocol.UnsubscribeRequest, reply func(any)) {
 	c.SetSubscribedRegionID("")
-	c.SendMessage(protocol.UnsubscribeResponse{
+	reply(protocol.UnsubscribeResponse{
 		Type:     "unsubscribe_response",
 		RegionID: msg.RegionID,
 	})
@@ -310,10 +338,10 @@ func (c *Client) handleInput(msg protocol.InputMsg) {
 	region.WriteInput(decoded)
 }
 
-func (c *Client) handleResize(msg protocol.ResizeRequest) {
+func (c *Client) handleResize(msg protocol.ResizeRequest, reply func(any)) {
 	region := c.server.FindRegion(msg.RegionID)
 	if region == nil {
-		c.SendMessage(protocol.ResizeResponse{
+		reply(protocol.ResizeResponse{
 			Type:     "resize_response",
 			RegionID: msg.RegionID,
 			Error:    true,
@@ -323,7 +351,7 @@ func (c *Client) handleResize(msg protocol.ResizeRequest) {
 	}
 
 	if err := region.Resize(msg.Width, msg.Height); err != nil {
-		c.SendMessage(protocol.ResizeResponse{
+		reply(protocol.ResizeResponse{
 			Type:     "resize_response",
 			RegionID: msg.RegionID,
 			Error:    true,
@@ -332,7 +360,7 @@ func (c *Client) handleResize(msg protocol.ResizeRequest) {
 		return
 	}
 
-	c.SendMessage(protocol.ResizeResponse{
+	reply(protocol.ResizeResponse{
 		Type:     "resize_response",
 		RegionID: region.id,
 		Error:    false,
@@ -340,9 +368,9 @@ func (c *Client) handleResize(msg protocol.ResizeRequest) {
 	})
 }
 
-func (c *Client) handleListRegions() {
+func (c *Client) handleListRegions(reply func(any)) {
 	infos := c.server.getRegionInfos()
-	c.SendMessage(protocol.ListRegionsResponse{
+	reply(protocol.ListRegionsResponse{
 		Type:    "list_regions_response",
 		Regions: infos,
 		Error:   false,
@@ -350,14 +378,14 @@ func (c *Client) handleListRegions() {
 	})
 }
 
-func (c *Client) handleStatus() {
-	c.SendMessage(c.server.getStatus())
+func (c *Client) handleStatus(reply func(any)) {
+	reply(c.server.getStatus())
 }
 
-func (c *Client) handleGetScrollback(msg protocol.GetScrollbackRequest) {
+func (c *Client) handleGetScrollback(msg protocol.GetScrollbackRequest, reply func(any)) {
 	region := c.server.FindRegion(msg.RegionID)
 	if region == nil {
-		c.SendMessage(protocol.GetScrollbackResponse{
+		reply(protocol.GetScrollbackResponse{
 			Type:     "get_scrollback_response",
 			RegionID: msg.RegionID,
 			Error:    true,
@@ -367,17 +395,17 @@ func (c *Client) handleGetScrollback(msg protocol.GetScrollbackRequest) {
 	}
 
 	lines := region.GetScrollback()
-	c.SendMessage(protocol.GetScrollbackResponse{
+	reply(protocol.GetScrollbackResponse{
 		Type:     "get_scrollback_response",
 		RegionID: region.id,
 		Lines:    lines,
 	})
 }
 
-func (c *Client) handleGetScreen(msg protocol.GetScreenRequest) {
+func (c *Client) handleGetScreen(msg protocol.GetScreenRequest, reply func(any)) {
 	region := c.server.FindRegion(msg.RegionID)
 	if region == nil {
-		c.SendMessage(protocol.GetScreenResponse{
+		reply(protocol.GetScreenResponse{
 			Type:     "get_screen_response",
 			RegionID: msg.RegionID,
 			Lines:    []string{},
@@ -388,7 +416,7 @@ func (c *Client) handleGetScreen(msg protocol.GetScreenRequest) {
 	}
 
 	snap := region.Snapshot()
-	c.SendMessage(protocol.GetScreenResponse{
+	reply(protocol.GetScreenResponse{
 		Type:      "get_screen_response",
 		RegionID:  region.id,
 		CursorRow: snap.CursorRow,
@@ -400,16 +428,16 @@ func (c *Client) handleGetScreen(msg protocol.GetScreenRequest) {
 	})
 }
 
-func (c *Client) handleKillRegion(msg protocol.KillRegionRequest) {
+func (c *Client) handleKillRegion(msg protocol.KillRegionRequest, reply func(any)) {
 	if c.server.KillRegion(msg.RegionID) {
-		c.SendMessage(protocol.KillRegionResponse{
+		reply(protocol.KillRegionResponse{
 			Type:     "kill_region_response",
 			RegionID: msg.RegionID,
 			Error:    false,
 			Message:  "",
 		})
 	} else {
-		c.SendMessage(protocol.KillRegionResponse{
+		reply(protocol.KillRegionResponse{
 			Type:     "kill_region_response",
 			RegionID: msg.RegionID,
 			Error:    true,
@@ -418,9 +446,9 @@ func (c *Client) handleKillRegion(msg protocol.KillRegionRequest) {
 	}
 }
 
-func (c *Client) handleListClients() {
+func (c *Client) handleListClients(reply func(any)) {
 	infos := c.server.getClientInfos()
-	c.SendMessage(protocol.ListClientsResponse{
+	reply(protocol.ListClientsResponse{
 		Type:    "list_clients_response",
 		Clients: infos,
 		Error:   false,
@@ -428,9 +456,9 @@ func (c *Client) handleListClients() {
 	})
 }
 
-func (c *Client) handleKillClient(msg protocol.KillClientRequest) {
+func (c *Client) handleKillClient(msg protocol.KillClientRequest, reply func(any)) {
 	if msg.ClientID == c.id {
-		c.SendMessage(protocol.KillClientResponse{
+		reply(protocol.KillClientResponse{
 			Type:     "kill_client_response",
 			ClientID: msg.ClientID,
 			Error:    true,
@@ -440,14 +468,14 @@ func (c *Client) handleKillClient(msg protocol.KillClientRequest) {
 	}
 
 	if c.server.KillClient(msg.ClientID) {
-		c.SendMessage(protocol.KillClientResponse{
+		reply(protocol.KillClientResponse{
 			Type:     "kill_client_response",
 			ClientID: msg.ClientID,
 			Error:    false,
 			Message:  "",
 		})
 	} else {
-		c.SendMessage(protocol.KillClientResponse{
+		reply(protocol.KillClientResponse{
 			Type:     "kill_client_response",
 			ClientID: msg.ClientID,
 			Error:    true,

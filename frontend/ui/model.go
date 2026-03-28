@@ -35,6 +35,8 @@ type Model struct {
 	Changelog   string
 	Detached    bool
 	prefixMode  bool
+	nextReqID   uint64
+	pending     map[uint64]ReplyFunc
 	showHelp    bool
 	helpCursor  int
 	showHint    bool
@@ -63,6 +65,17 @@ type Model struct {
 
 // contentHeight returns the number of rows available for terminal content
 // (total height minus tab bar and status bar).
+// ReplyFunc is called when a server response matches a pending request.
+type ReplyFunc func(payload any)
+
+// request sends a message to the server with a req_id and registers a reply
+// handler. When the response arrives, the handler is called from Update().
+func (m *Model) request(msg any, reply ReplyFunc) {
+	m.nextReqID++
+	m.pending[m.nextReqID] = reply
+	m.server.Send(protocol.TaggedWithReqID(msg, m.nextReqID))
+}
+
 // quit sends unsubscribe and disconnect to the server, then returns tea.Quit.
 func (m Model) quit() (tea.Model, tea.Cmd) {
 	if m.regionID != "" {
@@ -92,6 +105,7 @@ func NewModel(s *Server, pipeW io.Writer, cmd string, args []string, ring *terml
 		Changelog:     changelog,
 		localHostname: hostname,
 		LogRing:       ring,
+		pending:       make(map[uint64]ReplyFunc),
 		connStatus:    "connected",
 		status:        "connecting...",
 	}
@@ -103,6 +117,19 @@ func (m Model) Init() tea.Cmd {
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Unwrap protocol.Message: check for reply handler, then dispatch on payload.
+	if pmsg, ok := msg.(protocol.Message); ok {
+		if pmsg.ReqID > 0 {
+			if reply, ok := m.pending[pmsg.ReqID]; ok {
+				delete(m.pending, pmsg.ReqID)
+				reply(pmsg.Payload)
+				return m, nil
+			}
+		}
+		// Re-enter Update with the unwrapped payload
+		return m.Update(pmsg.Payload)
+	}
+
 	switch msg := msg.(type) {
 	case RawInputMsg:
 		return m.handleRawInput([]byte(msg))

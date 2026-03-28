@@ -96,9 +96,7 @@ func (s *Server) runConnection(c *client.Client, p *tea.Program) (exit bool) {
 		select {
 		case msg, ok := <-s.ch:
 			if !ok {
-				// Send channel closed — shutdown
 				c.Close()
-				// Drain remaining recv
 				for range recv {
 				}
 				return true
@@ -107,7 +105,6 @@ func (s *Server) runConnection(c *client.Client, p *tea.Program) (exit bool) {
 
 		case msg, ok := <-recv:
 			if !ok {
-				// Connection dropped
 				c.Close()
 				return false
 			}
@@ -168,10 +165,11 @@ func (s *Server) dispatchOutbound(c *client.Client, msg any) {
 	}
 }
 
-// dispatchInbound sends a message to bubbletea, batching consecutive
-// TerminalEvents for performance.
-func (s *Server) dispatchInbound(msg any, recv <-chan any, p *tea.Program) {
-	te, ok := msg.(protocol.TerminalEvents)
+// dispatchInbound sends a message to bubbletea as a protocol.Message
+// (preserving ReqID so the model can match replies). TerminalEvents
+// are batched for performance.
+func (s *Server) dispatchInbound(msg protocol.Message, recv <-chan protocol.Message, p *tea.Program) {
+	te, ok := msg.Payload.(protocol.TerminalEvents)
 	if !ok {
 		p.Send(msg)
 		return
@@ -186,18 +184,18 @@ drain:
 			if !ok {
 				break drain
 			}
-			if te2, ok := next.(protocol.TerminalEvents); ok {
+			if te2, ok := next.Payload.(protocol.TerminalEvents); ok {
 				batch = append(batch, te2.Events...)
 			} else {
-				p.Send(protocol.TerminalEvents{Events: batch})
-				p.Send(next)
+				p.Send(protocol.Message{Payload: protocol.TerminalEvents{Events: batch}})
+				s.dispatchInbound(next, recv, p)
 				return
 			}
 		default:
 			break drain
 		}
 	}
-	p.Send(protocol.TerminalEvents{Events: batch})
+	p.Send(protocol.Message{Payload: protocol.TerminalEvents{Events: batch}})
 }
 
 func (s *Server) sendIdentify(c *client.Client) {

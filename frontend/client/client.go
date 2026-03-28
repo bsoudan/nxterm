@@ -19,14 +19,14 @@ import (
 // that pumps parsed messages into a channel accessible via Recv().
 type Client struct {
 	conn   net.Conn
-	recvCh chan any
+	recvCh chan protocol.Message
 }
 
 // New creates a client and starts the read goroutine.
 func New(conn net.Conn) *Client {
 	c := &Client{
 		conn:   conn,
-		recvCh: make(chan any, 128),
+		recvCh: make(chan protocol.Message, 128),
 	}
 	go c.readLoop()
 	return c
@@ -49,8 +49,21 @@ func (c *Client) Send(msg any) error {
 
 // Recv returns a read-only channel of parsed inbound messages.
 // The channel is closed when the connection is closed or errors.
-func (c *Client) Recv() <-chan any {
+func (c *Client) Recv() <-chan protocol.Message {
 	return c.recvCh
+}
+
+// SendWithReqID encodes msg with a specific request ID.
+func (c *Client) SendWithReqID(msg any, reqID uint64) error {
+	tagged := protocol.TaggedWithReqID(msg, reqID)
+	data, err := json.Marshal(tagged)
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+	data = append(data, '\n')
+	termlog.LogProtocolMsg("send", msg)
+	_, err = c.conn.Write(data)
+	return err
 }
 
 // Close closes the underlying connection. The read goroutine will exit

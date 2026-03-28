@@ -126,7 +126,7 @@ func connect(cmd *cli.Command) (*client.Client, error) {
 
 func recvType[T any](cl *client.Client) (T, error) {
 	for msg := range cl.Recv() {
-		if v, ok := msg.(T); ok {
+		if v, ok := msg.Payload.(T); ok {
 			return v, nil
 		}
 	}
