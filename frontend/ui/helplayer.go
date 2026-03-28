@@ -72,7 +72,7 @@ func (h *HelpLayer) View(width, height int, active bool) *lipgloss.Layer {
 	overlayW := 38
 	dialog := overlayBorder.Width(overlayW).Render(content)
 
-	help := barStyle.Render("• ↑↓/enter: select • q/esc: close •")
+	help := statusFaint.Render("• ↑↓/enter: select • q/esc: close •")
 	dialogLines := strings.Split(dialog, "\n")
 	helpPad := (overlayW + 2 - lipgloss.Width(help)) / 2
 	if helpPad < 0 {
@@ -96,4 +96,4 @@ func (h *HelpLayer) View(width, height int, active bool) *lipgloss.Layer {
 
 var helpSelected = lipgloss.NewStyle().Reverse(true)
 
-func (h *HelpLayer) Status() (string, bool, bool) { return "help", true, false }
+func (h *HelpLayer) Status() (string, lipgloss.Style) { return "help", lipgloss.Style{} }

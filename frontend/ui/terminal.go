@@ -338,6 +338,147 @@ func (t *TerminalChild) MouseModes() string {
 	return "off"
 }
 
+// ── Cell rendering ──────────────────────────────────────────────────────────
+
+func renderCellLine(sb *strings.Builder, row []te.Cell, width, rowIdx, cursorRow, cursorCol int, showCursor bool, disconnected bool) {
+	var cur te.Attr // tracks current SGR state (zero = default)
+	for col := range width {
+		var cell te.Cell
+		if col < len(row) {
+			cell = row[col]
+		} else {
+			cell.Data = " "
+		}
+
+		isCursor := showCursor && rowIdx == cursorRow && col == cursorCol
+
+		target := cell.Attr
+		if isCursor {
+			if disconnected {
+				target = te.Attr{
+					Reverse: true,
+					Fg:      te.Color{Mode: te.ColorANSI16, Name: "red"},
+				}
+				cell.Data = "X"
+			} else {
+				target.Reverse = !target.Reverse
+			}
+		}
+
+		if target != cur {
+			sb.WriteString(sgrTransition(cur, target))
+			cur = target
+		}
+
+		ch := cell.Data
+		if ch == "" || ch == "\x00" {
+			ch = " "
+		}
+		sb.WriteString(ch)
+	}
+
+	if cur != (te.Attr{}) {
+		sb.WriteString(ansi.ResetStyle)
+	}
+}
+
+// sgrTransition emits the SGR sequence to move from one attribute set to another.
+func sgrTransition(from, to te.Attr) string {
+	if to == (te.Attr{}) {
+		return ansi.ResetStyle
+	}
+
+	var attrs []ansi.Attr
+
+	needsReset := (from.Bold && !to.Bold) ||
+		(from.Blink && !to.Blink) ||
+		(from.Conceal && !to.Conceal)
+
+	if needsReset {
+		attrs = append(attrs, ansi.AttrReset)
+		from = te.Attr{}
+	}
+
+	if to.Bold && !from.Bold {
+		attrs = append(attrs, ansi.AttrBold)
+	}
+	if to.Italics && !from.Italics {
+		attrs = append(attrs, ansi.AttrItalic)
+	} else if !to.Italics && from.Italics {
+		attrs = append(attrs, ansi.AttrNoItalic)
+	}
+	if to.Underline && !from.Underline {
+		attrs = append(attrs, ansi.AttrUnderline)
+	} else if !to.Underline && from.Underline {
+		attrs = append(attrs, ansi.AttrNoUnderline)
+	}
+	if to.Blink && !from.Blink {
+		attrs = append(attrs, ansi.AttrBlink)
+	}
+	if to.Reverse && !from.Reverse {
+		attrs = append(attrs, ansi.AttrReverse)
+	} else if !to.Reverse && from.Reverse {
+		attrs = append(attrs, ansi.AttrNoReverse)
+	}
+	if to.Conceal && !from.Conceal {
+		attrs = append(attrs, ansi.AttrConceal)
+	}
+	if to.Strikethrough && !from.Strikethrough {
+		attrs = append(attrs, ansi.AttrStrikethrough)
+	} else if !to.Strikethrough && from.Strikethrough {
+		attrs = append(attrs, ansi.AttrNoStrikethrough)
+	}
+
+	if to.Fg != from.Fg {
+		attrs = append(attrs, teColorAttrs(to.Fg, false)...)
+	}
+	if to.Bg != from.Bg {
+		attrs = append(attrs, teColorAttrs(to.Bg, true)...)
+	}
+
+	if len(attrs) == 0 {
+		return ""
+	}
+
+	return ansi.SGR(attrs...)
+}
+
+func teColorAttrs(c te.Color, isBg bool) []ansi.Attr {
+	switch c.Mode {
+	case te.ColorDefault:
+		if isBg {
+			return []ansi.Attr{ansi.AttrDefaultBackgroundColor}
+		}
+		return []ansi.Attr{ansi.AttrDefaultForegroundColor}
+	case te.ColorANSI16:
+		if isBg {
+			if code, ok := protocol.BgSGRCode[c.Name]; ok {
+				return []ansi.Attr{code}
+			}
+			return []ansi.Attr{ansi.AttrDefaultBackgroundColor}
+		}
+		if code, ok := protocol.FgSGRCode[c.Name]; ok {
+			return []ansi.Attr{code}
+		}
+		return []ansi.Attr{ansi.AttrDefaultForegroundColor}
+	case te.ColorANSI256:
+		if isBg {
+			return []ansi.Attr{ansi.AttrExtendedBackgroundColor, 5, ansi.Attr(c.Index)}
+		}
+		return []ansi.Attr{ansi.AttrExtendedForegroundColor, 5, ansi.Attr(c.Index)}
+	case te.ColorTrueColor:
+		r, g, b := protocol.ParseHexColor(c.Name)
+		if isBg {
+			return []ansi.Attr{ansi.AttrExtendedBackgroundColor, 2, ansi.Attr(r), ansi.Attr(g), ansi.Attr(b)}
+		}
+		return []ansi.Attr{ansi.AttrExtendedForegroundColor, 2, ansi.Attr(r), ansi.Attr(g), ansi.Attr(b)}
+	}
+	if isBg {
+		return []ansi.Attr{ansi.AttrDefaultBackgroundColor}
+	}
+	return []ansi.Attr{ansi.AttrDefaultForegroundColor}
+}
+
 // ── Screen helpers ──────────────────────────────────────────────────────────
 
 // ReplayEvents replays terminal events on a screen. Exported for server tests.

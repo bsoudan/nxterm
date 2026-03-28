@@ -49,7 +49,7 @@ func cmdMsg(msg tea.Msg) tea.Cmd {
 }
 
 func (c *CommandLayer) View(width, height int, active bool) *lipgloss.Layer { return nil }
-func (c *CommandLayer) Status() (string, bool, bool)               { return "?", true, false }
+func (c *CommandLayer) Status() (string, lipgloss.Style) { return "?", lipgloss.Style{} }
 
 
 // HintLayer is a temporary layer pushed after startup to show
@@ -64,4 +64,4 @@ func (h *HintLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 }
 
 func (h *HintLayer) View(width, height int, active bool) *lipgloss.Layer { return nil }
-func (h *HintLayer) Status() (string, bool, bool)               { return "ctrl+b ? for help", true, false }
+func (h *HintLayer) Status() (string, lipgloss.Style) { return "ctrl+b ? for help", lipgloss.Style{} }

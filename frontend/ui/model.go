@@ -168,12 +168,20 @@ func (m Model) View() tea.View {
 	}
 
 	// Collect topmost Status and detect overlay presence.
-	statusText, statusBold, statusRed := "", false, false
+	// Status is collected bottom-up; topmost non-empty text wins.
+	// Model applies bold to status from layers above session.
+	statusText := ""
+	statusStyle := lipgloss.Style{}
 	hasOverlay := false
 	for i := 0; i < len(m.layers); i++ {
-		t, b, r := m.layers[i].Status()
+		t, s := m.layers[i].Status()
 		if t != "" {
-			statusText, statusBold, statusRed = t, b, r
+			statusText = t
+			if i > 0 {
+				statusStyle = s.Bold(true)
+			} else {
+				statusStyle = s
+			}
 		}
 		switch m.layers[i].(type) {
 		case *ScrollableLayer, *StatusLayer, *HelpLayer:
@@ -181,42 +189,22 @@ func (m Model) View() tea.View {
 		}
 	}
 
-	// Collect non-nil View layers. The first layer (session) is active
-	// when no overlay is above it — it uses this to show the cursor.
-	var overlays []*lipgloss.Layer
-	baseLayer := session.View(width, height, !hasOverlay)
+	// Collect all non-nil View layers. The first layer (session) is
+	// active when no overlay is above it — it uses this to show the cursor.
+	var layers []*lipgloss.Layer
+	layers = append(layers, session.View(width, height, !hasOverlay))
 	for i := 1; i < len(m.layers); i++ {
 		if l := m.layers[i].View(width, height, false); l != nil {
-			overlays = append(overlays, l)
+			layers = append(layers, l)
 		}
 	}
 
-	// Render status bar (right side of tab bar).
-	statusContent, statusWidth := renderStatusBar(statusText, session.version, statusBold, statusRed)
-	statusX := width - statusWidth
-	if statusX < 0 {
-		statusX = 0
-	}
+	// Status bar (right side of tab bar) as the topmost layer.
+	statusContent, statusWidth := renderStatusBar(statusText, session.version, statusStyle, hasOverlay)
+	statusX := max(width-statusWidth, 0)
+	layers = append(layers, lipgloss.NewLayer(statusContent).X(statusX).Z(2))
 
-	var content string
-	if len(overlays) > 0 {
-		// Overlays present — composite everything through lipgloss.
-		// The compositor strips trailing whitespace from lines, but
-		// that's acceptable here because the overlay dialog covers
-		// the terminal content area.
-		layers := make([]*lipgloss.Layer, 0, 2+len(overlays))
-		layers = append(layers, baseLayer)
-		layers = append(layers, overlays...)
-		layers = append(layers, lipgloss.NewLayer(statusContent).X(statusX).Z(2))
-		content = lipgloss.NewCompositor(layers...).Render()
-	} else {
-		// No overlays — splice the status bar into the tab bar line
-		// directly. This avoids running terminal content through the
-		// compositor, which would strip trailing spaces that are
-		// significant for terminal rendering.
-		base := baseLayer.GetContent()
-		content = spliceStatusBar(base, statusContent, statusX, width)
-	}
+	content := lipgloss.NewCompositor(layers...).Render()
 
 	v := tea.NewView(content)
 	v.AltScreen = true
@@ -231,4 +219,20 @@ func (m Model) View() tea.View {
 	}
 
 	return v
+}
+
+// renderStatusBar renders the right side of the tab bar for compositing
+// on top of the session view at row 0.
+func renderStatusBar(status, version string, style lipgloss.Style, showVersion bool) (string, int) {
+	result := style.Render("• " + status + " •")
+	displayWidth := len([]rune("• " + status + " •"))
+
+	suffix := "termd-tui"
+	if version != "" && showVersion {
+		suffix = "termd-tui " + version
+	}
+	result += statusFaint.Render(" ") + statusBold.Render(suffix) + statusFaint.Render(" •")
+	displayWidth += 1 + len([]rune(suffix)) + 2
+
+	return result, displayWidth
 }

@@ -16,7 +16,7 @@ import (
 type Layer interface {
 	Update(tea.Msg) (response tea.Msg, cmd tea.Cmd, handled bool)
 	View(width, height int, active bool) *lipgloss.Layer
-	Status() (text string, bold bool, red bool)
+	Status() (text string, style lipgloss.Style)
 }
 
 // QuitLayerMsg is returned by a layer's Update to request removal from the stack.

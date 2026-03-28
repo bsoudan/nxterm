@@ -351,24 +351,81 @@ func (s *SessionLayer) buildStatusCaps() StatusCaps {
 // only — terminal tabs) plus terminal content. Model composites the
 // right side of the tab bar (status + branding) as a separate layer.
 func (s *SessionLayer) View(width, height int, active bool) *lipgloss.Layer {
-	content := renderView(s, !active)
-	return lipgloss.NewLayer(content)
+	if s.err != "" {
+		return lipgloss.NewLayer("error: " + s.err + "\n")
+	}
+
+	width = max(width, 80)
+	height = max(height, 24)
+
+	var sb strings.Builder
+	sb.WriteString(s.renderTabBar(width))
+	sb.WriteByte('\n')
+
+	contentHeight := max(height-1, 1)
+	scrollbackActive := s.term != nil && s.term.ScrollbackActive()
+	showCursor := active && !scrollbackActive
+	disconnected := s.connStatus == "reconnecting"
+
+	if s.term != nil {
+		s.term.View(&sb, width, contentHeight, showCursor, disconnected)
+	} else {
+		for i := range contentHeight {
+			for range width {
+				sb.WriteByte(' ')
+			}
+			if i < contentHeight-1 {
+				sb.WriteByte('\n')
+			}
+		}
+	}
+
+	return lipgloss.NewLayer(sb.String())
+}
+
+// renderTabBar renders the left side of the tab bar: "• regionName •···•"
+func (s *SessionLayer) renderTabBar(width int) string {
+	var sb strings.Builder
+
+	sb.WriteString("• ")
+	used := 2
+
+	if s.regionName != "" {
+		sb.WriteString(s.regionName)
+		sb.WriteString(" •")
+		used += len([]rune(s.regionName)) + 2
+	}
+
+	fillCount := max(width-used-1, 1)
+	for range fillCount {
+		sb.WriteString("·")
+	}
+	sb.WriteString("•")
+
+	return statusFaint.Render(sb.String())
 }
 
 // Status implements the Layer interface. Returns the session's own
 // status — scrollback mode, reconnecting, or endpoint. Layers above
 // session override this via the layer stack Status traversal.
-func (s *SessionLayer) Status() (string, bool, bool) {
+var (
+	statusFaint   = lipgloss.NewStyle().Faint(true)
+	statusBoldRed = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1"))
+	statusBold    = lipgloss.NewStyle().Bold(true)
+)
+
+func (s *SessionLayer) Status() (string, lipgloss.Style) {
 	if s.term != nil && s.term.ScrollbackActive() {
-		return s.term.Status()
+		text, _, _ := s.term.Status()
+		return text, statusBold
 	}
 	if s.connStatus == "reconnecting" {
 		secs := int(time.Until(s.retryAt).Seconds()) + 1
-		return fmt.Sprintf("reconnecting to %s in %ds...", s.endpoint, secs), true, true
+		return fmt.Sprintf("reconnecting to %s in %ds...", s.endpoint, secs), statusBoldRed
 	}
 	name := s.endpoint
 	if len(name) > 20 {
 		name = name[len(name)-20:]
 	}
-	return name, false, false
+	return name, statusFaint
 }

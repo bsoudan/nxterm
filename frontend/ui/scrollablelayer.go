@@ -124,7 +124,7 @@ func (l *ScrollableLayer) View(width, height int, active bool) *lipgloss.Layer {
 		dialogLines = append(dialogLines, lastLine)
 	}
 
-	help := barStyle.Render("• q/esc: close • ↑↓/pgup/pgdn: scroll • ←→: pan • home: top •")
+	help := statusFaint.Render("• q/esc: close • ↑↓/pgup/pgdn: scroll • ←→: pan • home: top •")
 	helpPad := (overlayW + 2 - lipgloss.Width(help)) / 2
 	if helpPad < 0 {
 		helpPad = 0
@@ -145,4 +145,4 @@ func (l *ScrollableLayer) View(width, height int, active bool) *lipgloss.Layer {
 	return lipgloss.NewLayer(dialog).X(x).Y(y).Z(1)
 }
 
-func (l *ScrollableLayer) Status() (string, bool, bool) { return l.label, true, false }
+func (l *ScrollableLayer) Status() (string, lipgloss.Style) { return l.label, lipgloss.Style{} }
