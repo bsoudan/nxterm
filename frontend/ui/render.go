@@ -402,6 +402,26 @@ func renderStatusOverlay(base string, m Model, width, height int) string {
 			lines = append(lines, "  Background: light")
 		}
 	}
+	if m.localScreen != nil {
+		var mouseModes []string
+		if _, ok := m.localScreen.Mode[privateModeKey(ansi.ModeMouseNormal.Mode())]; ok {
+			mouseModes = append(mouseModes, "normal(1000)")
+		}
+		if _, ok := m.localScreen.Mode[privateModeKey(ansi.ModeMouseButtonEvent.Mode())]; ok {
+			mouseModes = append(mouseModes, "button(1002)")
+		}
+		if _, ok := m.localScreen.Mode[privateModeKey(ansi.ModeMouseAnyEvent.Mode())]; ok {
+			mouseModes = append(mouseModes, "any(1003)")
+		}
+		if _, ok := m.localScreen.Mode[privateModeKey(ansi.ModeMouseExtSgr.Mode())]; ok {
+			mouseModes = append(mouseModes, "sgr(1006)")
+		}
+		if len(mouseModes) > 0 {
+			lines = append(lines, fmt.Sprintf("  Mouse:     %s", strings.Join(mouseModes, ", ")))
+		} else {
+			lines = append(lines, "  Mouse:     off")
+		}
+	}
 	lines = append(lines, "")
 
 	lines = append(lines, "termd:")

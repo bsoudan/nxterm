@@ -24,6 +24,12 @@ type LogEntryMsg struct{}
 // Not defined in charmbracelet/x/ansi which only has 1047 and 1049.
 const modeAltScreenLegacy = 47
 
+// privateModeKey converts a DEC private mode number to the key used
+// by go-te's Screen.Mode map, which shifts private modes left by 5 bits.
+func privateModeKey(mode int) int {
+	return mode << 5
+}
+
 type showHintMsg struct{}
 type hideHintMsg struct{}
 type reconnectTickMsg struct{}
@@ -382,7 +388,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case protocol.StatusResponse:
 		m.serverStatus = &msg
-		return m, nil
+		return m, waitForUpdate(m.client)
 
 	case tea.KeyboardEnhancementsMsg:
 		m.keyboardFlags = msg.Flags
@@ -405,6 +411,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case prefixStartedMsg:
 		m.prefixMode = true
 		return m, nil
+
+	case tea.MouseMsg:
+		return m.handleMouse(msg)
 
 	case tea.KeyPressMsg:
 		if m.overlayMode != "" {
@@ -653,6 +662,106 @@ func (m Model) updateOverlayViewer(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.overlayVP, cmd = m.overlayVP.Update(msg)
 		return m, cmd
+	}
+}
+
+// handleMouse processes mouse events. If an overlay is active, route to it.
+// If the child app has mouse mode enabled, forward to the server.
+func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	// Overlays get mouse events (scroll wheel) while they're visible
+	if m.overlayMode != "" || m.showStatus || m.showHelp {
+		if wheel, ok := msg.(tea.MouseWheelMsg); ok {
+			if m.overlayMode != "" {
+				var cmd tea.Cmd
+				m.overlayVP, cmd = m.overlayVP.Update(wheel)
+				return m, cmd
+			}
+		}
+		return m, nil
+	}
+
+	mouse := msg.Mouse()
+
+	// Check if the child app wants mouse events
+	childWantsMouse := false
+	if m.localScreen != nil {
+		_, m1000 := m.localScreen.Mode[privateModeKey(ansi.ModeMouseNormal.Mode())]
+		_, m1002 := m.localScreen.Mode[privateModeKey(ansi.ModeMouseButtonEvent.Mode())]
+		_, m1003 := m.localScreen.Mode[privateModeKey(ansi.ModeMouseAnyEvent.Mode())]
+		childWantsMouse = m1000 || m1002 || m1003
+	}
+
+	if childWantsMouse && m.regionID != "" {
+		// Forward to the server as SGR mouse escape sequence.
+		// Adjust Y coordinate: subtract 1 for the tab bar.
+		seq := encodeSGRMouse(msg, mouse.X, mouse.Y-1)
+		if seq != "" {
+			data := base64.StdEncoding.EncodeToString([]byte(seq))
+			_ = m.client.Send(protocol.InputMsg{
+				Type: "input", RegionID: m.regionID, Data: data,
+			})
+		}
+		return m, nil
+	}
+
+	// Child doesn't want mouse — handle scroll wheel for termd-tui
+	switch msg.(type) {
+	case tea.MouseWheelMsg:
+		// TODO: scrollback navigation (step 4)
+	}
+	return m, nil
+}
+
+// encodeSGRMouse encodes a mouse event as an SGR mouse escape sequence.
+// Format: ESC [ < button ; col ; row M (press) or m (release)
+func encodeSGRMouse(msg tea.MouseMsg, col, row int) string {
+	if row < 0 {
+		row = 0
+	}
+	// SGR uses 1-based coordinates
+	col++
+	row++
+
+	var button int
+	var suffix byte
+
+	switch e := msg.(type) {
+	case tea.MouseClickMsg:
+		suffix = 'M'
+		button = mouseButtonSGR(e.Button)
+	case tea.MouseReleaseMsg:
+		suffix = 'm'
+		button = mouseButtonSGR(e.Button)
+	case tea.MouseWheelMsg:
+		suffix = 'M'
+		switch e.Button {
+		case tea.MouseWheelUp:
+			button = 64
+		case tea.MouseWheelDown:
+			button = 65
+		default:
+			return ""
+		}
+	case tea.MouseMotionMsg:
+		suffix = 'M'
+		button = mouseButtonSGR(e.Button) + 32 // motion adds 32
+	default:
+		return ""
+	}
+
+	return fmt.Sprintf("%c[<%d;%d;%d%c", ansi.ESC, button, col, row, suffix)
+}
+
+func mouseButtonSGR(b tea.MouseButton) int {
+	switch b {
+	case tea.MouseLeft:
+		return 0
+	case tea.MouseMiddle:
+		return 1
+	case tea.MouseRight:
+		return 2
+	default:
+		return 0
 	}
 }
 
@@ -936,5 +1045,21 @@ func splitCharset(s string) []string {
 func (m Model) View() tea.View {
 	v := tea.NewView(renderView(m))
 	v.AltScreen = true
+
+	// Enable mouse on the real terminal when the child app requests it,
+	// or for scroll wheel support in termd-tui's own UI.
+	if m.localScreen != nil {
+		if _, ok := m.localScreen.Mode[privateModeKey(ansi.ModeMouseAnyEvent.Mode())]; ok {
+			v.MouseMode = tea.MouseModeAllMotion
+		} else if _, ok := m.localScreen.Mode[privateModeKey(ansi.ModeMouseButtonEvent.Mode())]; ok {
+			v.MouseMode = tea.MouseModeCellMotion
+		} else if _, ok := m.localScreen.Mode[privateModeKey(ansi.ModeMouseNormal.Mode())]; ok {
+			v.MouseMode = tea.MouseModeCellMotion
+		} else {
+			// Child doesn't want mouse — enable for scroll wheel / selection
+			v.MouseMode = tea.MouseModeCellMotion
+		}
+	}
+
 	return v
 }

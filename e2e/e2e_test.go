@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -820,6 +821,79 @@ func TestTCPTransport(t *testing.T) {
 	// Type a command and verify round-trip works
 	pio.Write([]byte("echo tcp_works\r"))
 	pio.WaitFor(t, "tcp_works", 10*time.Second)
+}
+
+func TestMousePassthrough(t *testing.T) {
+	socketPath, serverCleanup := startServer(t)
+	defer serverCleanup()
+
+	pio, frontendCleanup := startFrontend(t, socketPath)
+	defer frontendCleanup()
+
+	pio.WaitFor(t, "termd$ ", 10*time.Second)
+
+	// Run mousehelper which enables mouse tracking and prints mouse events
+	pio.Write([]byte("mousehelper\r"))
+	// Wait for mouse mode to be enabled — the helper prints nothing until
+	// it receives a mouse event, but we need to give it time to start
+	time.Sleep(500 * time.Millisecond)
+
+	// waitForMouse checks the screen for a specific MOUSE line.
+	waitForMouse := func(expected string) {
+		t.Helper()
+		pio.WaitForScreen(t, func(lines []string) bool {
+			for _, line := range lines {
+				if strings.Contains(line, expected) {
+					return true
+				}
+			}
+			return false
+		}, expected, 5*time.Second)
+	}
+
+	// Coordinates sent are in outer terminal space (1-based SGR).
+	// The tab bar occupies row 1, so the frontend adjusts row by -1
+	// before forwarding to the child. mousehelper prints what it receives.
+
+	// Left click at col 5, row 3 → child sees row 2
+	pio.Write([]byte(fmt.Sprintf("%c[<0;5;3M", ansi.ESC)))
+	waitForMouse("MOUSE press 0 5 2")
+
+	// Left release
+	pio.Write([]byte(fmt.Sprintf("%c[<0;5;3m", ansi.ESC)))
+	waitForMouse("MOUSE release 0 5 2")
+
+	// Right click (button 2) at row 4 → child sees row 3
+	pio.Write([]byte(fmt.Sprintf("%c[<2;10;4M", ansi.ESC)))
+	waitForMouse("MOUSE press 2 10 3")
+
+	// Middle click (button 1) at row 6 → child sees row 5
+	pio.Write([]byte(fmt.Sprintf("%c[<1;8;6M", ansi.ESC)))
+	waitForMouse("MOUSE press 1 8 5")
+
+	// Scroll wheel up at row 3 → child sees row 2
+	pio.Write([]byte(fmt.Sprintf("%c[<64;5;3M", ansi.ESC)))
+	waitForMouse("MOUSE wheelup 64 5 2")
+
+	// Scroll wheel down at row 3 → child sees row 2
+	pio.Write([]byte(fmt.Sprintf("%c[<65;5;3M", ansi.ESC)))
+	waitForMouse("MOUSE wheeldown 65 5 2")
+
+	// Motion event (button 32 = motion + left held) at row 7 → child sees row 6
+	pio.Write([]byte(fmt.Sprintf("%c[<32;12;7M", ansi.ESC)))
+	waitForMouse("MOUSE press 32 12 6")
+
+	// Click on the tab bar (row 1) → clamped to child row 1
+	pio.Write([]byte(fmt.Sprintf("%c[<0;5;1M", ansi.ESC)))
+	waitForMouse("MOUSE press 0 5 1")
+
+	// Click on content row 1 (row 2 in outer) → child sees row 1
+	pio.Write([]byte(fmt.Sprintf("%c[<0;20;2M", ansi.ESC)))
+	waitForMouse("MOUSE press 0 20 1")
+
+	// Quit the helper
+	pio.Write([]byte("q"))
+	pio.WaitFor(t, "termd$ ", 10*time.Second)
 }
 
 func TestWebSocketTransport(t *testing.T) {

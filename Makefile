@@ -1,4 +1,4 @@
-.PHONY: all build-server changelog build-tui build-tui-windows build-termctl check-windows test test-e2e clean
+.PHONY: all build-server changelog build-tui build-tui-windows build-termctl build-mousehelper check-windows test test-e2e clean
 
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/-g[0-9a-f]*//;s/-dirty/*/' || echo "dev")
 LDFLAGS := -X main.version=$(VERSION)
@@ -6,7 +6,7 @@ ifndef RELEASE
   GCFLAGS := -gcflags "all=-N -l"
 endif
 
-all: build-server build-tui build-tui-windows build-termctl
+all: build-server build-tui build-tui-windows build-termctl build-mousehelper
 
 build-server:
 	cd server && go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o ../.local/bin/termd .
@@ -27,6 +27,9 @@ build-tui: changelog
 
 build-tui-windows: changelog
 	cd frontend && GOOS=windows GOARCH=amd64 go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o ../.local/bin/termd-tui.exe .
+
+build-mousehelper:
+	cd e2e/testdata/mousehelper && go build -o ../../../.local/bin/mousehelper .
 
 build-termctl:
 	cd termctl && go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o ../.local/bin/termctl .
