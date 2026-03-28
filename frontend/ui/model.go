@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	te "github.com/rcarmo/go-te/pkg/te"
 	termlog "termd/frontend/log"
+	"termd/frontend/client"
 	"termd/frontend/protocol"
 )
 
@@ -35,7 +36,7 @@ type hideHintMsg struct{}
 type reconnectTickMsg struct{}
 
 type Model struct {
-	server      *Server
+	client      *client.Client
 	cmd         string
 	cmdArgs     []string
 	Endpoint    string
@@ -90,10 +91,10 @@ func (m Model) contentHeight() int {
 	return h
 }
 
-func NewModel(s *Server, cmd string, args []string, ring *termlog.LogRingBuffer, endpoint, version, changelog string) Model {
+func NewModel(c *client.Client, cmd string, args []string, ring *termlog.LogRingBuffer, endpoint, version, changelog string) Model {
 	hostname, _ := os.Hostname()
 	return Model{
-		server:          s,
+		client:          c,
 		cmd:             cmd,
 		cmdArgs:         args,
 		Endpoint:        endpoint,
@@ -110,10 +111,19 @@ func NewModel(s *Server, cmd string, args []string, ring *termlog.LogRingBuffer,
 }
 
 func (m Model) Init() tea.Cmd {
-	m.server.Send(protocol.ListRegionsRequest{
-		Type: "list_regions_request",
-	})
-	return tea.Tick(3*time.Second, func(time.Time) tea.Msg { return showHintMsg{} })
+	return tea.Batch(
+		func() tea.Msg {
+			err := m.client.Send(protocol.ListRegionsRequest{
+				Type: "list_regions_request",
+			})
+			if err != nil {
+				return ServerErrorMsg{Context: "list_regions", Message: err.Error()}
+			}
+			return nil
+		},
+		waitForUpdate(m.client),
+		tea.Tick(3*time.Second, func(time.Time) tea.Msg { return showHintMsg{} }),
+	)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -122,13 +132,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Hostname != m.localHostname {
 			m.Endpoint = m.localHostname + " -> " + m.Endpoint
 		}
-		return m, nil
+		return m, waitForUpdate(m.client)
 
 	case tea.WindowSizeMsg:
 		m.termWidth = msg.Width
 		m.termHeight = msg.Height
 		if m.regionID != "" {
-			m.server.Send(protocol.ResizeRequest{
+			_ = m.client.Send(protocol.ResizeRequest{
 				Type:     "resize_request",
 				RegionID: m.regionID,
 				Width:    uint16(msg.Width),
@@ -150,19 +160,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case m.RegionReady <- m.regionID:
 			default:
 			}
-			m.server.Send(protocol.SubscribeRequest{
-				Type:     "subscribe_request",
-				RegionID: m.regionID,
-			})
-			return m, nil
+			return m, tea.Batch(
+				func() tea.Msg {
+					err := m.client.Send(protocol.SubscribeRequest{
+						Type:     "subscribe_request",
+						RegionID: m.regionID,
+					})
+					if err != nil {
+						return ServerErrorMsg{Context: "subscribe", Message: err.Error()}
+					}
+					return nil
+				},
+				waitForUpdate(m.client),
+			)
 		}
 		m.status = "spawning..."
-		m.server.Send(protocol.SpawnRequest{
-			Type: "spawn_request",
-			Cmd:  m.cmd,
-			Args: m.cmdArgs,
-		})
-		return m, nil
+		return m, tea.Batch(
+			func() tea.Msg {
+				err := m.client.Send(protocol.SpawnRequest{
+					Type: "spawn_request",
+					Cmd:  m.cmd,
+					Args: m.cmdArgs,
+				})
+				if err != nil {
+					return ServerErrorMsg{Context: "spawn", Message: err.Error()}
+				}
+				return nil
+			},
+			waitForUpdate(m.client),
+		)
 
 	case SpawnResponseMsg:
 		if msg.Error {
@@ -176,11 +202,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case m.RegionReady <- m.regionID:
 		default:
 		}
-		m.server.Send(protocol.SubscribeRequest{
-			Type:     "subscribe_request",
-			RegionID: m.regionID,
-		})
-		return m, nil
+		return m, tea.Batch(
+			func() tea.Msg {
+				err := m.client.Send(protocol.SubscribeRequest{
+					Type:     "subscribe_request",
+					RegionID: m.regionID,
+				})
+				if err != nil {
+					return ServerErrorMsg{Context: "subscribe", Message: err.Error()}
+				}
+				return nil
+			},
+			waitForUpdate(m.client),
+		)
 
 	case SubscribeResponseMsg:
 		if msg.Error {
@@ -189,14 +223,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.status = ""
 		if m.termWidth > 0 && m.termHeight > 2 {
-			m.server.Send(protocol.ResizeRequest{
+			_ = m.client.Send(protocol.ResizeRequest{
 				Type:     "resize_request",
 				RegionID: m.regionID,
 				Width:    uint16(m.termWidth),
 				Height:   uint16(m.contentHeight()),
 			})
 		}
-		return m, nil
+		return m, waitForUpdate(m.client)
 
 	case ScreenUpdateMsg:
 		m.lines = msg.Lines
@@ -232,32 +266,75 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.pendingClear {
 			m.pendingClear = false
-			return m, func() tea.Msg { return tea.ClearScreen() }
+			return m, tea.Batch(
+				func() tea.Msg { return tea.ClearScreen() },
+				waitForUpdate(m.client),
+			)
 		}
-		return m, nil
+		return m, waitForUpdate(m.client)
 
 	case TerminalEventsMsg:
 		if m.localScreen != nil {
 			needsClear := ReplayEvents(m.localScreen, msg.Events)
+
+			// Drain any additional pending terminal events to keep up
+			// with fast-updating programs like top.
+			var pendingMsg tea.Msg
+		drain:
+			for {
+				select {
+				case pending, ok := <-m.client.Updates():
+					if !ok {
+						break drain
+					}
+					if te, ok := pending.(protocol.TerminalEvents); ok {
+						if ReplayEvents(m.localScreen, te.Events) {
+							needsClear = true
+						}
+					} else {
+						// Non-events message: convert and save for processing.
+						pendingMsg = convertProtocolMsg(pending)
+						break drain
+					}
+				default:
+					break drain
+				}
+			}
+
 			m.cursorRow = m.localScreen.Cursor.Row
 			m.cursorCol = m.localScreen.Cursor.Col
 			if needsClear {
-				return m, func() tea.Msg { return tea.ClearScreen() }
+				cmds := []tea.Cmd{
+					func() tea.Msg { return tea.ClearScreen() },
+					waitForUpdate(m.client),
+				}
+				if pendingMsg != nil {
+					saved := pendingMsg
+					cmds = append(cmds, func() tea.Msg { return saved })
+				}
+				return m, tea.Batch(cmds...)
+			}
+			if pendingMsg != nil {
+				saved := pendingMsg
+				return m, tea.Batch(
+					waitForUpdate(m.client),
+					func() tea.Msg { return saved },
+				)
 			}
 		}
 		if m.overlayMode == "log" {
 			m.refreshOverlay()
 		}
-		return m, nil
+		return m, waitForUpdate(m.client)
 
 	case RegionCreatedMsg:
 		if m.regionName == "" {
 			m.regionName = msg.Name
 		}
-		return m, nil
+		return m, waitForUpdate(m.client)
 
 	case ResizeResponseMsg:
-		return m, nil
+		return m, waitForUpdate(m.client)
 
 	case RegionDestroyedMsg:
 		m.err = "region destroyed"
@@ -266,18 +343,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case DisconnectedMsg:
 		m.connStatus = "reconnecting"
 		m.retryAt = msg.RetryAt
-		return m, tea.Tick(time.Second, func(time.Time) tea.Msg { return reconnectTickMsg{} })
+		return m, tea.Batch(
+			waitForUpdate(m.client),
+			tea.Tick(time.Second, func(time.Time) tea.Msg { return reconnectTickMsg{} }),
+		)
 
 	case ReconnectedMsg:
 		m.connStatus = "connected"
 		m.retryAt = time.Time{}
+		// Re-subscribe to the previous region
 		if m.regionID != "" {
-			m.server.Send(protocol.SubscribeRequest{
-				Type:     "subscribe_request",
-				RegionID: m.regionID,
-			})
+			return m, tea.Batch(
+				func() tea.Msg {
+					err := m.client.Send(protocol.SubscribeRequest{
+						Type:     "subscribe_request",
+						RegionID: m.regionID,
+					})
+					if err != nil {
+						return ServerErrorMsg{Context: "resubscribe", Message: err.Error()}
+					}
+					return nil
+				},
+				waitForUpdate(m.client),
+			)
 		}
-		return m, nil
+		return m, waitForUpdate(m.client)
 
 	case ServerErrorMsg:
 		m.err = msg.Context + ": " + msg.Message
@@ -305,11 +395,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case protocol.StatusResponse:
 		m.serverStatus = &msg
-		return m, nil
+		return m, waitForUpdate(m.client)
 
 	case ScrollbackResponseMsg:
 		m.scrollbackCells = msg.Lines
-		return m, nil
+		return m, waitForUpdate(m.client)
 
 	case tea.KeyboardEnhancementsMsg:
 		m.keyboardFlags = msg.Flags
@@ -365,7 +455,7 @@ func (m Model) updatePrefixCommand(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+b":
 		if m.regionID != "" {
 			data := base64.StdEncoding.EncodeToString([]byte{0x02})
-			m.server.Send(protocol.InputMsg{
+			_ = m.client.Send(protocol.InputMsg{
 				Type: "input", RegionID: m.regionID, Data: data,
 			})
 		}
@@ -400,7 +490,7 @@ func (m Model) updatePrefixCommand(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		// Request server status
 		return m, func() tea.Msg {
-			m.server.Send(protocol.StatusRequest{Type: "status_request"})
+			_ = m.client.Send(protocol.StatusRequest{Type: "status_request"})
 			return nil
 		}
 	case "n":
@@ -425,7 +515,7 @@ func (m Model) updatePrefixCommand(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			default:
 			}
 			return m, func() tea.Msg {
-				m.server.Send(protocol.GetScrollbackRequest{
+				_ = m.client.Send(protocol.GetScrollbackRequest{
 					Type:     "get_scrollback_request",
 					RegionID: m.regionID,
 				})
@@ -438,10 +528,16 @@ func (m Model) updatePrefixCommand(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// The ClearScreen happens when the response arrives (in ScreenUpdateMsg).
 		if m.regionID != "" {
 			m.pendingClear = true
-			m.server.Send(protocol.GetScreenRequest{
-				Type:     "get_screen_request",
-				RegionID: m.regionID,
-			})
+			return m, tea.Batch(
+				func() tea.Msg {
+					_ = m.client.Send(protocol.GetScreenRequest{
+						Type:     "get_screen_request",
+						RegionID: m.regionID,
+					})
+					return nil
+				},
+				waitForUpdate(m.client),
+			)
 		}
 		return m, nil
 	default:
@@ -480,7 +576,7 @@ var helpItems = []helpItem{
 		case m.FocusCh <- done:
 		default:
 		}
-		m.server.Send(protocol.StatusRequest{Type: "status_request"})
+		_ = m.client.Send(protocol.StatusRequest{Type: "status_request"})
 		return m, nil
 	}},
 	{"n", "release notes", func(m Model) (Model, tea.Cmd) {
@@ -497,11 +593,11 @@ var helpItems = []helpItem{
 	{"r", "refresh screen", func(m Model) (Model, tea.Cmd) {
 		if m.regionID != "" {
 			m.pendingClear = true
-			m.server.Send(protocol.GetScreenRequest{
+			_ = m.client.Send(protocol.GetScreenRequest{
 				Type:     "get_screen_request",
 				RegionID: m.regionID,
 			})
-			return m, nil
+			return m, waitForUpdate(m.client)
 		}
 		return m, nil
 	}},
@@ -515,7 +611,7 @@ var helpItems = []helpItem{
 			case m.FocusCh <- done:
 			default:
 			}
-			m.server.Send(protocol.GetScrollbackRequest{
+			_ = m.client.Send(protocol.GetScrollbackRequest{
 				Type:     "get_scrollback_request",
 				RegionID: m.regionID,
 			})
@@ -525,7 +621,7 @@ var helpItems = []helpItem{
 	{"b", "send literal ctrl+b", func(m Model) (Model, tea.Cmd) {
 		if m.regionID != "" {
 			data := base64.StdEncoding.EncodeToString([]byte{0x02})
-			m.server.Send(protocol.InputMsg{
+			_ = m.client.Send(protocol.InputMsg{
 				Type: "input", RegionID: m.regionID, Data: data,
 			})
 		}
@@ -709,7 +805,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		seq := encodeSGRMouse(msg, mouse.X, mouse.Y-1)
 		if seq != "" {
 			data := base64.StdEncoding.EncodeToString([]byte(seq))
-			m.server.Send(protocol.InputMsg{
+			_ = m.client.Send(protocol.InputMsg{
 				Type: "input", RegionID: m.regionID, Data: data,
 			})
 		}
@@ -738,7 +834,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			m.scrollbackMode = true
 			m.scrollbackOffset = 3
 			return m, func() tea.Msg {
-				m.server.Send(protocol.GetScrollbackRequest{
+				_ = m.client.Send(protocol.GetScrollbackRequest{
 					Type:     "get_scrollback_request",
 					RegionID: m.regionID,
 				})
