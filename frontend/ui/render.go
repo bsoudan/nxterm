@@ -47,8 +47,9 @@ func renderView(s *SessionLayer) string {
 	if s.overlay != nil {
 		rightInfo = s.overlay.Label()
 		rightBold = true
-	} else if s.scrollback.Active() {
-		rightInfo = s.scrollback.StatusText()
+	} else if s.term != nil && s.term.ScrollbackActive() {
+		text, _, _ := s.term.Status()
+		rightInfo = text
 		rightBold = true
 	} else if s.prefixMode {
 		rightInfo = "?"
@@ -73,13 +74,22 @@ func renderView(s *SessionLayer) string {
 	if contentHeight < 1 {
 		contentHeight = 1
 	}
-	showCursor := s.overlay == nil && !s.scrollback.Active()
+	scrollbackActive := s.term != nil && s.term.ScrollbackActive()
+	showCursor := s.overlay == nil && !scrollbackActive
 	disconnected := s.connStatus == "reconnecting"
 
-	if s.scrollback.Active() && s.terminal.Screen != nil {
-		s.scrollback.View(&sb, s.terminal.ScreenCells(), width, contentHeight)
+	if s.term != nil {
+		s.term.View(&sb, width, contentHeight, showCursor, disconnected)
 	} else {
-		s.terminal.View(&sb, width, contentHeight, showCursor, disconnected)
+		// No terminal yet — render blank content area
+		for i := range contentHeight {
+			for range width {
+				sb.WriteByte(' ')
+			}
+			if i < contentHeight-1 {
+				sb.WriteByte('\n')
+			}
+		}
 	}
 
 	base := sb.String()

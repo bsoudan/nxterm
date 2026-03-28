@@ -59,11 +59,13 @@ func (m Model) View() tea.View {
 	v := tea.NewView(session.View(session.termWidth, session.termHeight))
 	v.AltScreen = true
 
-	switch session.terminal.MouseMode() {
-	case 2:
-		v.MouseMode = tea.MouseModeAllMotion
-	default:
-		v.MouseMode = tea.MouseModeCellMotion
+	if session.term != nil {
+		switch session.term.MouseMode() {
+		case 2:
+			v.MouseMode = tea.MouseModeAllMotion
+		default:
+			v.MouseMode = tea.MouseModeCellMotion
+		}
 	}
 
 	return v

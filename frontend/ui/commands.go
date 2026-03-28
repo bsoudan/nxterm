@@ -51,16 +51,15 @@ func (s *SessionLayer) handlePrefixCommand(key byte) (tea.Msg, tea.Cmd) {
 		s.overlay = NewScrollableOverlay("release notes", strings.TrimRight(s.changelog, "\n"), false, s.termWidth, s.termHeight)
 		return nil, nil
 	case '[':
-		if s.regionID != "" {
-			s.scrollback = s.scrollback.Enter(0)
-			s.server.Send(protocol.GetScrollbackRequest{RegionID: s.regionID})
+		if s.term != nil {
+			s.term.EnterScrollback(0)
 		}
 		return nil, nil
 	case 'r':
-		if s.regionID != "" {
-			s.terminal = s.terminal.SetPendingClear()
+		if s.term != nil {
+			s.term.SetPendingClear()
 			s.server.Send(protocol.GetScreenRequest{
-				RegionID: s.regionID,
+				RegionID: s.term.RegionID(),
 			})
 		}
 		return nil, nil
@@ -98,18 +97,17 @@ var helpItems = []helpItem{
 		return nil, nil
 	}},
 	{"r", "refresh screen", func(s *SessionLayer) (tea.Msg, tea.Cmd) {
-		if s.regionID != "" {
-			s.terminal = s.terminal.SetPendingClear()
+		if s.term != nil {
+			s.term.SetPendingClear()
 			s.server.Send(protocol.GetScreenRequest{
-				RegionID: s.regionID,
+				RegionID: s.term.RegionID(),
 			})
 		}
 		return nil, nil
 	}},
 	{"[", "scrollback", func(s *SessionLayer) (tea.Msg, tea.Cmd) {
-		if s.regionID != "" {
-			s.scrollback = s.scrollback.Enter(0)
-			s.server.Send(protocol.GetScrollbackRequest{RegionID: s.regionID})
+		if s.term != nil {
+			s.term.EnterScrollback(0)
 		}
 		return nil, nil
 	}},

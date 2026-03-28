@@ -2,11 +2,9 @@ package ui
 
 import (
 	"io"
-	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/x/ansi"
 	termlog "termd/frontend/log"
 	"termd/frontend/protocol"
 )
@@ -25,8 +23,7 @@ type SessionLayer struct {
 	cmd     string
 	cmdArgs []string
 
-	terminal   Terminal
-	scrollback Scrollback
+	term       *TerminalChild // nil until subscribe succeeds
 	overlay    Overlay
 	prefixMode bool
 	showHint   bool
@@ -44,11 +41,9 @@ type SessionLayer struct {
 	version       string
 	changelog     string
 
-	termEnv       map[string]string
-	keyboardFlags int
-	bgDark        *bool
-	termWidth     int
-	termHeight    int
+	// Pre-terminal dimensions (stored until terminal is created).
+	termWidth  int
+	termHeight int
 }
 
 // NewSessionLayer creates a session layer with the given dependencies.
@@ -111,6 +106,14 @@ func (s *SessionLayer) detach() (tea.Msg, tea.Cmd) {
 	return DetachMsg{}, tea.Quit
 }
 
+// ensureTerminal creates the terminal if it doesn't exist yet.
+// ScreenUpdate/TerminalEvents may arrive before SubscribeResponse.
+func (s *SessionLayer) ensureTerminal() {
+	if s.term == nil {
+		s.term = NewTerminalChild(s.server, s.regionID, s.regionName, s.termWidth, s.termHeight)
+	}
+}
+
 // Update implements the Layer interface.
 func (s *SessionLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 	// Unwrap protocol.Message: check for reply handler, then dispatch on payload.
@@ -139,12 +142,9 @@ func (s *SessionLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 	case tea.WindowSizeMsg:
 		s.termWidth = msg.Width
 		s.termHeight = msg.Height
-		if s.regionID != "" {
-			s.server.Send(protocol.ResizeRequest{
-				RegionID: s.regionID,
-				Width:    uint16(msg.Width),
-				Height:   uint16(s.contentHeight()),
-			})
+		if s.term != nil {
+			cmd := s.term.Update(msg)
+			return nil, cmd, true
 		}
 		return nil, nil, true
 
@@ -191,6 +191,9 @@ func (s *SessionLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 			return resp, cmd, true
 		}
 		s.status = ""
+		s.ensureTerminal()
+		// Terminal sends initial resize in its Update via WindowSizeMsg,
+		// but we may already have dimensions — send resize now.
 		if s.termWidth > 0 && s.termHeight > 2 {
 			s.server.Send(protocol.ResizeRequest{
 				RegionID: s.regionID,
@@ -200,22 +203,52 @@ func (s *SessionLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 		}
 		return nil, nil, true
 
-	// ScreenUpdate and GetScreenResponse have the same fields — handle both
+	// Terminal messages — delegate to TerminalChild.
+	// ScreenUpdate may arrive before SubscribeResponse (the server sends it
+	// as soon as the client subscribes), so ensure the terminal exists.
 	case protocol.ScreenUpdate:
-		cmd := s.handleScreenUpdate(msg.Lines, msg.Cells, msg.CursorRow, msg.CursorCol)
-		return nil, cmd, true
-	case protocol.GetScreenResponse:
-		cmd := s.handleScreenUpdate(msg.Lines, msg.Cells, msg.CursorRow, msg.CursorCol)
-		return nil, cmd, true
-
-	case protocol.TerminalEvents:
-		var needsClear bool
-		s.terminal, needsClear = s.terminal.HandleTerminalEvents(msg.Events)
-		if needsClear {
-			return nil, func() tea.Msg { return tea.ClearScreen() }, true
-		}
+		s.ensureTerminal()
+		cmd := s.term.Update(msg)
 		if s.overlay != nil {
 			s.refreshLogOverlay()
+		}
+		return nil, cmd, true
+	case protocol.GetScreenResponse:
+		s.ensureTerminal()
+		cmd := s.term.Update(msg)
+		if s.overlay != nil {
+			s.refreshLogOverlay()
+		}
+		return nil, cmd, true
+	case protocol.TerminalEvents:
+		s.ensureTerminal()
+		cmd := s.term.Update(msg)
+		if s.overlay != nil {
+			s.refreshLogOverlay()
+		}
+		return nil, cmd, true
+	case protocol.GetScrollbackResponse:
+		if s.term != nil {
+			s.term.Update(msg)
+		}
+		return nil, nil, true
+	case protocol.ResizeResponse:
+		return nil, nil, true
+
+	// Capability messages — delegate to terminal if it exists
+	case tea.KeyboardEnhancementsMsg:
+		if s.term != nil {
+			s.term.Update(msg)
+		}
+		return nil, nil, true
+	case tea.BackgroundColorMsg:
+		if s.term != nil {
+			s.term.Update(msg)
+		}
+		return nil, nil, true
+	case tea.EnvMsg:
+		if s.term != nil {
+			s.term.Update(msg)
 		}
 		return nil, nil, true
 
@@ -223,9 +256,9 @@ func (s *SessionLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 		if s.regionName == "" {
 			s.regionName = msg.Name
 		}
-		return nil, nil, true
-
-	case protocol.ResizeResponse:
+		if s.term != nil {
+			s.term.regionName = msg.Name
+		}
 		return nil, nil, true
 
 	case protocol.RegionDestroyed:
@@ -254,10 +287,6 @@ func (s *SessionLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 		}
 		return nil, nil, true
 
-	case protocol.GetScrollbackResponse:
-		s.scrollback = s.scrollback.SetData(msg.Lines)
-		return nil, nil, true
-
 	case ServerErrorMsg:
 		s.err = msg.Context + ": " + msg.Message
 		resp, cmd := s.quit()
@@ -283,24 +312,6 @@ func (s *SessionLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 		}
 		return nil, nil, true
 
-	case tea.KeyboardEnhancementsMsg:
-		s.keyboardFlags = msg.Flags
-		return nil, nil, true
-
-	case tea.BackgroundColorMsg:
-		dark := msg.IsDark()
-		s.bgDark = &dark
-		return nil, nil, true
-
-	case tea.EnvMsg:
-		s.termEnv = make(map[string]string)
-		for _, key := range []string{"TERM", "COLORTERM", "TERM_PROGRAM"} {
-			if v := msg.Getenv(key); v != "" {
-				s.termEnv[key] = v
-			}
-		}
-		return nil, nil, true
-
 	case tea.MouseMsg:
 		cmd := s.handleMouse(msg)
 		return nil, cmd, true
@@ -310,12 +321,8 @@ func (s *SessionLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 			resp, cmd := s.updateOverlay(msg)
 			return resp, cmd, true
 		}
-		if s.scrollback.Active() {
-			var exited bool
-			s.scrollback, exited = s.scrollback.Update(msg, s.contentHeight())
-			if exited {
-				s.scrollback = s.scrollback.Exit()
-			}
+		if s.term != nil && s.term.ScrollbackActive() {
+			s.term.HandleScrollbackKey(msg)
 			return nil, nil, true
 		}
 		// KeyPressMsg only arrives from bubbletea's pipe during focus mode.
@@ -325,23 +332,6 @@ func (s *SessionLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 	default:
 		return nil, nil, true
 	}
-}
-
-func (s *SessionLayer) handleScreenUpdate(lines []string, cells [][]protocol.ScreenCell, cursorRow, cursorCol uint16) tea.Cmd {
-	height := s.contentHeight()
-	if s.termHeight <= 0 {
-		height = 23
-	}
-	s.terminal = s.terminal.HandleScreenUpdate(lines, cells, cursorRow, cursorCol, s.termWidth, height)
-	if s.overlay != nil {
-		s.refreshLogOverlay()
-	}
-	var clear bool
-	s.terminal, clear = s.terminal.ConsumePendingClear()
-	if clear {
-		return func() tea.Msg { return tea.ClearScreen() }
-	}
-	return nil
 }
 
 func (s *SessionLayer) updateOverlay(msg tea.KeyPressMsg) (tea.Msg, tea.Cmd) {
@@ -362,33 +352,16 @@ func (s *SessionLayer) refreshLogOverlay() {
 
 func (s *SessionLayer) buildStatusCaps() StatusCaps {
 	caps := StatusCaps{
-		Hostname:      s.localHostname,
-		Endpoint:      s.endpoint,
-		Version:       s.version,
-		ConnStatus:    s.connStatus,
-		KeyboardFlags: s.keyboardFlags,
-		BgDark:        s.bgDark,
-		TermEnv:       s.termEnv,
+		Hostname:   s.localHostname,
+		Endpoint:   s.endpoint,
+		Version:    s.version,
+		ConnStatus: s.connStatus,
 	}
-	if s.terminal.Screen != nil {
-		var mouseModes []string
-		if _, ok := s.terminal.Screen.Mode[privateModeKey(ansi.ModeMouseNormal.Mode())]; ok {
-			mouseModes = append(mouseModes, "normal(1000)")
-		}
-		if _, ok := s.terminal.Screen.Mode[privateModeKey(ansi.ModeMouseButtonEvent.Mode())]; ok {
-			mouseModes = append(mouseModes, "button(1002)")
-		}
-		if _, ok := s.terminal.Screen.Mode[privateModeKey(ansi.ModeMouseAnyEvent.Mode())]; ok {
-			mouseModes = append(mouseModes, "any(1003)")
-		}
-		if _, ok := s.terminal.Screen.Mode[privateModeKey(ansi.ModeMouseExtSgr.Mode())]; ok {
-			mouseModes = append(mouseModes, "sgr(1006)")
-		}
-		if len(mouseModes) > 0 {
-			caps.MouseModes = strings.Join(mouseModes, ", ")
-		} else {
-			caps.MouseModes = "off"
-		}
+	if s.term != nil {
+		caps.KeyboardFlags = s.term.KeyboardFlags()
+		caps.BgDark = s.term.BgDark()
+		caps.TermEnv = s.term.TermEnv()
+		caps.MouseModes = s.term.MouseModes()
 	}
 	return caps
 }

@@ -33,7 +33,7 @@ const prefixKey = 0x02 // ctrl+b
 // Returns (response, cmd) where response may be DetachMsg if detaching.
 func (s *SessionLayer) handleRawInput(chunk []byte) (tea.Msg, tea.Cmd) {
 	// Focus mode: write to bubbletea's input pipe for key event parsing.
-	if s.overlay != nil || s.scrollback.Active() {
+	if s.overlay != nil || (s.term != nil && s.term.ScrollbackActive()) {
 		if bytes.Contains(chunk, sgrMousePrefix) {
 			mice, rest := extractSGRMouseSequences(chunk)
 			var cmds []tea.Cmd
@@ -98,11 +98,11 @@ func (s *SessionLayer) handleRawInput(chunk []byte) (tea.Msg, tea.Cmd) {
 		}
 		var cmds []tea.Cmd
 		for _, mouse := range mice {
-			if s.terminal.ChildWantsMouse() {
+			if s.term != nil && s.term.ChildWantsMouse() {
 				seq := encodeSGRMouse(mouse, mouse.Mouse().X, mouse.Mouse().Y-chromeRows)
 				if seq != "" {
 					s.server.Send(InputMsg{
-						RegionID: s.regionID,
+						RegionID: s.term.RegionID(),
 						Data:     []byte(seq),
 					})
 				}

@@ -1,9 +1,11 @@
 package ui
 
 import (
+	"encoding/base64"
 	"fmt"
 	"strings"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	te "github.com/rcarmo/go-te/pkg/te"
 	"termd/frontend/protocol"
@@ -18,107 +20,150 @@ func privateModeKey(mode int) int {
 	return mode << 5
 }
 
-// Terminal manages the virtual screen state replicated from the server.
-type Terminal struct {
-	Screen     *te.Screen
-	lines      []string
-	CursorRow  int
-	CursorCol  int
+// TerminalChild owns screen state, scrollback, capabilities, and server
+// communication for a single terminal region. Session owns it as a child.
+type TerminalChild struct {
+	screen       *te.Screen
+	lines        []string
+	cursorRow    int
+	cursorCol    int
 	pendingClear bool
+	scrollback   Scrollback
+
+	server     *Server
+	regionID   string
+	regionName string
+	termWidth  int
+	termHeight int
+
+	termEnv       map[string]string
+	keyboardFlags int
+	bgDark        *bool
 }
 
-// HandleScreenUpdate initializes the screen from a full snapshot.
-func (t Terminal) HandleScreenUpdate(lines []string, cells [][]protocol.ScreenCell, cursorRow, cursorCol uint16, width, height int) Terminal {
-	t.lines = lines
-	t.CursorRow = int(cursorRow)
-	t.CursorCol = int(cursorCol)
+// NewTerminalChild creates a terminal child for a subscribed region.
+func NewTerminalChild(server *Server, regionID, regionName string, width, height int) *TerminalChild {
+	return &TerminalChild{
+		server:     server,
+		regionID:   regionID,
+		regionName: regionName,
+		termWidth:  width,
+		termHeight: height,
+	}
+}
+
+func (t *TerminalChild) contentHeight() int {
+	h := t.termHeight - 1 // tab bar
+	if h < 1 {
+		h = 1
+	}
+	return h
+}
+
+// Update handles messages routed by session. Returns a tea.Cmd or nil.
+func (t *TerminalChild) Update(msg tea.Msg) tea.Cmd {
+	switch msg := msg.(type) {
+	case protocol.ScreenUpdate:
+		return t.handleScreenUpdate(msg.Lines, msg.Cells, msg.CursorRow, msg.CursorCol)
+	case protocol.GetScreenResponse:
+		return t.handleScreenUpdate(msg.Lines, msg.Cells, msg.CursorRow, msg.CursorCol)
+	case protocol.TerminalEvents:
+		return t.handleTerminalEvents(msg.Events)
+	case protocol.GetScrollbackResponse:
+		t.scrollback = t.scrollback.SetData(msg.Lines)
+		return nil
+	case protocol.ResizeResponse:
+		return nil
+	case tea.WindowSizeMsg:
+		t.termWidth = msg.Width
+		t.termHeight = msg.Height
+		t.server.Send(protocol.ResizeRequest{
+			RegionID: t.regionID,
+			Width:    uint16(msg.Width),
+			Height:   uint16(t.contentHeight()),
+		})
+		return nil
+	case tea.KeyboardEnhancementsMsg:
+		t.keyboardFlags = msg.Flags
+		return nil
+	case tea.BackgroundColorMsg:
+		dark := msg.IsDark()
+		t.bgDark = &dark
+		return nil
+	case tea.EnvMsg:
+		t.termEnv = make(map[string]string)
+		for _, key := range []string{"TERM", "COLORTERM", "TERM_PROGRAM"} {
+			if v := msg.Getenv(key); v != "" {
+				t.termEnv[key] = v
+			}
+		}
+		return nil
+	default:
+		return nil
+	}
+}
+
+func (t *TerminalChild) handleScreenUpdate(lines []string, cells [][]protocol.ScreenCell, cursorRow, cursorCol uint16) tea.Cmd {
+	height := t.contentHeight()
+	if t.termHeight <= 0 {
+		height = 23
+	}
+	width := t.termWidth
 	if width <= 0 {
 		width = 80
 	}
-	t.Screen = te.NewScreen(width, height)
+	t.lines = lines
+	t.cursorRow = int(cursorRow)
+	t.cursorCol = int(cursorCol)
+	t.screen = te.NewScreen(width, height)
 	if len(cells) > 0 {
-		initScreenFromCells(t.Screen, cells)
+		initScreenFromCells(t.screen, cells)
 	} else {
 		for i, line := range lines {
 			if i > 0 {
-				t.Screen.LineFeed()
-				t.Screen.CarriageReturn()
+				t.screen.LineFeed()
+				t.screen.CarriageReturn()
 			}
-			t.Screen.Draw(line)
+			t.screen.Draw(line)
 		}
 	}
-	t.Screen.CursorPosition(int(cursorRow)+1, int(cursorCol)+1)
-	return t
-}
+	t.screen.CursorPosition(int(cursorRow)+1, int(cursorCol)+1)
 
-// HandleTerminalEvents replays events on the screen. Returns the updated
-// terminal and whether a full screen clear is needed (alt screen toggle).
-func (t Terminal) HandleTerminalEvents(events []protocol.TerminalEvent) (Terminal, bool) {
-	if t.Screen == nil {
-		return t, false
-	}
-	needsClear := replayEvents(t.Screen, events)
-	t.CursorRow = t.Screen.Cursor.Row
-	t.CursorCol = t.Screen.Cursor.Col
-	return t, needsClear
-}
-
-// ConsumePendingClear checks and clears the pendingClear flag.
-func (t Terminal) ConsumePendingClear() (Terminal, bool) {
 	if t.pendingClear {
 		t.pendingClear = false
-		return t, true
+		return func() tea.Msg { return tea.ClearScreen() }
 	}
-	return t, false
+	return nil
 }
 
-// SetPendingClear marks that a screen clear should happen on the next update.
-func (t Terminal) SetPendingClear() Terminal {
-	t.pendingClear = true
-	return t
-}
-
-// ChildWantsMouse checks if the child application has mouse mode enabled.
-func (t Terminal) ChildWantsMouse() bool {
-	if t.Screen == nil {
-		return false
-	}
-	_, m1000 := t.Screen.Mode[privateModeKey(ansi.ModeMouseNormal.Mode())]
-	_, m1002 := t.Screen.Mode[privateModeKey(ansi.ModeMouseButtonEvent.Mode())]
-	_, m1003 := t.Screen.Mode[privateModeKey(ansi.ModeMouseAnyEvent.Mode())]
-	return m1000 || m1002 || m1003
-}
-
-// MouseMode returns the bubbletea mouse mode based on the child's mode state.
-func (t Terminal) MouseMode() int {
-	if t.Screen == nil {
-		return 0
-	}
-	_, m1003 := t.Screen.Mode[privateModeKey(ansi.ModeMouseAnyEvent.Mode())]
-	if m1003 {
-		return 2 // AllMotion
-	}
-	return 1 // CellMotion (default for scroll wheel)
-}
-
-// ScreenCells returns the current cell data for rendering.
-func (t Terminal) ScreenCells() [][]te.Cell {
-	if t.Screen == nil {
+func (t *TerminalChild) handleTerminalEvents(events []protocol.TerminalEvent) tea.Cmd {
+	if t.screen == nil {
 		return nil
 	}
-	return t.Screen.LinesCells()
+	needsClear := replayEvents(t.screen, events)
+	t.cursorRow = t.screen.Cursor.Row
+	t.cursorCol = t.screen.Cursor.Col
+	if needsClear {
+		return func() tea.Msg { return tea.ClearScreen() }
+	}
+	return nil
 }
 
-// View renders the terminal content area.
-func (t Terminal) View(sb *strings.Builder, width, height int, showCursor, disconnected bool) {
-	if t.Screen != nil {
-		cells := t.Screen.LinesCells()
+// View renders the terminal content area (including scrollback if active).
+func (t *TerminalChild) View(sb *strings.Builder, width, height int, showCursor, disconnected bool) {
+	if t.scrollback.Active() && t.screen != nil {
+		t.scrollback.View(sb, t.ScreenCells(), width, height)
+		return
+	}
+
+	if t.screen != nil {
+		cells := t.screen.LinesCells()
 		for i := range height {
 			var row []te.Cell
 			if i < len(cells) {
 				row = cells[i]
 			}
-			renderCellLine(sb, row, width, i, t.CursorRow, t.CursorCol, showCursor, disconnected)
+			renderCellLine(sb, row, width, i, t.cursorRow, t.cursorCol, showCursor, disconnected)
 			if i < height-1 {
 				sb.WriteByte('\n')
 			}
@@ -141,7 +186,7 @@ func (t Terminal) View(sb *strings.Builder, width, height int, showCursor, disco
 			if col < len(runes) {
 				ch = runes[col]
 			}
-			if showCursor && i == t.CursorRow && col == t.CursorCol {
+			if showCursor && i == t.cursorRow && col == t.cursorCol {
 				sb.WriteString(ansi.SGR(ansi.AttrReverse))
 				sb.WriteRune(ch)
 				sb.WriteString(ansi.SGR(ansi.AttrNoReverse))
@@ -153,6 +198,144 @@ func (t Terminal) View(sb *strings.Builder, width, height int, showCursor, disco
 			sb.WriteByte('\n')
 		}
 	}
+}
+
+// Title returns the region name for the tab bar.
+func (t *TerminalChild) Title() string { return t.regionName }
+
+// Status returns status bar info. Scrollback mode reports offset/total.
+func (t *TerminalChild) Status() (string, bool, bool) {
+	if t.scrollback.Active() {
+		return t.scrollback.StatusText(), true, false
+	}
+	return "", false, false
+}
+
+// ScrollbackActive returns whether scrollback mode is active.
+func (t *TerminalChild) ScrollbackActive() bool { return t.scrollback.Active() }
+
+// EnterScrollback activates scrollback mode and requests data from the server.
+func (t *TerminalChild) EnterScrollback(offset int) {
+	t.scrollback = t.scrollback.Enter(offset)
+	t.server.Send(protocol.GetScrollbackRequest{RegionID: t.regionID})
+}
+
+// ExitScrollback deactivates scrollback mode.
+func (t *TerminalChild) ExitScrollback() {
+	t.scrollback = t.scrollback.Exit()
+}
+
+// HandleScrollbackKey processes keyboard input during scrollback mode.
+func (t *TerminalChild) HandleScrollbackKey(msg tea.KeyPressMsg) {
+	var exited bool
+	t.scrollback, exited = t.scrollback.Update(msg, t.contentHeight())
+	if exited {
+		t.scrollback = t.scrollback.Exit()
+	}
+}
+
+// HandleScrollbackWheel processes scroll wheel during scrollback mode.
+// Returns true if scrollback was exited.
+func (t *TerminalChild) HandleScrollbackWheel(button tea.MouseButton) bool {
+	var exited bool
+	t.scrollback, exited = t.scrollback.HandleWheel(button)
+	if exited {
+		t.scrollback = t.scrollback.Exit()
+	}
+	return exited
+}
+
+// SetPendingClear marks that a screen clear should happen on the next screen update.
+func (t *TerminalChild) SetPendingClear() {
+	t.pendingClear = true
+}
+
+// ForwardMouse encodes and sends a mouse event to the server.
+func (t *TerminalChild) ForwardMouse(msg tea.MouseMsg) {
+	mouse := msg.Mouse()
+	seq := encodeSGRMouse(msg, mouse.X, mouse.Y-1)
+	if seq != "" {
+		data := base64.StdEncoding.EncodeToString([]byte(seq))
+		t.server.Send(protocol.InputMsg{
+			RegionID: t.regionID, Data: data,
+		})
+	}
+}
+
+// ChildWantsMouse checks if the child application has mouse mode enabled.
+func (t *TerminalChild) ChildWantsMouse() bool {
+	if t.screen == nil {
+		return false
+	}
+	_, m1000 := t.screen.Mode[privateModeKey(ansi.ModeMouseNormal.Mode())]
+	_, m1002 := t.screen.Mode[privateModeKey(ansi.ModeMouseButtonEvent.Mode())]
+	_, m1003 := t.screen.Mode[privateModeKey(ansi.ModeMouseAnyEvent.Mode())]
+	return m1000 || m1002 || m1003
+}
+
+// MouseMode returns the bubbletea mouse mode based on the child's mode state.
+func (t *TerminalChild) MouseMode() int {
+	if t.screen == nil {
+		return 0
+	}
+	_, m1003 := t.screen.Mode[privateModeKey(ansi.ModeMouseAnyEvent.Mode())]
+	if m1003 {
+		return 2 // AllMotion
+	}
+	return 1 // CellMotion (default for scroll wheel)
+}
+
+// ScreenCells returns the current cell data for rendering.
+func (t *TerminalChild) ScreenCells() [][]te.Cell {
+	if t.screen == nil {
+		return nil
+	}
+	return t.screen.LinesCells()
+}
+
+// RegionID returns the terminal's region ID.
+func (t *TerminalChild) RegionID() string { return t.regionID }
+
+// Width returns the terminal width.
+func (t *TerminalChild) Width() int { return t.termWidth }
+
+// Height returns the terminal height.
+func (t *TerminalChild) Height() int { return t.termHeight }
+
+// KeyboardFlags returns kitty keyboard protocol flags.
+func (t *TerminalChild) KeyboardFlags() int { return t.keyboardFlags }
+
+// BgDark returns the background darkness state.
+func (t *TerminalChild) BgDark() *bool { return t.bgDark }
+
+// TermEnv returns terminal environment variables.
+func (t *TerminalChild) TermEnv() map[string]string { return t.termEnv }
+
+// Screen returns the underlying te.Screen (for status caps mouse mode detection).
+func (t *TerminalChild) Screen() *te.Screen { return t.screen }
+
+// MouseModes returns a human-readable mouse mode string for status display.
+func (t *TerminalChild) MouseModes() string {
+	if t.screen == nil {
+		return ""
+	}
+	var modes []string
+	if _, ok := t.screen.Mode[privateModeKey(ansi.ModeMouseNormal.Mode())]; ok {
+		modes = append(modes, "normal(1000)")
+	}
+	if _, ok := t.screen.Mode[privateModeKey(ansi.ModeMouseButtonEvent.Mode())]; ok {
+		modes = append(modes, "button(1002)")
+	}
+	if _, ok := t.screen.Mode[privateModeKey(ansi.ModeMouseAnyEvent.Mode())]; ok {
+		modes = append(modes, "any(1003)")
+	}
+	if _, ok := t.screen.Mode[privateModeKey(ansi.ModeMouseExtSgr.Mode())]; ok {
+		modes = append(modes, "sgr(1006)")
+	}
+	if len(modes) > 0 {
+		return strings.Join(modes, ", ")
+	}
+	return "off"
 }
 
 // ── Screen helpers ──────────────────────────────────────────────────────────
