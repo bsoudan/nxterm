@@ -136,23 +136,24 @@ func mouseButtonSGR(b tea.MouseButton) int {
 // handleMouse processes mouse events.
 // Overlay mouse handling is done by overlay layers above session.
 func (s *SessionLayer) handleMouse(msg tea.MouseMsg) tea.Cmd {
-	if s.term == nil {
+	t := s.activeTerm()
+	if t == nil {
 		return nil
 	}
 
-	if s.term.ChildWantsMouse() {
-		s.term.ForwardMouse(msg)
+	if t.ChildWantsMouse() {
+		t.ForwardMouse(msg)
 		return nil
 	}
 
 	// Child doesn't want mouse — scroll wheel enters/navigates scrollback
 	if wheel, ok := msg.(tea.MouseWheelMsg); ok {
-		if s.term.ScrollbackActive() {
-			s.term.HandleScrollbackWheel(wheel.Button)
+		if t.ScrollbackActive() {
+			t.HandleScrollbackWheel(wheel.Button)
 			return nil
 		}
 		if wheel.Button == tea.MouseWheelUp {
-			s.term.EnterScrollback(3)
+			t.EnterScrollback(3)
 			return nil
 		}
 	}

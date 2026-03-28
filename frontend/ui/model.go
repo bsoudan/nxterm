@@ -106,7 +106,8 @@ func (m Model) hasFocusLayer(session *SessionLayer) bool {
 			return true
 		}
 	}
-	return session.term != nil && session.term.ScrollbackActive()
+	t := session.ActiveTerm()
+	return t != nil && t.ScrollbackActive()
 }
 
 // handleFocusInput routes raw input through pipeW one sequence at a time.
@@ -209,8 +210,8 @@ func (m Model) View() tea.View {
 	v := tea.NewView(content)
 	v.AltScreen = true
 
-	if session.term != nil {
-		switch session.term.MouseMode() {
+	if activeTerm := session.ActiveTerm(); activeTerm != nil {
+		switch activeTerm.MouseMode() {
 		case 2:
 			v.MouseMode = tea.MouseModeAllMotion
 		default:

@@ -510,8 +510,8 @@ func TestPrefixKeyStatusIndicator(t *testing.T) {
 		t.Fatalf("expected prefix indicator on row 0, found on row %d", row)
 	}
 
-	// Dismiss and verify it clears
-	pio.Write([]byte("x"))
+	// Dismiss (press an unbound key) and verify it clears
+	pio.Write([]byte("z"))
 	pio.Write([]byte("echo prefix_cleared\r"))
 	pio.WaitForScreen(t, func(lines []string) bool {
 		row, _ := findOnScreen(lines[1:], "prefix_cleared")
@@ -1261,5 +1261,331 @@ func TestExit(t *testing.T) {
 				return
 			}
 		}
+	}
+}
+
+func TestActiveTabBold(t *testing.T) {
+	socketPath, serverCleanup := startServer(t)
+	defer serverCleanup()
+
+	pio, frontendCleanup := startFrontend(t, socketPath)
+	defer frontendCleanup()
+
+	pio.WaitFor(t, "1:bash", 10*time.Second)
+	pio.WaitFor(t, "termd$", 10*time.Second)
+
+	// Spawn a second region so we have active and inactive tabs
+	pio.Write([]byte("\x02c"))
+	pio.WaitForScreen(t, func(lines []string) bool {
+		if len(lines) == 0 {
+			return false
+		}
+		return strings.Contains(lines[0], "1:bash") && strings.Contains(lines[0], "2:bash")
+	}, "tab bar with both tabs", 10*time.Second)
+	pio.WaitForSilence(200 * time.Millisecond)
+
+	cells := pio.ScreenCells()
+	if len(cells) == 0 {
+		t.Fatal("no screen cells")
+	}
+	tabRow := cells[0]
+
+	// Find "1:" and "2:" on row 0 to locate each tab label
+	tab1Col, tab2Col := -1, -1
+	for col := 0; col+1 < len(tabRow); col++ {
+		if tabRow[col].Data == "1" && tabRow[col+1].Data == ":" {
+			tab1Col = col
+		}
+		if tabRow[col].Data == "2" && tabRow[col+1].Data == ":" {
+			tab2Col = col
+		}
+	}
+	if tab1Col < 0 || tab2Col < 0 {
+		t.Fatalf("could not find tab labels on row 0: tab1=%d tab2=%d", tab1Col, tab2Col)
+	}
+
+	// Tab 2 is active (just spawned), tab 1 is inactive.
+	// Active tab should be bold, inactive should NOT be bold.
+	if tabRow[tab1Col].Attr.Bold {
+		t.Errorf("inactive tab '1:bash' at col %d should not be bold", tab1Col)
+	}
+	if !tabRow[tab2Col].Attr.Bold {
+		t.Errorf("active tab '2:bash' at col %d should be bold", tab2Col)
+	}
+
+	// Switch to tab 1 and verify bold flips
+	pio.Write([]byte("\x021"))
+	pio.WaitFor(t, "termd$", 10*time.Second)
+	pio.WaitForSilence(200 * time.Millisecond)
+
+	cells = pio.ScreenCells()
+	tabRow = cells[0]
+	tab1Col, tab2Col = -1, -1
+	for col := 0; col+1 < len(tabRow); col++ {
+		if tabRow[col].Data == "1" && tabRow[col+1].Data == ":" {
+			tab1Col = col
+		}
+		if tabRow[col].Data == "2" && tabRow[col+1].Data == ":" {
+			tab2Col = col
+		}
+	}
+	if tab1Col < 0 || tab2Col < 0 {
+		t.Fatalf("could not find tab labels after switch: tab1=%d tab2=%d", tab1Col, tab2Col)
+	}
+	if !tabRow[tab1Col].Attr.Bold {
+		t.Errorf("active tab '1:bash' at col %d should be bold after switch", tab1Col)
+	}
+	if tabRow[tab2Col].Attr.Bold {
+		t.Errorf("inactive tab '2:bash' at col %d should not be bold after switch", tab2Col)
+	}
+}
+
+func TestConnectPicksUpExistingRegions(t *testing.T) {
+	socketPath, serverCleanup := startServer(t)
+	defer serverCleanup()
+
+	// Pre-create two regions via termctl before the frontend connects.
+	shell := findShell(t)
+	spawnRegion(t, socketPath, shell)
+	spawnRegion(t, socketPath, shell)
+
+	// Now start the frontend — it should enumerate both regions as tabs.
+	pio, frontendCleanup := startFrontend(t, socketPath)
+	defer frontendCleanup()
+
+	pio.WaitForScreen(t, func(lines []string) bool {
+		if len(lines) == 0 {
+			return false
+		}
+		return strings.Contains(lines[0], "1:") && strings.Contains(lines[0], "2:")
+	}, "tab bar with two pre-existing regions", 10*time.Second)
+}
+
+func TestSpawnSecondRegion(t *testing.T) {
+	socketPath, serverCleanup := startServer(t)
+	defer serverCleanup()
+
+	pio, frontendCleanup := startFrontend(t, socketPath)
+	defer frontendCleanup()
+
+	// Wait for initial tab and prompt
+	pio.WaitFor(t, "1:bash", 10*time.Second)
+	pio.WaitFor(t, "termd$", 10*time.Second)
+
+	// ctrl+b c to spawn a second region
+	pio.Write([]byte("\x02c"))
+
+	// Wait for tab bar to show both tabs
+	pio.WaitForScreen(t, func(lines []string) bool {
+		if len(lines) == 0 {
+			return false
+		}
+		return strings.Contains(lines[0], "1:bash") && strings.Contains(lines[0], "2:bash")
+	}, "tab bar with '1:bash' and '2:bash'", 10*time.Second)
+
+	// New tab should have a prompt
+	pio.WaitFor(t, "termd$", 10*time.Second)
+}
+
+func TestSwitchTabs(t *testing.T) {
+	socketPath, serverCleanup := startServer(t)
+	defer serverCleanup()
+
+	pio, frontendCleanup := startFrontend(t, socketPath)
+	defer frontendCleanup()
+
+	pio.WaitFor(t, "1:bash", 10*time.Second)
+	pio.WaitFor(t, "termd$", 10*time.Second)
+
+	// Type a marker in tab 1
+	pio.Write([]byte("echo TAB1_MARKER\r"))
+	pio.WaitFor(t, "TAB1_MARKER", 10*time.Second)
+
+	// Spawn second region
+	pio.Write([]byte("\x02c"))
+	pio.WaitFor(t, "2:bash", 10*time.Second)
+	pio.WaitFor(t, "termd$", 10*time.Second)
+
+	// Type a marker in tab 2
+	pio.Write([]byte("echo TAB2_MARKER\r"))
+	pio.WaitFor(t, "TAB2_MARKER", 10*time.Second)
+
+	// Switch to tab 1
+	pio.Write([]byte("\x021"))
+
+	// Tab 1 content should be restored (subscribe sends screen snapshot)
+	pio.WaitFor(t, "TAB1_MARKER", 10*time.Second)
+
+	// TAB2_MARKER should NOT be on screen
+	lines := pio.ScreenLines()
+	for _, line := range lines {
+		if strings.Contains(line, "TAB2_MARKER") {
+			t.Fatalf("TAB2_MARKER should not be visible on tab 1")
+		}
+	}
+}
+
+func TestInputIsolation(t *testing.T) {
+	socketPath, serverCleanup := startServer(t)
+	defer serverCleanup()
+
+	pio, frontendCleanup := startFrontend(t, socketPath)
+	defer frontendCleanup()
+
+	pio.WaitFor(t, "1:bash", 10*time.Second)
+	pio.WaitFor(t, "termd$", 10*time.Second)
+
+	// Type a marker in tab 1 so we can identify its screen
+	pio.Write([]byte("echo TAB1_HERE\r"))
+	pio.WaitFor(t, "TAB1_HERE", 10*time.Second)
+
+	// Spawn second region
+	pio.Write([]byte("\x02c"))
+	pio.WaitFor(t, "2:bash", 10*time.Second)
+	pio.WaitFor(t, "termd$", 10*time.Second)
+
+	// Type in tab 2
+	pio.Write([]byte("echo ONLY_IN_TAB2\r"))
+	pio.WaitFor(t, "ONLY_IN_TAB2", 10*time.Second)
+
+	// Switch to tab 1 and wait for tab 1's content to appear
+	pio.Write([]byte("\x021"))
+
+	// Wait for tab 1 screen: must have TAB1_HERE and must NOT have ONLY_IN_TAB2
+	pio.WaitForScreen(t, func(lines []string) bool {
+		hasTab1 := false
+		for _, line := range lines {
+			if strings.Contains(line, "TAB1_HERE") {
+				hasTab1 = true
+			}
+			if strings.Contains(line, "ONLY_IN_TAB2") {
+				return false
+			}
+		}
+		return hasTab1
+	}, "tab 1 screen with TAB1_HERE and without ONLY_IN_TAB2", 10*time.Second)
+
+	// Switch back to tab 2 and verify content is there
+	pio.Write([]byte("\x022"))
+	pio.WaitFor(t, "ONLY_IN_TAB2", 10*time.Second)
+}
+
+func TestRegionDestroyedRemovesTab(t *testing.T) {
+	socketPath, serverCleanup := startServer(t)
+	defer serverCleanup()
+
+	pio, frontendCleanup := startFrontend(t, socketPath)
+	defer frontendCleanup()
+
+	pio.WaitFor(t, "1:bash", 10*time.Second)
+	pio.WaitFor(t, "termd$", 10*time.Second)
+
+	// Spawn second region
+	pio.Write([]byte("\x02c"))
+	pio.WaitFor(t, "2:bash", 10*time.Second)
+	pio.WaitFor(t, "termd$", 10*time.Second)
+
+	// Exit the shell in tab 2
+	pio.Write([]byte("exit\r"))
+
+	// Wait for tab bar to show only tab 1 (tab 2 removed)
+	pio.WaitForScreen(t, func(lines []string) bool {
+		if len(lines) == 0 {
+			return false
+		}
+		return strings.Contains(lines[0], "1:bash") && !strings.Contains(lines[0], "2:bash")
+	}, "tab bar with only '1:bash'", 10*time.Second)
+
+	// Verify terminal is still functional
+	pio.WaitFor(t, "termd$", 10*time.Second)
+	pio.Write([]byte("echo ALIVE\r"))
+	pio.WaitFor(t, "ALIVE", 10*time.Second)
+}
+
+func TestCloseTab(t *testing.T) {
+	socketPath, serverCleanup := startServer(t)
+	defer serverCleanup()
+
+	pio, frontendCleanup := startFrontend(t, socketPath)
+	defer frontendCleanup()
+
+	pio.WaitFor(t, "1:bash", 10*time.Second)
+	pio.WaitFor(t, "termd$", 10*time.Second)
+
+	// Spawn second region
+	pio.Write([]byte("\x02c"))
+	pio.WaitFor(t, "2:bash", 10*time.Second)
+	pio.WaitFor(t, "termd$", 10*time.Second)
+
+	// Close tab 2 with ctrl+b x
+	pio.Write([]byte("\x02x"))
+
+	// Wait for tab bar to show only tab 1
+	pio.WaitForScreen(t, func(lines []string) bool {
+		if len(lines) == 0 {
+			return false
+		}
+		return strings.Contains(lines[0], "1:bash") && !strings.Contains(lines[0], "2:bash")
+	}, "tab bar with only '1:bash'", 10*time.Second)
+
+	// Verify terminal is still functional
+	pio.WaitFor(t, "termd$", 10*time.Second)
+	pio.Write([]byte("echo STILL_ALIVE\r"))
+	pio.WaitFor(t, "STILL_ALIVE", 10*time.Second)
+}
+
+func TestReconnectRestoresTabs(t *testing.T) {
+	socketPath, serverCleanup := startServer(t)
+	defer serverCleanup()
+
+	pio, frontendCleanup := startFrontend(t, socketPath)
+	defer frontendCleanup()
+
+	pio.WaitFor(t, "1:bash", 10*time.Second)
+	pio.WaitFor(t, "termd$", 10*time.Second)
+
+	// Spawn a second region
+	pio.Write([]byte("\x02c"))
+	pio.WaitForScreen(t, func(lines []string) bool {
+		if len(lines) == 0 {
+			return false
+		}
+		return strings.Contains(lines[0], "1:bash") && strings.Contains(lines[0], "2:bash")
+	}, "tab bar with '1:bash' and '2:bash'", 10*time.Second)
+	pio.WaitFor(t, "termd$", 10*time.Second)
+
+	// Kill the client connection to force reconnect
+	clientID := findFrontendClientID(t, socketPath)
+	runTermctl(t, socketPath, "client", "kill", clientID)
+
+	// Wait for reconnecting then reconnected
+	pio.WaitFor(t, "reconnecting", 10*time.Second)
+	pio.WaitFor(t, "termd$", 10*time.Second)
+
+	// Both tabs should be restored after reconnect
+	pio.WaitForScreen(t, func(lines []string) bool {
+		if len(lines) == 0 {
+			return false
+		}
+		return strings.Contains(lines[0], "1:bash") && strings.Contains(lines[0], "2:bash")
+	}, "both tabs restored after reconnect", 10*time.Second)
+}
+
+func TestAllRegionsDestroyedQuits(t *testing.T) {
+	socketPath, serverCleanup := startServer(t)
+	defer serverCleanup()
+
+	fe := startFrontendFull(t, socketPath)
+	defer fe.Kill()
+
+	fe.WaitFor(t, "1:bash", 10*time.Second)
+	fe.WaitFor(t, "termd$", 10*time.Second)
+
+	// Exit the only shell
+	fe.Write([]byte("exit\r"))
+
+	// Frontend should exit
+	if err := fe.Wait(10 * time.Second); err != nil {
+		t.Fatalf("frontend did not exit cleanly: %v", err)
 	}
 }

@@ -191,9 +191,10 @@ func (s *SessionLayer) handleRawInput(chunk []byte) (tea.Msg, tea.Cmd) {
 		s.sendRawToServer(rest)
 	}
 	var cmds []tea.Cmd
+	t := s.activeTerm()
 	for _, mouse := range mice {
-		if s.term != nil && s.term.ChildWantsMouse() {
-			s.term.ForwardMouse(mouse)
+		if t != nil && t.ChildWantsMouse() {
+			t.ForwardMouse(mouse)
 		} else {
 			cmd := s.handleMouse(mouse)
 			if cmd != nil {

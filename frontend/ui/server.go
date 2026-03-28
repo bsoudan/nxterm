@@ -175,8 +175,9 @@ func (s *Server) dispatchInbound(msg protocol.Message, recv <-chan protocol.Mess
 		return
 	}
 
-	// Batch consecutive TerminalEvents
+	// Batch consecutive TerminalEvents with the same RegionID.
 	batch := te.Events
+	regionID := te.RegionID
 drain:
 	for {
 		select {
@@ -184,10 +185,10 @@ drain:
 			if !ok {
 				break drain
 			}
-			if te2, ok := next.Payload.(protocol.TerminalEvents); ok {
+			if te2, ok := next.Payload.(protocol.TerminalEvents); ok && te2.RegionID == regionID {
 				batch = append(batch, te2.Events...)
 			} else {
-				p.Send(protocol.Message{Payload: protocol.TerminalEvents{Events: batch}})
+				p.Send(protocol.Message{Payload: protocol.TerminalEvents{RegionID: regionID, Events: batch}})
 				s.dispatchInbound(next, recv, p)
 				return
 			}
@@ -195,7 +196,7 @@ drain:
 			break drain
 		}
 	}
-	p.Send(protocol.Message{Payload: protocol.TerminalEvents{Events: batch}})
+	p.Send(protocol.Message{Payload: protocol.TerminalEvents{RegionID: regionID, Events: batch}})
 }
 
 func (s *Server) sendIdentify(c *client.Client) {

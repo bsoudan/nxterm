@@ -9,15 +9,19 @@ type (
 	OpenOverlayMsg       struct{ Name string } // open named overlay
 	EnterScrollbackMsg   struct{}              // enter terminal scrollback mode
 	RefreshScreenMsg     struct{}              // refresh terminal screen
+	SpawnRegionMsg       struct{}              // spawn a new region
+	SwitchTabMsg         struct{ Index int }   // switch to tab by 0-based index
+	CloseTabMsg          struct{}              // kill the active tab's region
 )
 
 // sendRawToServer forwards raw bytes as input to the active region.
 func (s *SessionLayer) sendRawToServer(raw []byte) {
-	if s.regionID == "" || len(raw) == 0 {
+	id := s.activeRegionID()
+	if id == "" || len(raw) == 0 {
 		return
 	}
 	s.server.Send(InputMsg{
-		RegionID: s.regionID,
+		RegionID: id,
 		Data:     raw,
 	})
 }
@@ -31,6 +35,9 @@ type helpItem struct {
 // helpItems defines the ctrl+b help menu. Actions return tea.Cmd that
 // produce command messages — same messages as CommandLayer dispatches.
 var helpItems = []helpItem{
+	{"c", "new region", func() tea.Cmd { return cmdMsg(SpawnRegionMsg{}) }},
+	{"x", "close tab", func() tea.Cmd { return cmdMsg(CloseTabMsg{}) }},
+	{"1-9", "switch tab", nil},
 	{"d", "detach", func() tea.Cmd { return cmdMsg(DetachRequestMsg{}) }},
 	{"l", "log viewer", func() tea.Cmd { return cmdMsg(OpenOverlayMsg{Name: "logviewer"}) }},
 	{"s", "status", func() tea.Cmd { return cmdMsg(OpenOverlayMsg{Name: "status"}) }},
