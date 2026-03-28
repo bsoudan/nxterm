@@ -64,9 +64,9 @@ func (t *TerminalChild) contentHeight() int {
 func (t *TerminalChild) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case protocol.ScreenUpdate:
-		return t.handleScreenUpdate(msg.Lines, msg.Cells, msg.CursorRow, msg.CursorCol)
+		return t.handleScreenUpdate(msg.Lines, msg.Cells, msg.CursorRow, msg.CursorCol, msg.Modes)
 	case protocol.GetScreenResponse:
-		return t.handleScreenUpdate(msg.Lines, msg.Cells, msg.CursorRow, msg.CursorCol)
+		return t.handleScreenUpdate(msg.Lines, msg.Cells, msg.CursorRow, msg.CursorCol, nil)
 	case protocol.TerminalEvents:
 		return t.handleTerminalEvents(msg.Events)
 	case protocol.GetScrollbackResponse:
@@ -103,7 +103,7 @@ func (t *TerminalChild) Update(msg tea.Msg) tea.Cmd {
 	}
 }
 
-func (t *TerminalChild) handleScreenUpdate(lines []string, cells [][]protocol.ScreenCell, cursorRow, cursorCol uint16) tea.Cmd {
+func (t *TerminalChild) handleScreenUpdate(lines []string, cells [][]protocol.ScreenCell, cursorRow, cursorCol uint16, modes map[int]bool) tea.Cmd {
 	height := t.contentHeight()
 	if t.termHeight <= 0 {
 		height = 23
@@ -128,6 +128,11 @@ func (t *TerminalChild) handleScreenUpdate(lines []string, cells [][]protocol.Sc
 		}
 	}
 	t.screen.CursorPosition(int(cursorRow)+1, int(cursorCol)+1)
+	for k, v := range modes {
+		if v {
+			t.screen.Mode[k] = struct{}{}
+		}
+	}
 
 	if t.pendingClear {
 		t.pendingClear = false

@@ -825,6 +825,44 @@ func TestMousePassthrough(t *testing.T) {
 	pio.WaitFor(t, "termd$",10*time.Second)
 }
 
+func TestMouseAfterTabSwitch(t *testing.T) {
+	socketPath, serverCleanup := startServer(t)
+	defer serverCleanup()
+
+	pio, frontendCleanup := startFrontend(t, socketPath)
+	defer frontendCleanup()
+
+	pio.WaitFor(t, "termd$", 10*time.Second)
+
+	// Run mousehelper in tab 1
+	pio.Write([]byte("mousehelper\r"))
+	time.Sleep(500 * time.Millisecond)
+
+	// Verify mouse works initially
+	pio.Write([]byte(fmt.Sprintf("%c[<0;5;3M", ansi.ESC)))
+	pio.WaitFor(t, "MOUSE press 0 5 2", 5*time.Second)
+
+	// Spawn tab 2 (switches to it automatically)
+	pio.Write([]byte("\x02c"))
+	pio.WaitForScreen(t, func(lines []string) bool {
+		return len(lines) > 0 && strings.Contains(lines[0], "2:")
+	}, "tab 2 to appear", 10*time.Second)
+	pio.WaitFor(t, "termd$", 10*time.Second)
+	pio.WaitForSilence(200 * time.Millisecond)
+
+	// Switch back to tab 1 (mousehelper)
+	pio.Write([]byte("\x021"))
+	pio.WaitForSilence(200 * time.Millisecond)
+
+	// Mouse should still work after switching back
+	pio.Write([]byte(fmt.Sprintf("%c[<0;10;4M", ansi.ESC)))
+	pio.WaitFor(t, "MOUSE press 0 10 3", 5*time.Second)
+
+	// Quit the helper
+	pio.Write([]byte("q"))
+	pio.WaitFor(t, "termd$", 10*time.Second)
+}
+
 func TestScrollbackBuffer(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()

@@ -23,6 +23,7 @@ type Snapshot struct {
 	CursorRow uint16
 	CursorCol uint16
 	Cells     [][]protocol.ScreenCell
+	Modes     map[int]bool
 }
 
 // scrollbackSize is the maximum number of lines kept in the scrollback buffer.
@@ -182,11 +183,20 @@ func (r *Region) Snapshot() Snapshot {
 		}
 	}
 
+	var modes map[int]bool
+	if len(r.screen.Mode) > 0 {
+		modes = make(map[int]bool, len(r.screen.Mode))
+		for k := range r.screen.Mode {
+			modes[k] = true
+		}
+	}
+
 	return Snapshot{
 		Lines:     lines,
 		CursorRow: uint16(r.screen.Cursor.Row),
 		CursorCol: uint16(r.screen.Cursor.Col),
 		Cells:     cells,
+		Modes:     modes,
 	}
 }
 

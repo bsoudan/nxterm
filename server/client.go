@@ -354,6 +354,7 @@ func (c *Client) handleSubscribe(msg protocol.SubscribeRequest, reply func(any))
 		CursorCol: snap.CursorCol,
 		Lines:     snap.Lines,
 		Cells:     snap.Cells,
+		Modes:     snap.Modes,
 	})
 
 	reply(protocol.SubscribeResponse{

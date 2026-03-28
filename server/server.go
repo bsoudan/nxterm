@@ -285,6 +285,7 @@ func (s *Server) sendTerminalEvents(region *Region) {
 			CursorCol: snap.CursorCol,
 			Lines:     snap.Lines,
 			Cells:     snap.Cells,
+			Modes:     snap.Modes,
 		}
 		for _, c := range subscribers {
 			c.SendMessage(snapMsg)
