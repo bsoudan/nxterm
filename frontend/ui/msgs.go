@@ -15,4 +15,3 @@ type ServerErrorMsg struct {
 type showHintMsg struct{}
 type hideHintMsg struct{}
 type reconnectTickMsg struct{}
-type prefixStartedMsg struct{}

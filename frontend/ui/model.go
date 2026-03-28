@@ -1,11 +1,12 @@
 package ui
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"os"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"charm.land/bubbles/v2/viewport"
@@ -29,18 +30,15 @@ func privateModeKey(mode int) int {
 
 
 type Model struct {
-	server      *Server
+	server  *Server
+	pipeW   io.Writer // bubbletea's input pipe (for focus mode key events)
 	cmd         string
 	cmdArgs     []string
 	Endpoint    string
 	Version     string
 	Changelog   string
-	RegionReady    chan string
-	FocusCh        chan chan struct{} // raw loop reads this to enter focus mode
-	ChildWantsMouse *atomic.Bool      // raw loop checks this to route mouse events
 	Detached    bool
 	prefixMode  bool
-	focusDone   chan struct{}
 	showHelp    bool
 	helpCursor  int
 	showHint    bool
@@ -84,22 +82,20 @@ func (m Model) contentHeight() int {
 	return h
 }
 
-func NewModel(s *Server, cmd string, args []string, ring *termlog.LogRingBuffer, endpoint, version, changelog string) Model {
+func NewModel(s *Server, pipeW io.Writer, cmd string, args []string, ring *termlog.LogRingBuffer, endpoint, version, changelog string) Model {
 	hostname, _ := os.Hostname()
 	return Model{
-		server:          s,
-		cmd:             cmd,
-		cmdArgs:         args,
-		Endpoint:        endpoint,
-		Version:         version,
-		Changelog:       changelog,
-		localHostname:   hostname,
-		RegionReady:     make(chan string, 1),
-		FocusCh:         make(chan chan struct{}, 1),
-		ChildWantsMouse: &atomic.Bool{},
-		LogRing:         ring,
-		connStatus:      "connected",
-		status:          "connecting...",
+		server:        s,
+		pipeW:         pipeW,
+		cmd:           cmd,
+		cmdArgs:       args,
+		Endpoint:      endpoint,
+		Version:       version,
+		Changelog:     changelog,
+		localHostname: hostname,
+		LogRing:       ring,
+		connStatus:    "connected",
+		status:        "connecting...",
 	}
 }
 
@@ -110,6 +106,9 @@ func (m Model) Init() tea.Cmd {
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case RawInputMsg:
+		return m.handleRawInput([]byte(msg))
+
 	case protocol.Identify:
 		if msg.Hostname != m.localHostname {
 			m.Endpoint = m.localHostname + " -> " + m.Endpoint
@@ -138,10 +137,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.regionID = msg.Regions[0].RegionID
 			m.regionName = msg.Regions[0].Name
 			m.status = "subscribing..."
-			select {
-			case m.RegionReady <- m.regionID:
-			default:
-			}
 			m.server.Send(protocol.SubscribeRequest{
 				Type:     "subscribe_request",
 				RegionID: m.regionID,
@@ -164,10 +159,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.regionID = msg.RegionID
 		m.regionName = msg.Name
 		m.status = "subscribing..."
-		select {
-		case m.RegionReady <- m.regionID:
-		default:
-		}
 		m.server.Send(protocol.SubscribeRequest{
 			Type:     "subscribe_request",
 			RegionID: m.regionID,
@@ -289,9 +280,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case prefixStartedMsg:
-		m.prefixMode = true
-		return m, nil
 
 	case tea.MouseMsg:
 		return m.handleMouse(msg)
@@ -309,7 +297,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.scrollbackMode {
 			return m.updateScrollbackViewer(msg)
 		}
-		return m.updatePrefixCommand(msg)
+		// KeyPressMsg only arrives from bubbletea's pipe during focus mode.
+		// If no viewer is active, ignore it.
+		return m, nil
 
 	default:
 		return m, nil
@@ -351,86 +341,167 @@ func (m Model) handleScreenUpdate(lines []string, cells [][]protocol.ScreenCell,
 	return m, nil
 }
 
-func (m Model) updatePrefixCommand(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+const prefixKey = 0x02 // ctrl+b
+
+// handleRawInput processes raw bytes from the terminal input goroutine.
+// It handles prefix key detection, SGR mouse parsing, and input routing.
+func (m Model) handleRawInput(chunk []byte) (tea.Model, tea.Cmd) {
+	// Focus mode (overlay/help/status with keyboard nav): write to bubbletea's
+	// input pipe so it parses as key events. Mouse still parsed here.
+	if m.overlayMode != "" || m.showStatus || m.showHelp || m.scrollbackMode {
+		if bytes.Contains(chunk, sgrMousePrefix) {
+			mice, rest := extractSGRMouseSequences(chunk)
+			if len(rest) > 0 {
+				m.pipeW.Write(rest)
+			}
+			var cmds []tea.Cmd
+			for _, mouse := range mice {
+				saved := mouse
+				cmds = append(cmds, func() tea.Msg { return saved })
+			}
+			return m, tea.Batch(cmds...)
+		}
+		m.pipeW.Write(chunk)
+		return m, nil
+	}
+
+	// Prefix active: next byte is the command
+	if m.prefixMode {
+		m.prefixMode = false
+		key := chunk[0]
+		chunk = chunk[1:]
+		// Handle the prefix command
+		model, cmd := m.handlePrefixKey(key)
+		// Forward any remaining bytes
+		if len(chunk) > 0 {
+			m2 := model.(Model)
+			m2.sendRawToServer(chunk)
+			return m2, cmd
+		}
+		return model, cmd
+	}
+
+	// Scan for prefix key (ctrl+b)
+	if idx := bytes.IndexByte(chunk, prefixKey); idx >= 0 {
+		// Forward bytes before the prefix
+		if idx > 0 {
+			m.sendRawToServer(chunk[:idx])
+		}
+		m.prefixMode = true
+		rest := chunk[idx+1:]
+		if len(rest) > 0 {
+			// Next byte is the command
+			m.prefixMode = false
+			key := rest[0]
+			model, cmd := m.handlePrefixKey(key)
+			if len(rest) > 1 {
+				m2 := model.(Model)
+				m2.sendRawToServer(rest[1:])
+				return m2, cmd
+			}
+			return model, cmd
+		}
+		return m, nil
+	}
+
+	// Parse and route mouse sequences
+	if bytes.Contains(chunk, sgrMousePrefix) {
+		mice, rest := extractSGRMouseSequences(chunk)
+		// Non-mouse bytes go to server
+		if len(rest) > 0 {
+			m.sendRawToServer(rest)
+		}
+		// Route mouse: child wants mouse → encode and forward to server,
+		// otherwise → handle locally (scrollback, etc.)
+		var cmds []tea.Cmd
+		for _, mouse := range mice {
+			if m.childWantsMouse() {
+				seq := encodeSGRMouse(mouse, mouse.Mouse().X, mouse.Mouse().Y-chromeRows)
+				if seq != "" {
+					m.server.Send(InputMsg{
+						RegionID: m.regionID,
+						Data:     []byte(seq),
+					})
+				}
+			} else {
+				m2, cmd := m.handleMouse(mouse)
+				m = m2.(Model)
+				if cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+			}
+		}
+		return m, tea.Batch(cmds...)
+	}
+
+	// Regular input — forward to server
+	m.sendRawToServer(chunk)
+	return m, nil
+}
+
+// handlePrefixKey handles a single key byte after ctrl+b.
+func (m Model) handlePrefixKey(key byte) (tea.Model, tea.Cmd) {
+	return m.handlePrefixCommand(key)
+}
+
+// sendRawToServer forwards raw bytes as input to the active region.
+func (m Model) sendRawToServer(raw []byte) {
+	if m.regionID == "" || len(raw) == 0 {
+		return
+	}
+	m.server.Send(InputMsg{
+		RegionID: m.regionID,
+		Data:     raw,
+	})
+}
+
+// childWantsMouse checks if the child application has mouse mode enabled.
+func (m Model) childWantsMouse() bool {
+	if m.localScreen == nil {
+		return false
+	}
+	_, m1000 := m.localScreen.Mode[privateModeKey(ansi.ModeMouseNormal.Mode())]
+	_, m1002 := m.localScreen.Mode[privateModeKey(ansi.ModeMouseButtonEvent.Mode())]
+	_, m1003 := m.localScreen.Mode[privateModeKey(ansi.ModeMouseAnyEvent.Mode())]
+	return m1000 || m1002 || m1003
+}
+
+func (m Model) handlePrefixCommand(key byte) (tea.Model, tea.Cmd) {
 	m.prefixMode = false
-	switch msg.String() {
-	case "d":
+	switch key {
+	case 'd':
 		m.Detached = true
 		return m, tea.Quit
-	case "ctrl+b":
-		if m.regionID != "" {
-			data := base64.StdEncoding.EncodeToString([]byte{0x02})
-			m.server.Send(protocol.InputMsg{
-				Type: "input", RegionID: m.regionID, Data: data,
-			})
-		}
+	case prefixKey: // ctrl+b ctrl+b → send literal ctrl+b
+		m.sendRawToServer([]byte{prefixKey})
 		return m, nil
-	case "l":
+	case 'l':
 		m.overlayMode = "log"
 		m.initOverlay(m.LogRing.String(), true)
-		done := make(chan struct{})
-		m.focusDone = done
-		select {
-		case m.FocusCh <- done:
-		default:
-		}
 		return m, nil
-	case "?":
+	case '?':
 		m.showHelp = true
-		done := make(chan struct{})
-		m.focusDone = done
-		select {
-		case m.FocusCh <- done:
-		default:
-		}
 		return m, nil
-	case "s":
+	case 's':
 		m.showStatus = true
 		m.serverStatus = nil
-		done := make(chan struct{})
-		m.focusDone = done
-		select {
-		case m.FocusCh <- done:
-		default:
-		}
-		// Request server status
-		return m, func() tea.Msg {
-			m.server.Send(protocol.StatusRequest{Type: "status_request"})
-			return nil
-		}
-	case "n":
+		m.server.Send(protocol.StatusRequest{Type: "status_request"})
+		return m, nil
+	case 'n':
 		m.overlayMode = "changelog"
 		m.initOverlay(strings.TrimRight(m.Changelog, "\n"), false)
-		done := make(chan struct{})
-		m.focusDone = done
-		select {
-		case m.FocusCh <- done:
-		default:
-		}
 		return m, nil
-	case "[":
-		// Enter scrollback mode — request scrollback from server
+	case '[':
 		if m.regionID != "" {
 			m.scrollbackMode = true
 			m.scrollbackOffset = 0
-			done := make(chan struct{})
-			m.focusDone = done
-			select {
-			case m.FocusCh <- done:
-			default:
-			}
-			return m, func() tea.Msg {
-				m.server.Send(protocol.GetScrollbackRequest{
-					Type:     "get_scrollback_request",
-					RegionID: m.regionID,
-				})
-				return nil
-			}
+			m.server.Send(protocol.GetScrollbackRequest{
+				Type:     "get_scrollback_request",
+				RegionID: m.regionID,
+			})
 		}
 		return m, nil
-	case "r":
-		// Request a full screen refresh from the server.
-		// The ClearScreen happens when the response arrives (in ScreenUpdateMsg).
+	case 'r':
 		if m.regionID != "" {
 			m.pendingClear = true
 			m.server.Send(protocol.GetScreenRequest{
@@ -458,35 +529,17 @@ var helpItems = []helpItem{
 	{"l", "log viewer", func(m Model) (Model, tea.Cmd) {
 		m.overlayMode = "log"
 		m.initOverlay(m.LogRing.String(), true)
-		done := make(chan struct{})
-		m.focusDone = done
-		select {
-		case m.FocusCh <- done:
-		default:
-		}
 		return m, nil
 	}},
 	{"s", "status", func(m Model) (Model, tea.Cmd) {
 		m.showStatus = true
 		m.serverStatus = nil
-		done := make(chan struct{})
-		m.focusDone = done
-		select {
-		case m.FocusCh <- done:
-		default:
-		}
 		m.server.Send(protocol.StatusRequest{Type: "status_request"})
 		return m, nil
 	}},
 	{"n", "release notes", func(m Model) (Model, tea.Cmd) {
 		m.overlayMode = "changelog"
 		m.initOverlay(strings.TrimRight(m.Changelog, "\n"), false)
-		done := make(chan struct{})
-		m.focusDone = done
-		select {
-		case m.FocusCh <- done:
-		default:
-		}
 		return m, nil
 	}},
 	{"r", "refresh screen", func(m Model) (Model, tea.Cmd) {
@@ -504,12 +557,6 @@ var helpItems = []helpItem{
 		if m.regionID != "" {
 			m.scrollbackMode = true
 			m.scrollbackOffset = 0
-			done := make(chan struct{})
-			m.focusDone = done
-			select {
-			case m.FocusCh <- done:
-			default:
-			}
 			m.server.Send(protocol.GetScrollbackRequest{
 				Type:     "get_scrollback_request",
 				RegionID: m.regionID,
@@ -531,10 +578,6 @@ var helpItems = []helpItem{
 func (m Model) closeHelp() Model {
 	m.showHelp = false
 	m.helpCursor = 0
-	if m.focusDone != nil {
-		close(m.focusDone)
-		m.focusDone = nil
-	}
 	return m
 }
 
@@ -544,10 +587,6 @@ func (m Model) exitScrollback() Model {
 	m.scrollbackMode = false
 	m.scrollbackOffset = 0
 	m.scrollbackCells = nil
-	if m.focusDone != nil {
-		close(m.focusDone)
-		m.focusDone = nil
-	}
 	return m
 }
 
@@ -602,10 +641,6 @@ func (m Model) updateStatusViewer(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "q", "esc", "s":
 		m.showStatus = false
 		m.serverStatus = nil
-		if m.focusDone != nil {
-			close(m.focusDone)
-			m.focusDone = nil
-		}
 		return m, nil
 	default:
 		return m, nil
@@ -648,10 +683,6 @@ func (m Model) updateOverlayViewer(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "q", "esc":
 		m.overlayMode = ""
 		m.overlayHScroll = 0
-		if m.focusDone != nil {
-			close(m.focusDone)
-			m.focusDone = nil
-		}
 		return m, nil
 	case "left":
 		if m.overlayHScroll > 0 {
@@ -742,59 +773,6 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
-}
-
-// encodeSGRMouse encodes a mouse event as an SGR mouse escape sequence.
-// Format: ESC [ < button ; col ; row M (press) or m (release)
-func encodeSGRMouse(msg tea.MouseMsg, col, row int) string {
-	if row < 0 {
-		row = 0
-	}
-	// SGR uses 1-based coordinates
-	col++
-	row++
-
-	var button int
-	var suffix byte
-
-	switch e := msg.(type) {
-	case tea.MouseClickMsg:
-		suffix = 'M'
-		button = mouseButtonSGR(e.Button)
-	case tea.MouseReleaseMsg:
-		suffix = 'm'
-		button = mouseButtonSGR(e.Button)
-	case tea.MouseWheelMsg:
-		suffix = 'M'
-		switch e.Button {
-		case tea.MouseWheelUp:
-			button = 64
-		case tea.MouseWheelDown:
-			button = 65
-		default:
-			return ""
-		}
-	case tea.MouseMotionMsg:
-		suffix = 'M'
-		button = mouseButtonSGR(e.Button) + 32 // motion adds 32
-	default:
-		return ""
-	}
-
-	return fmt.Sprintf("%c[<%d;%d;%d%c", ansi.ESC, button, col, row, suffix)
-}
-
-func mouseButtonSGR(b tea.MouseButton) int {
-	switch b {
-	case tea.MouseLeft:
-		return 0
-	case tea.MouseMiddle:
-		return 1
-	case tea.MouseRight:
-		return 2
-	default:
-		return 0
-	}
 }
 
 func (m *Model) initOverlay(content string, gotoBottom bool) {
@@ -1084,12 +1062,6 @@ func (m Model) View() tea.View {
 		_, m1000 := m.localScreen.Mode[privateModeKey(ansi.ModeMouseNormal.Mode())]
 		_, m1002 := m.localScreen.Mode[privateModeKey(ansi.ModeMouseButtonEvent.Mode())]
 		_, m1003 := m.localScreen.Mode[privateModeKey(ansi.ModeMouseAnyEvent.Mode())]
-		childMouse := m1000 || m1002 || m1003
-
-		// Update the atomic flag so the raw input loop knows whether to
-		// forward mouse events to the server or route them to bubbletea.
-		m.ChildWantsMouse.Store(childMouse)
-
 		if m1003 {
 			v.MouseMode = tea.MouseModeAllMotion
 		} else if m1002 || m1000 {

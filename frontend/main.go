@@ -128,7 +128,7 @@ func runFrontend(_ context.Context, cmd *cli.Command) error {
 	pipeR, pipeW := io.Pipe()
 
 	server := ui.NewServer(64)
-	model := ui.NewModel(server, shell, shellArgs, logRing, endpoint, version, changelog)
+	model := ui.NewModel(server, pipeW, shell, shellArgs, logRing, endpoint, version, changelog)
 	p := tea.NewProgram(model,
 		tea.WithInput(pipeR),
 		tea.WithColorProfile(colorprofile.TrueColor),
@@ -141,7 +141,7 @@ func runFrontend(_ context.Context, cmd *cli.Command) error {
 
 	logHandler.SetNotifyFn(func() { p.Send(ui.LogEntryMsg{}) })
 	go server.Run(c, p)
-	go ui.RawInputLoop(stdinDup, c, model.RegionReady, pipeW, p, model.FocusCh, model.ChildWantsMouse)
+	go ui.InputLoop(stdinDup, p)
 
 	finalModel, err := p.Run()
 	server.Close()
