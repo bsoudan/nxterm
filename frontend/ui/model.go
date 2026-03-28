@@ -14,7 +14,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	te "github.com/rcarmo/go-te/pkg/te"
 	termlog "termd/frontend/log"
-	"termd/frontend/client"
 	"termd/frontend/protocol"
 )
 
@@ -100,7 +99,7 @@ func NewModel(s *Server, pipeW io.Writer, cmd string, args []string, ring *terml
 }
 
 func (m Model) Init() tea.Cmd {
-	m.server.Send(protocol.ListRegionsRequest{Type: "list_regions_request"})
+	m.server.Send(protocol.ListRegionsRequest{})
 	return tea.Tick(3*time.Second, func(time.Time) tea.Msg { return showHintMsg{} })
 }
 
@@ -120,7 +119,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.termHeight = msg.Height
 		if m.regionID != "" {
 			m.server.Send(protocol.ResizeRequest{
-				Type:     "resize_request",
 				RegionID: m.regionID,
 				Width:    uint16(msg.Width),
 				Height:   uint16(m.contentHeight()),
@@ -138,14 +136,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.regionName = msg.Regions[0].Name
 			m.status = "subscribing..."
 			m.server.Send(protocol.SubscribeRequest{
-				Type:     "subscribe_request",
 				RegionID: m.regionID,
 			})
 			return m, nil
 		}
 		m.status = "spawning..."
 		m.server.Send(protocol.SpawnRequest{
-			Type: "spawn_request",
 			Cmd:  m.cmd,
 			Args: m.cmdArgs,
 		})
@@ -160,7 +156,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.regionName = msg.Name
 		m.status = "subscribing..."
 		m.server.Send(protocol.SubscribeRequest{
-			Type:     "subscribe_request",
 			RegionID: m.regionID,
 		})
 		return m, nil
@@ -173,7 +168,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = ""
 		if m.termWidth > 0 && m.termHeight > 2 {
 			m.server.Send(protocol.ResizeRequest{
-				Type:     "resize_request",
 				RegionID: m.regionID,
 				Width:    uint16(m.termWidth),
 				Height:   uint16(m.contentHeight()),
@@ -214,17 +208,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = "region destroyed"
 		return m, tea.Quit
 
-	case client.DisconnectedMsg:
+	case DisconnectedMsg:
 		m.connStatus = "reconnecting"
 		m.retryAt = msg.RetryAt
 		return m, tea.Tick(time.Second, func(time.Time) tea.Msg { return reconnectTickMsg{} })
 
-	case client.ReconnectedMsg:
+	case ReconnectedMsg:
 		m.connStatus = "connected"
 		m.retryAt = time.Time{}
 		if m.regionID != "" {
 			m.server.Send(protocol.SubscribeRequest{
-				Type:     "subscribe_request",
 				RegionID: m.regionID,
 			})
 		}
@@ -485,7 +478,7 @@ func (m Model) handlePrefixCommand(key byte) (tea.Model, tea.Cmd) {
 	case 's':
 		m.showStatus = true
 		m.serverStatus = nil
-		m.server.Send(protocol.StatusRequest{Type: "status_request"})
+		m.server.Send(protocol.StatusRequest{})
 		return m, nil
 	case 'n':
 		m.overlayMode = "changelog"
@@ -496,7 +489,6 @@ func (m Model) handlePrefixCommand(key byte) (tea.Model, tea.Cmd) {
 			m.scrollbackMode = true
 			m.scrollbackOffset = 0
 			m.server.Send(protocol.GetScrollbackRequest{
-				Type:     "get_scrollback_request",
 				RegionID: m.regionID,
 			})
 		}
@@ -505,7 +497,6 @@ func (m Model) handlePrefixCommand(key byte) (tea.Model, tea.Cmd) {
 		if m.regionID != "" {
 			m.pendingClear = true
 			m.server.Send(protocol.GetScreenRequest{
-				Type:     "get_screen_request",
 				RegionID: m.regionID,
 			})
 		}
@@ -534,7 +525,7 @@ var helpItems = []helpItem{
 	{"s", "status", func(m Model) (Model, tea.Cmd) {
 		m.showStatus = true
 		m.serverStatus = nil
-		m.server.Send(protocol.StatusRequest{Type: "status_request"})
+		m.server.Send(protocol.StatusRequest{})
 		return m, nil
 	}},
 	{"n", "release notes", func(m Model) (Model, tea.Cmd) {
@@ -546,7 +537,6 @@ var helpItems = []helpItem{
 		if m.regionID != "" {
 			m.pendingClear = true
 			m.server.Send(protocol.GetScreenRequest{
-				Type:     "get_screen_request",
 				RegionID: m.regionID,
 			})
 			return m, nil
@@ -558,7 +548,6 @@ var helpItems = []helpItem{
 			m.scrollbackMode = true
 			m.scrollbackOffset = 0
 			m.server.Send(protocol.GetScrollbackRequest{
-				Type:     "get_scrollback_request",
 				RegionID: m.regionID,
 			})
 		}
@@ -568,7 +557,7 @@ var helpItems = []helpItem{
 		if m.regionID != "" {
 			data := base64.StdEncoding.EncodeToString([]byte{0x02})
 			m.server.Send(protocol.InputMsg{
-				Type: "input", RegionID: m.regionID, Data: data,
+				RegionID: m.regionID, Data: data,
 			})
 		}
 		return m, nil
@@ -736,7 +725,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		if seq != "" {
 			data := base64.StdEncoding.EncodeToString([]byte(seq))
 			m.server.Send(protocol.InputMsg{
-				Type: "input", RegionID: m.regionID, Data: data,
+				RegionID: m.regionID, Data: data,
 			})
 		}
 		return m, nil
@@ -765,7 +754,6 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			m.scrollbackOffset = 3
 			return m, func() tea.Msg {
 				m.server.Send(protocol.GetScrollbackRequest{
-					Type:     "get_scrollback_request",
 					RegionID: m.regionID,
 				})
 				return nil

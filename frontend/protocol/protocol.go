@@ -8,7 +8,7 @@ import (
 // ── Outbound (frontend/termctl → server) ────────────────────────────────────
 
 type Identify struct {
-	Type     string `json:"type"`
+	Type     string `json:"type,omitempty"`
 	Hostname string `json:"hostname"`
 	Username string `json:"username"`
 	Pid      int    `json:"pid"`
@@ -16,65 +16,65 @@ type Identify struct {
 }
 
 type SpawnRequest struct {
-	Type string   `json:"type"`
+	Type string   `json:"type,omitempty"`
 	Cmd  string   `json:"cmd"`
 	Args []string `json:"args"`
 }
 
 type SubscribeRequest struct {
-	Type     string `json:"type"`
+	Type     string `json:"type,omitempty"`
 	RegionID string `json:"region_id"`
 }
 
 type InputMsg struct {
-	Type     string `json:"type"`
+	Type     string `json:"type,omitempty"`
 	RegionID string `json:"region_id"`
 	Data     string `json:"data"`
 }
 
 type ResizeRequest struct {
-	Type     string `json:"type"`
+	Type     string `json:"type,omitempty"`
 	RegionID string `json:"region_id"`
 	Width    uint16 `json:"width"`
 	Height   uint16 `json:"height"`
 }
 
 type ListRegionsRequest struct {
-	Type string `json:"type"`
+	Type string `json:"type,omitempty"`
 }
 
 type StatusRequest struct {
-	Type string `json:"type"`
+	Type string `json:"type,omitempty"`
 }
 
 type GetScreenRequest struct {
-	Type     string `json:"type"`
+	Type     string `json:"type,omitempty"`
 	RegionID string `json:"region_id"`
 }
 
 type KillRegionRequest struct {
-	Type     string `json:"type"`
+	Type     string `json:"type,omitempty"`
 	RegionID string `json:"region_id"`
 }
 
 type ListClientsRequest struct {
-	Type string `json:"type"`
+	Type string `json:"type,omitempty"`
 }
 
 type KillClientRequest struct {
-	Type     string `json:"type"`
+	Type     string `json:"type,omitempty"`
 	ClientID uint32 `json:"client_id"`
 }
 
 type GetScrollbackRequest struct {
-	Type     string `json:"type"`
+	Type     string `json:"type,omitempty"`
 	RegionID string `json:"region_id"`
 }
 
 // ── Inbound (server → frontend/termctl) ─────────────────────────────────────
 
 type SpawnResponse struct {
-	Type     string `json:"type"`
+	Type     string `json:"type,omitempty"`
 	RegionID string `json:"region_id"`
 	Name     string `json:"name"`
 	Error    bool   `json:"error"`
@@ -82,21 +82,21 @@ type SpawnResponse struct {
 }
 
 type SubscribeResponse struct {
-	Type     string `json:"type"`
+	Type     string `json:"type,omitempty"`
 	RegionID string `json:"region_id"`
 	Error    bool   `json:"error"`
 	Message  string `json:"message"`
 }
 
 type ResizeResponse struct {
-	Type     string `json:"type"`
+	Type     string `json:"type,omitempty"`
 	RegionID string `json:"region_id"`
 	Error    bool   `json:"error"`
 	Message  string `json:"message"`
 }
 
 type RegionCreated struct {
-	Type     string `json:"type"`
+	Type     string `json:"type,omitempty"`
 	RegionID string `json:"region_id"`
 	Name     string `json:"name"`
 }
@@ -119,7 +119,7 @@ type ScreenUpdate struct {
 }
 
 type RegionDestroyed struct {
-	Type     string `json:"type"`
+	Type     string `json:"type,omitempty"`
 	RegionID string `json:"region_id"`
 }
 
@@ -162,7 +162,7 @@ type GetScreenResponse struct {
 }
 
 type KillRegionResponse struct {
-	Type     string `json:"type"`
+	Type     string `json:"type,omitempty"`
 	RegionID string `json:"region_id"`
 	Error    bool   `json:"error"`
 	Message  string `json:"message"`
@@ -185,7 +185,7 @@ type ListClientsResponse struct {
 }
 
 type KillClientResponse struct {
-	Type     string `json:"type"`
+	Type     string `json:"type,omitempty"`
 	ClientID uint32 `json:"client_id"`
 	Error    bool   `json:"error"`
 	Message  string `json:"message"`
@@ -217,7 +217,7 @@ type TerminalEvents struct {
 // ── Parsing ─────────────────────────────────────────────────────────────────
 
 type envelope struct {
-	Type string `json:"type"`
+	Type string `json:"type,omitempty"`
 }
 
 func ParseInbound(line []byte) (any, error) {
@@ -274,5 +274,74 @@ func ParseInbound(line []byte) (any, error) {
 		return msg, json.Unmarshal(line, &msg)
 	default:
 		return nil, fmt.Errorf("unknown message type: %s", env.Type)
+	}
+}
+
+// tagged wraps a message with its type tag for JSON marshaling.
+// The Type field is set automatically so callers don't need to.
+type tagged struct {
+	Type string `json:"type,omitempty"`
+	Msg  any    `json:"-"`
+}
+
+func (t tagged) MarshalJSON() ([]byte, error) {
+	// Marshal the inner message, then inject the type field.
+	data, err := json.Marshal(t.Msg)
+	if err != nil {
+		return nil, err
+	}
+	// Replace the opening { with {"type":"tag",
+	result := make([]byte, 0, len(data)+len(t.Type)+12)
+	result = append(result, `{"type":"`...)
+	result = append(result, t.Type...)
+	result = append(result, '"')
+	if len(data) > 2 { // more than just {}
+		result = append(result, ',')
+		result = append(result, data[1:]...) // skip opening {
+	} else {
+		result = append(result, '}')
+	}
+	return result, nil
+}
+
+// Tagged wraps a protocol message with its type tag for JSON marshaling.
+// If the type is not recognized, the message is returned as-is (it may
+// already have a Type field set).
+func Tagged(msg any) any {
+	tag := typeTag(msg)
+	if tag == "" {
+		return msg
+	}
+	return tagged{Type: tag, Msg: msg}
+}
+
+func typeTag(msg any) string {
+	switch msg.(type) {
+	case Identify:
+		return "identify"
+	case SpawnRequest:
+		return "spawn_request"
+	case SubscribeRequest:
+		return "subscribe_request"
+	case InputMsg:
+		return "input"
+	case ResizeRequest:
+		return "resize_request"
+	case ListRegionsRequest:
+		return "list_regions_request"
+	case StatusRequest:
+		return "status_request"
+	case GetScreenRequest:
+		return "get_screen_request"
+	case KillRegionRequest:
+		return "kill_region_request"
+	case ListClientsRequest:
+		return "list_clients_request"
+	case KillClientRequest:
+		return "kill_client_request"
+	case GetScrollbackRequest:
+		return "get_scrollback_request"
+	default:
+		return ""
 	}
 }

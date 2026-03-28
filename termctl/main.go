@@ -119,11 +119,13 @@ func connect(cmd *cli.Command) (*client.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return client.New(conn, nil, "termctl"), nil
+	cl := client.New(conn)
+	cl.SendIdentify("termctl")
+	return cl, nil
 }
 
 func recvType[T any](cl *client.Client) (T, error) {
-	for msg := range cl.Updates() {
+	for msg := range cl.Recv() {
 		if v, ok := msg.(T); ok {
 			return v, nil
 		}
@@ -139,7 +141,7 @@ func cmdStatus(_ context.Context, cmd *cli.Command) error {
 	}
 	defer cl.Close()
 
-	_ = cl.Send(protocol.StatusRequest{Type: "status_request"})
+	_ = cl.Send(protocol.StatusRequest{})
 	resp, err := recvType[protocol.StatusResponse](cl)
 	if err != nil {
 		return err
@@ -166,7 +168,7 @@ func cmdRegionList(_ context.Context, cmd *cli.Command) error {
 	}
 	defer cl.Close()
 
-	_ = cl.Send(protocol.ListRegionsRequest{Type: "list_regions_request"})
+	_ = cl.Send(protocol.ListRegionsRequest{})
 	resp, err := recvType[protocol.ListRegionsResponse](cl)
 	if err != nil {
 		return err
@@ -200,7 +202,7 @@ func cmdRegionSpawn(_ context.Context, cmd *cli.Command) error {
 	}
 	defer cl.Close()
 
-	_ = cl.Send(protocol.SpawnRequest{Type: "spawn_request", Cmd: spawnCmd, Args: args})
+	_ = cl.Send(protocol.SpawnRequest{Cmd: spawnCmd, Args: args})
 	resp, err := recvType[protocol.SpawnResponse](cl)
 	if err != nil {
 		return err
@@ -225,7 +227,7 @@ func cmdRegionView(_ context.Context, cmd *cli.Command) error {
 	}
 	defer cl.Close()
 
-	_ = cl.Send(protocol.GetScreenRequest{Type: "get_screen_request", RegionID: regionID})
+	_ = cl.Send(protocol.GetScreenRequest{RegionID: regionID})
 	resp, err := recvType[protocol.GetScreenResponse](cl)
 	if err != nil {
 		return err
@@ -282,7 +284,7 @@ func cmdRegionKill(_ context.Context, cmd *cli.Command) error {
 	}
 	defer cl.Close()
 
-	_ = cl.Send(protocol.KillRegionRequest{Type: "kill_region_request", RegionID: regionID})
+	_ = cl.Send(protocol.KillRegionRequest{RegionID: regionID})
 	resp, err := recvType[protocol.KillRegionResponse](cl)
 	if err != nil {
 		return err
@@ -307,7 +309,7 @@ func cmdRegionScrollback(_ context.Context, cmd *cli.Command) error {
 	}
 	defer cl.Close()
 
-	_ = cl.Send(protocol.GetScrollbackRequest{Type: "get_scrollback_request", RegionID: regionID})
+	_ = cl.Send(protocol.GetScrollbackRequest{RegionID: regionID})
 	resp, err := recvType[protocol.GetScrollbackResponse](cl)
 	if err != nil {
 		return err
@@ -348,7 +350,7 @@ func cmdRegionSend(_ context.Context, cmd *cli.Command) error {
 	defer cl.Close()
 
 	data := base64.StdEncoding.EncodeToString([]byte(input))
-	_ = cl.Send(protocol.InputMsg{Type: "input", RegionID: regionID, Data: data})
+	_ = cl.Send(protocol.InputMsg{RegionID: regionID, Data: data})
 	return nil
 }
 
@@ -359,7 +361,7 @@ func cmdClientList(_ context.Context, cmd *cli.Command) error {
 	}
 	defer cl.Close()
 
-	_ = cl.Send(protocol.ListClientsRequest{Type: "list_clients_request"})
+	_ = cl.Send(protocol.ListClientsRequest{})
 	resp, err := recvType[protocol.ListClientsResponse](cl)
 	if err != nil {
 		return err
@@ -395,7 +397,7 @@ func cmdClientKill(_ context.Context, cmd *cli.Command) error {
 	}
 	defer cl.Close()
 
-	_ = cl.Send(protocol.KillClientRequest{Type: "kill_client_request", ClientID: uint32(id)})
+	_ = cl.Send(protocol.KillClientRequest{ClientID: uint32(id)})
 	resp, err := recvType[protocol.KillClientResponse](cl)
 	if err != nil {
 		return err

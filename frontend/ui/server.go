@@ -3,6 +3,8 @@ package ui
 import (
 	"encoding/base64"
 	"log/slog"
+	"net"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"termd/frontend/client"
@@ -16,14 +18,26 @@ type InputMsg struct {
 	Data     []byte
 }
 
+// DisconnectedMsg is sent to bubbletea when the server connection drops.
+type DisconnectedMsg struct {
+	RetryAt time.Time
+}
+
+// ReconnectedMsg is sent to bubbletea when the connection is restored.
+type ReconnectedMsg struct{}
+
 // Server owns the client connection and runs as a separate goroutine.
 // Bubbletea and the input loop communicate with it via Send().
 type Server struct {
-	ch chan any
+	ch          chan any
+	processName string
 }
 
-func NewServer(bufSize int) *Server {
-	return &Server{ch: make(chan any, bufSize)}
+func NewServer(bufSize int, processName string) *Server {
+	return &Server{
+		ch:          make(chan any, bufSize),
+		processName: processName,
+	}
 }
 
 // Send enqueues a message for the server goroutine. Non-blocking — drops
@@ -32,7 +46,6 @@ func (s *Server) Send(msg any) {
 	select {
 	case s.ch <- msg:
 	default:
-		slog.Debug("server send dropped (channel full)")
 	}
 }
 
@@ -41,65 +54,139 @@ func (s *Server) Close() {
 	close(s.ch)
 }
 
-// Run processes outbound requests and pumps inbound server messages to
-// bubbletea. It blocks until the send channel is closed.
-func (s *Server) Run(c *client.Client, p *tea.Program) {
-	// Inbound: read from server, batch terminal events, send to bubbletea.
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for msg := range c.Updates() {
-			// Batch consecutive TerminalEvents for performance
-			if te, ok := msg.(protocol.TerminalEvents); ok {
-				batch := te.Events
-			drain:
-				for {
-					select {
-					case next, ok := <-c.Updates():
-						if !ok {
-							break drain
-						}
-						if te2, ok := next.(protocol.TerminalEvents); ok {
-							batch = append(batch, te2.Events...)
-						} else {
-							p.Send(protocol.TerminalEvents{
-								Type:   "terminal_events",
-								Events: batch,
-							})
-							p.Send(msg)
-							continue drain
-						}
-					default:
-						break drain
-					}
-				}
-				p.Send(protocol.TerminalEvents{
-					Type:   "terminal_events",
-					Events: batch,
-				})
-				continue
-			}
+// Run connects to the server, processes messages, and handles reconnection.
+// It blocks until the send channel is closed.
+func (s *Server) Run(conn net.Conn, dialFn func() (net.Conn, error), p *tea.Program) {
+	c := client.New(conn)
+	s.sendIdentify(c)
 
-			p.Send(msg)
+	for {
+		exit := s.runConnection(c, p)
+		if exit {
+			return
 		}
-	}()
 
-	// Outbound: read from send channel, dispatch to client.
-	for msg := range s.ch {
-		switch m := msg.(type) {
-		case InputMsg:
-			data := base64.StdEncoding.EncodeToString(m.Data)
-			_ = c.Send(protocol.InputMsg{
-				Type:     "input",
-				RegionID: m.RegionID,
-				Data:     data,
-			})
-		default:
-			_ = c.Send(m)
+		// Connection lost — reconnect with exponential backoff
+		c = s.reconnect(dialFn, p)
+		if c == nil {
+			return // send channel closed during reconnect
 		}
 	}
+}
 
-	// Send channel closed — shut down the client, wait for inbound to finish.
-	c.Close()
-	<-done
+// runConnection processes messages on a single connection until it drops
+// or the send channel closes. Returns true if we should exit entirely.
+func (s *Server) runConnection(c *client.Client, p *tea.Program) (exit bool) {
+	recv := c.Recv()
+
+	for {
+		select {
+		case msg, ok := <-s.ch:
+			if !ok {
+				// Send channel closed — shutdown
+				c.Close()
+				// Drain remaining recv
+				for range recv {
+				}
+				return true
+			}
+			s.dispatchOutbound(c, msg)
+
+		case msg, ok := <-recv:
+			if !ok {
+				// Connection dropped
+				c.Close()
+				return false
+			}
+			s.dispatchInbound(msg, recv, p)
+		}
+	}
+}
+
+// reconnect attempts to restore the connection with exponential backoff.
+// Returns the new client, or nil if the send channel was closed.
+func (s *Server) reconnect(dialFn func() (net.Conn, error), p *tea.Program) *client.Client {
+	if dialFn == nil {
+		return nil
+	}
+
+	backoff := 100 * time.Millisecond
+	maxBackoff := 60 * time.Second
+
+	for {
+		retryAt := time.Now().Add(backoff)
+		p.Send(DisconnectedMsg{RetryAt: retryAt})
+
+		// Wait for backoff. Messages queue in s.ch (buffered) during this time.
+		time.Sleep(backoff)
+
+		slog.Debug("reconnecting", "backoff", backoff)
+		conn, err := dialFn()
+		if err != nil {
+			slog.Debug("reconnect failed", "error", err)
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+			continue
+		}
+
+		c := client.New(conn)
+		s.sendIdentify(c)
+		p.Send(ReconnectedMsg{})
+		return c
+	}
+}
+
+func (s *Server) dispatchOutbound(c *client.Client, msg any) {
+	switch m := msg.(type) {
+	case InputMsg:
+		data := base64.StdEncoding.EncodeToString(m.Data)
+		if err := c.Send(protocol.InputMsg{
+			RegionID: m.RegionID,
+			Data:     data,
+		}); err != nil {
+			slog.Debug("send error", "error", err)
+		}
+	default:
+		if err := c.Send(m); err != nil {
+			slog.Debug("send error", "error", err)
+		}
+	}
+}
+
+// dispatchInbound sends a message to bubbletea, batching consecutive
+// TerminalEvents for performance.
+func (s *Server) dispatchInbound(msg any, recv <-chan any, p *tea.Program) {
+	te, ok := msg.(protocol.TerminalEvents)
+	if !ok {
+		p.Send(msg)
+		return
+	}
+
+	// Batch consecutive TerminalEvents
+	batch := te.Events
+drain:
+	for {
+		select {
+		case next, ok := <-recv:
+			if !ok {
+				break drain
+			}
+			if te2, ok := next.(protocol.TerminalEvents); ok {
+				batch = append(batch, te2.Events...)
+			} else {
+				p.Send(protocol.TerminalEvents{Events: batch})
+				p.Send(next)
+				return
+			}
+		default:
+			break drain
+		}
+	}
+	p.Send(protocol.TerminalEvents{Events: batch})
+}
+
+func (s *Server) sendIdentify(c *client.Client) {
+	c.SendIdentify(s.processName)
 }

@@ -14,7 +14,6 @@ import (
 	"github.com/charmbracelet/colorprofile"
 	"github.com/urfave/cli/v3"
 	"termd/config"
-	"termd/frontend/client"
 	termlog "termd/frontend/log"
 	"termd/frontend/ui"
 	"termd/transport"
@@ -117,7 +116,6 @@ func runFrontend(_ context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return fmt.Errorf("connect %s: %w", endpoint, err)
 	}
-	c := client.New(conn, dialFn, "termd-tui")
 
 	restore, err := ui.SetupRawTerminal()
 	if err != nil {
@@ -127,7 +125,7 @@ func runFrontend(_ context.Context, cmd *cli.Command) error {
 
 	pipeR, pipeW := io.Pipe()
 
-	server := ui.NewServer(64)
+	server := ui.NewServer(64, "termd-tui")
 	model := ui.NewModel(server, pipeW, shell, shellArgs, logRing, endpoint, version, changelog)
 	p := tea.NewProgram(model,
 		tea.WithInput(pipeR),
@@ -140,7 +138,7 @@ func runFrontend(_ context.Context, cmd *cli.Command) error {
 	}
 
 	logHandler.SetNotifyFn(func() { p.Send(ui.LogEntryMsg{}) })
-	go server.Run(c, p)
+	go server.Run(conn, dialFn, p)
 	go ui.InputLoop(stdinDup, p)
 
 	finalModel, err := p.Run()
