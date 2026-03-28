@@ -50,9 +50,8 @@ func (s *StatusLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 	return nil, nil, false
 }
 
-func (s *StatusLayer) View(width, height int) string { return "" }
-
-func (s *StatusLayer) ViewOverlay(base string, width, height int) string {
+// View returns a positioned dialog layer for compositing.
+func (s *StatusLayer) View(width, height int, active bool) *lipgloss.Layer {
 	var lines []string
 
 	lines = append(lines, "termd-tui:")
@@ -143,9 +142,7 @@ func (s *StatusLayer) ViewOverlay(base string, width, height int) string {
 		y = 0
 	}
 
-	baseLayer := lipgloss.NewLayer(base)
-	dialogLayer := lipgloss.NewLayer(dialog).X(x).Y(y).Z(1)
-	return lipgloss.NewCompositor(baseLayer, dialogLayer).Render()
+	return lipgloss.NewLayer(dialog).X(x).Y(y).Z(1)
 }
 
 func (s *StatusLayer) Status() (string, bool, bool) { return "status", true, false }

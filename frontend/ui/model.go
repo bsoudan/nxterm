@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	termlog "termd/frontend/log"
 	"termd/frontend/protocol"
@@ -100,10 +101,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // rather than forwarded to the server.
 func (m Model) hasFocusLayer(session *SessionLayer) bool {
 	for i := 1; i < len(m.layers); i++ {
-		if _, ok := m.layers[i].(OverlayViewer); ok {
-			return true
-		}
-		if _, ok := m.layers[i].(*CommandLayer); ok {
+		switch m.layers[i].(type) {
+		case *CommandLayer, *ScrollableLayer, *StatusLayer, *HelpLayer:
 			return true
 		}
 	}
@@ -160,22 +159,6 @@ func (m Model) handlePrefixDetected(raw RawInputMsg, idx int, session *SessionLa
 func (m Model) View() tea.View {
 	session := m.layers[0].(*SessionLayer)
 
-	// Collect topmost non-empty Status from layers above session.
-	layerStatus, layerBold, layerRed := "", false, false
-	hasOverlay := false
-	for i := len(m.layers) - 1; i > 0; i-- {
-		if _, ok := m.layers[i].(OverlayViewer); ok {
-			hasOverlay = true
-		}
-		t, b, r := m.layers[i].Status()
-		if t != "" && layerStatus == "" {
-			layerStatus, layerBold, layerRed = t, b, r
-		}
-	}
-
-	base := session.ViewWithStatus(layerStatus, layerBold, layerRed, hasOverlay)
-
-	// Composite overlay layers on top of the base view.
 	width, height := session.termWidth, session.termHeight
 	if width <= 0 {
 		width = 80
@@ -183,13 +166,59 @@ func (m Model) View() tea.View {
 	if height <= 0 {
 		height = 24
 	}
-	for i := 1; i < len(m.layers); i++ {
-		if ov, ok := m.layers[i].(OverlayViewer); ok {
-			base = ov.ViewOverlay(base, width, height)
+
+	// Collect topmost Status and detect overlay presence.
+	statusText, statusBold, statusRed := "", false, false
+	hasOverlay := false
+	for i := 0; i < len(m.layers); i++ {
+		t, b, r := m.layers[i].Status()
+		if t != "" {
+			statusText, statusBold, statusRed = t, b, r
+		}
+		switch m.layers[i].(type) {
+		case *ScrollableLayer, *StatusLayer, *HelpLayer:
+			hasOverlay = true
 		}
 	}
 
-	v := tea.NewView(base)
+	// Collect non-nil View layers. The first layer (session) is active
+	// when no overlay is above it — it uses this to show the cursor.
+	var overlays []*lipgloss.Layer
+	baseLayer := session.View(width, height, !hasOverlay)
+	for i := 1; i < len(m.layers); i++ {
+		if l := m.layers[i].View(width, height, false); l != nil {
+			overlays = append(overlays, l)
+		}
+	}
+
+	// Render status bar (right side of tab bar).
+	statusContent, statusWidth := renderStatusBar(statusText, session.version, statusBold, statusRed)
+	statusX := width - statusWidth
+	if statusX < 0 {
+		statusX = 0
+	}
+
+	var content string
+	if len(overlays) > 0 {
+		// Overlays present — composite everything through lipgloss.
+		// The compositor strips trailing whitespace from lines, but
+		// that's acceptable here because the overlay dialog covers
+		// the terminal content area.
+		layers := make([]*lipgloss.Layer, 0, 2+len(overlays))
+		layers = append(layers, baseLayer)
+		layers = append(layers, overlays...)
+		layers = append(layers, lipgloss.NewLayer(statusContent).X(statusX).Z(2))
+		content = lipgloss.NewCompositor(layers...).Render()
+	} else {
+		// No overlays — splice the status bar into the tab bar line
+		// directly. This avoids running terminal content through the
+		// compositor, which would strip trailing spaces that are
+		// significant for terminal rendering.
+		base := baseLayer.GetContent()
+		content = spliceStatusBar(base, statusContent, statusX, width)
+	}
+
+	v := tea.NewView(content)
 	v.AltScreen = true
 
 	if session.term != nil {

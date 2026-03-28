@@ -1,21 +1,22 @@
 package ui
 
-import tea "charm.land/bubbletea/v2"
+import (
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+)
 
 // Layer is the interface for all layers in the UI stack.
-// Layers are pointers with mutable state - Update mutates in place.
+// Layers are pointers with mutable state — Update mutates in place.
 // The bool return signals whether the message was handled (stop propagating)
 // or should continue to the next layer.
+//
+// View returns a *lipgloss.Layer for compositing, or nil for transparent
+// layers (command, hint). Model collects non-nil layers and the session
+// base, then feeds them all to a single lipgloss.NewCompositor call.
 type Layer interface {
 	Update(tea.Msg) (response tea.Msg, cmd tea.Cmd, handled bool)
-	View(width, height int) string
+	View(width, height int, active bool) *lipgloss.Layer
 	Status() (text string, bold bool, red bool)
-}
-
-// OverlayViewer is implemented by layers that render a dialog composited
-// over the base view (logviewer, status, help, release notes).
-type OverlayViewer interface {
-	ViewOverlay(base string, width, height int) string
 }
 
 // QuitLayerMsg is returned by a layer's Update to request removal from the stack.

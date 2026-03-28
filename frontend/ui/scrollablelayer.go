@@ -1,8 +1,11 @@
 package ui
 
 import (
+	"strings"
+
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	termlog "termd/frontend/log"
 )
 
@@ -66,10 +69,9 @@ func (l *ScrollableLayer) handleKey(msg tea.KeyPressMsg) (tea.Msg, tea.Cmd, bool
 	}
 }
 
-func (l *ScrollableLayer) View(width, height int) string { return "" }
-
-func (l *ScrollableLayer) ViewOverlay(base string, width, height int) string {
-	// For logviewer, refresh content from logRing on each render
+// View returns a positioned dialog layer for compositing.
+func (l *ScrollableLayer) View(width, height int, active bool) *lipgloss.Layer {
+	// For logviewer, refresh content from logRing on each render.
 	if l.logRing != nil {
 		atBottom := l.vp.AtBottom()
 		l.vp.SetContent(l.logRing.String())
@@ -77,8 +79,70 @@ func (l *ScrollableLayer) ViewOverlay(base string, width, height int) string {
 			l.vp.GotoBottom()
 		}
 	}
-	return renderScrollableOverlay(l.vp.View(), l.hScroll, base, width, height)
+
+	overlayW := width * 80 / 100
+	overlayH := height * 80 / 100
+	if overlayW < 20 {
+		overlayW = 20
+	}
+	if overlayH < 5 {
+		overlayH = 5
+	}
+
+	maxLines := overlayH - 3
+	maxContentWidth := overlayW - 4
+
+	contentLines := strings.Split(l.vp.View(), "\n")
+	if len(contentLines) > maxLines {
+		contentLines = contentLines[:maxLines]
+	}
+	for i, line := range contentLines {
+		runes := []rune(line)
+		if l.hScroll > 0 && l.hScroll < len(runes) {
+			runes = runes[l.hScroll:]
+		} else if l.hScroll >= len(runes) {
+			runes = nil
+		}
+		if len(runes) > maxContentWidth {
+			runes = runes[:maxContentWidth]
+		}
+		contentLines[i] = string(runes)
+	}
+
+	content := strings.Join(contentLines, "\n")
+
+	dialog := overlayBorder.
+		Width(overlayW).
+		Height(maxLines).
+		Render(content)
+
+	dialogLines := strings.Split(dialog, "\n")
+	maxBoxLines := maxLines + 2
+	if len(dialogLines) > maxBoxLines {
+		lastLine := dialogLines[len(dialogLines)-1]
+		dialogLines = dialogLines[:maxBoxLines-1]
+		dialogLines = append(dialogLines, lastLine)
+	}
+
+	help := barStyle.Render("• q/esc: close • ↑↓/pgup/pgdn: scroll • ←→: pan • home: top •")
+	helpPad := (overlayW + 2 - lipgloss.Width(help)) / 2
+	if helpPad < 0 {
+		helpPad = 0
+	}
+	dialogLines = append(dialogLines, strings.Repeat(" ", helpPad)+help)
+	dialog = strings.Join(dialogLines, "\n")
+
+	dialogH := strings.Count(dialog, "\n") + 1
+	x := (width - overlayW) / 2
+	y := (height - dialogH) / 2
+	if x < 0 {
+		x = 0
+	}
+	if y < 0 {
+		y = 0
+	}
+
+	return lipgloss.NewLayer(dialog).X(x).Y(y).Z(1)
 }
 
 func (l *ScrollableLayer) Status() (string, bool, bool) { return l.label, true, false }
-

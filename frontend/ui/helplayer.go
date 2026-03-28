@@ -56,9 +56,8 @@ func (h *HelpLayer) handleKey(msg tea.KeyPressMsg) (tea.Msg, tea.Cmd, bool) {
 	}
 }
 
-func (h *HelpLayer) View(width, height int) string { return "" }
-
-func (h *HelpLayer) ViewOverlay(base string, width, height int) string {
+// View returns a positioned dialog layer for compositing.
+func (h *HelpLayer) View(width, height int, active bool) *lipgloss.Layer {
 	var lines []string
 	for i, item := range h.items {
 		line := fmt.Sprintf("  ctrl+b %s   %s", item.key, item.label)
@@ -92,9 +91,7 @@ func (h *HelpLayer) ViewOverlay(base string, width, height int) string {
 		y = 0
 	}
 
-	baseLayer := lipgloss.NewLayer(base)
-	dialogLayer := lipgloss.NewLayer(dialog).X(x).Y(y).Z(1)
-	return lipgloss.NewCompositor(baseLayer, dialogLayer).Render()
+	return lipgloss.NewLayer(dialog).X(x).Y(y).Z(1)
 }
 
 var helpSelected = lipgloss.NewStyle().Reverse(true)

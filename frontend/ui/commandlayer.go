@@ -1,6 +1,9 @@
 package ui
 
-import tea "charm.land/bubbletea/v2"
+import (
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+)
 
 // CommandLayer is a temporary layer pushed when ctrl+b is detected.
 // It captures the next KeyPressMsg, dispatches it as a specific message
@@ -45,8 +48,8 @@ func cmdMsg(msg tea.Msg) tea.Cmd {
 	return func() tea.Msg { return msg }
 }
 
-func (c *CommandLayer) View(width, height int) string { return "" }
-func (c *CommandLayer) Status() (string, bool, bool)  { return "?", true, false }
+func (c *CommandLayer) View(width, height int, active bool) *lipgloss.Layer { return nil }
+func (c *CommandLayer) Status() (string, bool, bool)               { return "?", true, false }
 
 
 // HintLayer is a temporary layer pushed after startup to show
@@ -60,5 +63,5 @@ func (h *HintLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 	return nil, nil, false
 }
 
-func (h *HintLayer) View(width, height int) string { return "" }
-func (h *HintLayer) Status() (string, bool, bool)  { return "ctrl+b ? for help", true, false }
+func (h *HintLayer) View(width, height int, active bool) *lipgloss.Layer { return nil }
+func (h *HintLayer) Status() (string, bool, bool)               { return "ctrl+b ? for help", true, false }

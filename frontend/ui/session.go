@@ -1,11 +1,13 @@
 package ui
 
 import (
+	"fmt"
 	"io"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	termlog "termd/frontend/log"
 	"termd/frontend/protocol"
 )
@@ -38,6 +40,7 @@ type SessionLayer struct {
 	// Pre-terminal dimensions (stored until terminal is created).
 	termWidth  int
 	termHeight int
+
 }
 
 // NewSessionLayer creates a session layer with the given dependencies.
@@ -314,8 +317,8 @@ func (s *SessionLayer) openOverlay(name string) tea.Cmd {
 	case "status":
 		sl := NewStatusLayer(s.buildStatusCaps())
 		s.requestFn(protocol.StatusRequest{}, func(payload any) {
-			if resp, ok := payload.(*protocol.StatusResponse); ok {
-				sl.SetStatus(resp)
+			if resp, ok := payload.(protocol.StatusResponse); ok {
+				sl.SetStatus(&resp)
 			}
 		})
 		layer = sl
@@ -344,20 +347,28 @@ func (s *SessionLayer) buildStatusCaps() StatusCaps {
 	return caps
 }
 
-// View implements the Layer interface.
-func (s *SessionLayer) View(width, height int) string {
-	return renderView(s, "", false, false, false)
+// View implements the Layer interface. Renders the tab bar (left side
+// only — terminal tabs) plus terminal content. Model composites the
+// right side of the tab bar (status + branding) as a separate layer.
+func (s *SessionLayer) View(width, height int, active bool) *lipgloss.Layer {
+	content := renderView(s, !active)
+	return lipgloss.NewLayer(content)
 }
 
-// ViewWithStatus renders the session with a status override from the layer stack.
-func (s *SessionLayer) ViewWithStatus(layerStatus string, layerStatusBold, layerStatusRed, hideCursor bool) string {
-	return renderView(s, layerStatus, layerStatusBold, layerStatusRed, hideCursor)
-}
-
-// Status implements the Layer interface.
+// Status implements the Layer interface. Returns the session's own
+// status — scrollback mode, reconnecting, or endpoint. Layers above
+// session override this via the layer stack Status traversal.
 func (s *SessionLayer) Status() (string, bool, bool) {
-	if s.connStatus == "reconnecting" {
-		return s.endpoint, true, true
+	if s.term != nil && s.term.ScrollbackActive() {
+		return s.term.Status()
 	}
-	return s.endpoint, false, false
+	if s.connStatus == "reconnecting" {
+		secs := int(time.Until(s.retryAt).Seconds()) + 1
+		return fmt.Sprintf("reconnecting to %s in %ds...", s.endpoint, secs), true, true
+	}
+	name := s.endpoint
+	if len(name) > 20 {
+		name = name[len(name)-20:]
+	}
+	return name, false, false
 }

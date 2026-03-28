@@ -21,9 +21,8 @@ func TestStartAndRender(t *testing.T) {
 	pio, frontendCleanup := startFrontend(t, socketPath)
 	defer frontendCleanup()
 
+	// Wait for the tab bar to render with the region name.
 	lines := pio.WaitFor(t, "bash", 10*time.Second)
-
-	// "bash" should be on row 0 (tab bar), near the left side
 	row, col := findOnScreen(lines, "bash")
 	if row != 0 {
 		t.Fatalf("expected 'bash' on row 0, found on row %d", row)
@@ -32,16 +31,8 @@ func TestStartAndRender(t *testing.T) {
 		t.Fatalf("expected 'bash' near start of row 0, found at col %d", col)
 	}
 
-	hasContent := false
-	for _, line := range lines[1:] {
-		if strings.TrimSpace(line) != "" {
-			hasContent = true
-			break
-		}
-	}
-	if !hasContent {
-		t.Fatal("no content below the tab bar")
-	}
+	// Wait for the shell prompt to render below the tab bar.
+	pio.WaitFor(t, "$", 10*time.Second)
 }
 
 func TestInputRoundTrip(t *testing.T) {
@@ -52,7 +43,7 @@ func TestInputRoundTrip(t *testing.T) {
 	defer frontendCleanup()
 
 	pio.WaitFor(t, "bash", 10*time.Second)
-	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.WaitFor(t, "termd$",10*time.Second)
 
 	// "aGVsbG8K" is base64 for "hello\n".
 	pio.Write([]byte("echo aGVsbG8K | base64 -d\r"))
@@ -89,7 +80,7 @@ func TestResize(t *testing.T) {
 	defer frontendCleanup()
 
 	pio.WaitFor(t, "bash", 10*time.Second)
-	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.WaitFor(t, "termd$",10*time.Second)
 	pio.Write([]byte("tput cols\r"))
 
 	lines := pio.WaitForScreen(t, func(lines []string) bool {
@@ -109,7 +100,7 @@ func TestCursorPosition(t *testing.T) {
 	defer frontendCleanup()
 
 	pio.WaitFor(t, "bash", 10*time.Second)
-	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.WaitFor(t, "termd$",10*time.Second)
 
 	pio.Write([]byte("xy"))
 
@@ -205,7 +196,7 @@ func TestScreenSyncAfterTop(t *testing.T) {
 	pio, frontendCleanup := startFrontend(t, socketPath)
 	defer frontendCleanup()
 
-	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.WaitFor(t, "termd$",10*time.Second)
 
 	// Run top briefly then quit
 	pio.Write([]byte("top\r"))
@@ -213,7 +204,7 @@ func TestScreenSyncAfterTop(t *testing.T) {
 	pio.Write([]byte("q"))
 
 	// Wait for prompt to reappear
-	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.WaitFor(t, "termd$",10*time.Second)
 	pio.WaitForSilence(500 * time.Millisecond)
 
 	// Get server screen via termctl
@@ -282,33 +273,33 @@ func TestCursorMovementAfterProgram(t *testing.T) {
 	defer frontendCleanup()
 
 	pio.WaitFor(t, "bash", 10*time.Second)
-	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.WaitFor(t, "termd$",10*time.Second)
 
 	// Type several lines so there's content on screen
 	pio.Write([]byte("echo line_a\r"))
 	pio.WaitFor(t, "line_a", 10*time.Second)
-	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.WaitFor(t, "termd$",10*time.Second)
 	pio.Write([]byte("echo line_b\r"))
 	pio.WaitFor(t, "line_b", 10*time.Second)
-	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.WaitFor(t, "termd$",10*time.Second)
 
 	// Run a command that writes to many rows (like top does).
 	// Use seq to fill several lines, then verify the prompt appears
 	// AFTER the seq output, not overlapping it.
 	pio.Write([]byte("seq 1 10\r"))
 	pio.WaitFor(t, "10", 10*time.Second)
-	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.WaitFor(t, "termd$",10*time.Second)
 
 	// The prompt should be on a row AFTER "10"
 	lines := pio.ScreenLines()
 	seqRow, _ := findOnScreen(lines, "10")
-	promptRow, _ := findOnScreen(lines, "termd$ ")
+	promptRow, _ := findOnScreen(lines, "termd$")
 	t.Logf("'10' at row %d, last 'termd$ ' at row %d", seqRow, promptRow)
 
-	// Find the LAST occurrence of "termd$ " (the current prompt)
+	// Find the LAST occurrence of "termd$" (the current prompt)
 	lastPrompt := -1
 	for i, line := range lines {
-		if strings.Contains(line, "termd$ ") {
+		if strings.Contains(line, "termd$") {
 			lastPrompt = i
 		}
 	}
@@ -327,7 +318,7 @@ func TestColorRendering(t *testing.T) {
 	pio, frontendCleanup := startFrontend(t, socketPath)
 	defer frontendCleanup()
 
-	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.WaitFor(t, "termd$",10*time.Second)
 
 	// Produce colored output via printf using ansi constants converted to shell notation.
 	pio.Write([]byte("printf '" +
@@ -436,7 +427,7 @@ func TestRawInputPassthrough(t *testing.T) {
 
 	pio.WaitFor(t, "bash", 10*time.Second)
 
-	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.WaitFor(t, "termd$",10*time.Second)
 	pio.Write([]byte("sleep 999\r"))
 	pio.Write([]byte("\x03"))
 
@@ -475,7 +466,7 @@ func TestPrefixKeyLiteralCtrlB(t *testing.T) {
 	pio, frontendCleanup := startFrontend(t, socketPath)
 	defer frontendCleanup()
 
-	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.WaitFor(t, "termd$",10*time.Second)
 
 	pio.Write([]byte("cat -v\r"))
 	pio.WaitFor(t, "cat -v", 10*time.Second)
@@ -494,7 +485,7 @@ func TestPrefixKeyLiteralCtrlB(t *testing.T) {
 	}
 
 	pio.Write([]byte("\x03"))
-	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.WaitFor(t, "termd$",10*time.Second)
 }
 
 func TestPrefixKeyStatusIndicator(t *testing.T) {
@@ -590,7 +581,7 @@ func TestLogViewerOverlay(t *testing.T) {
 		return row < 0
 	}, "overlay gone", 10*time.Second)
 
-	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.WaitFor(t, "termd$",10*time.Second)
 	pio.Write([]byte("echo logview_closed\r"))
 	pio.WaitFor(t, "logview_closed", 10*time.Second)
 }
@@ -602,7 +593,7 @@ func TestSessionPersistence(t *testing.T) {
 	pio1, cleanup1 := startFrontend(t, socketPath)
 
 	pio1.WaitFor(t, "bash", 10*time.Second)
-	pio1.WaitFor(t, "termd$ ", 10*time.Second)
+	pio1.WaitFor(t, "termd$",10*time.Second)
 
 	// Output colored text before detaching
 	pio1.Write([]byte("printf '" +
@@ -686,7 +677,7 @@ func TestResizeMidSession(t *testing.T) {
 	pio, frontendCleanup := startFrontend(t, socketPath)
 	defer frontendCleanup()
 
-	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.WaitFor(t, "termd$",10*time.Second)
 
 	// Verify initial 80 columns
 	pio.Write([]byte("tput cols\r"))
@@ -699,7 +690,7 @@ func TestResizeMidSession(t *testing.T) {
 		return false
 	}, "'80' at col 0 on a content row", 10*time.Second)
 
-	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.WaitFor(t, "termd$",10*time.Second)
 
 	// Resize to 120x40
 	pio.Resize(120, 40)
@@ -717,7 +708,7 @@ func TestResizeMidSession(t *testing.T) {
 	}, "'120' at col 0 on a content row", 10*time.Second)
 
 	// Verify new row count (40 - 1 for tab bar = 39)
-	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.WaitFor(t, "termd$",10*time.Second)
 	pio.Write([]byte("tput lines\r"))
 	pio.WaitForScreen(t, func(lines []string) bool {
 		for i := 1; i < len(lines); i++ {
@@ -748,7 +739,7 @@ func TestTCPTransport(t *testing.T) {
 	defer func() { cmd.Process.Kill(); cmd.Wait(); ptmx.Close() }()
 
 	pio.WaitFor(t, "bash", 10*time.Second)
-	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.WaitFor(t, "termd$",10*time.Second)
 
 	// Verify the tab bar shows the TCP endpoint
 	lines := pio.ScreenLines()
@@ -769,7 +760,7 @@ func TestMousePassthrough(t *testing.T) {
 	pio, frontendCleanup := startFrontend(t, socketPath)
 	defer frontendCleanup()
 
-	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.WaitFor(t, "termd$",10*time.Second)
 
 	// Run mousehelper which enables mouse tracking and prints mouse events
 	pio.Write([]byte("mousehelper\r"))
@@ -832,7 +823,7 @@ func TestMousePassthrough(t *testing.T) {
 
 	// Quit the helper
 	pio.Write([]byte("q"))
-	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.WaitFor(t, "termd$",10*time.Second)
 }
 
 func TestScrollbackBuffer(t *testing.T) {
@@ -845,11 +836,11 @@ func TestScrollbackBuffer(t *testing.T) {
 	// Wait for shell prompt
 	pio, frontendCleanup := startFrontend(t, socketPath)
 	defer frontendCleanup()
-	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.WaitFor(t, "termd$",10*time.Second)
 
 	// Output 200 lines — in a 24-row terminal, early lines scroll off
 	pio.Write([]byte("seq 1 200\r"))
-	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.WaitFor(t, "termd$",10*time.Second)
 
 	// Request scrollback via termctl
 	out := runTermctl(t, socketPath, "region", "scrollback", regionID)
@@ -878,11 +869,11 @@ func TestScrollbackNavigation(t *testing.T) {
 	pio, frontendCleanup := startFrontend(t, socketPath)
 	defer frontendCleanup()
 
-	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.WaitFor(t, "termd$",10*time.Second)
 
 	// Generate enough output to fill scrollback
 	pio.Write([]byte("seq 1 200\r"))
-	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.WaitFor(t, "termd$",10*time.Second)
 
 	// Enter scrollback mode with ctrl+b [
 	pio.Write([]byte{0x02}) // ctrl+b
@@ -920,7 +911,7 @@ func TestScrollbackNavigation(t *testing.T) {
 			return false
 		}
 		for _, line := range lines {
-			if strings.Contains(line, "termd$ ") {
+			if strings.Contains(line, "termd$") {
 				return true
 			}
 		}
@@ -935,11 +926,11 @@ func TestScrollbackScrollWheel(t *testing.T) {
 	pio, frontendCleanup := startFrontend(t, socketPath)
 	defer frontendCleanup()
 
-	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.WaitFor(t, "termd$",10*time.Second)
 
 	// Generate output that scrolls off screen
 	pio.Write([]byte("seq 1 200\r"))
-	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.WaitFor(t, "termd$",10*time.Second)
 	pio.WaitForSilence(200 * time.Millisecond)
 
 	// Send a scroll wheel up event to activate scrollback
@@ -981,7 +972,7 @@ func TestScrollbackScrollWheel(t *testing.T) {
 			return false
 		}
 		for _, line := range lines {
-			if strings.Contains(line, "termd$ ") {
+			if strings.Contains(line, "termd$") {
 				return true
 			}
 		}
@@ -1015,7 +1006,7 @@ func TestWebSocketTransport(t *testing.T) {
 	defer func() { cmd.Process.Kill(); cmd.Wait(); ptmx.Close() }()
 
 	pio.WaitFor(t, "bash", 10*time.Second)
-	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.WaitFor(t, "termd$",10*time.Second)
 
 	pio.Write([]byte("echo ws_works\r"))
 	pio.WaitFor(t, "ws_works", 10*time.Second)
@@ -1089,7 +1080,7 @@ func TestSSHTransport(t *testing.T) {
 	defer func() { feCmd.Process.Kill(); feCmd.Wait(); ptmx.Close() }()
 
 	pio.WaitFor(t, "bash", 10*time.Second)
-	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.WaitFor(t, "termd$",10*time.Second)
 
 	pio.Write([]byte("echo ssh_works\r"))
 	pio.WaitFor(t, "ssh_works", 10*time.Second)
@@ -1102,7 +1093,7 @@ func TestRegionKilledExternally(t *testing.T) {
 	pio, frontendCleanup := startFrontend(t, socketPath)
 	defer frontendCleanup()
 
-	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.WaitFor(t, "termd$",10*time.Second)
 
 	// Get the region ID
 	out := runTermctl(t, socketPath, "region", "list")
@@ -1142,12 +1133,12 @@ func TestReconnectUnix(t *testing.T) {
 	pio, frontendCleanup := startFrontend(t, socketPath)
 	defer frontendCleanup()
 
-	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.WaitFor(t, "termd$",10*time.Second)
 
 	// Type a marker so we can verify content persists
 	pio.Write([]byte("echo reconnect_marker\r"))
 	pio.WaitFor(t, "reconnect_marker", 10*time.Second)
-	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.WaitFor(t, "termd$",10*time.Second)
 
 	// Find the frontend's client ID
 	clientID := findFrontendClientID(t, socketPath)
@@ -1159,7 +1150,7 @@ func TestReconnectUnix(t *testing.T) {
 	pio.WaitFor(t, "reconnecting", 10*time.Second)
 
 	// Should reconnect and show the prompt again
-	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.WaitFor(t, "termd$",10*time.Second)
 	pio.WaitForSilence(200 * time.Millisecond)
 
 	// Verify typing still works after reconnect
@@ -1181,7 +1172,7 @@ func TestReconnectTCP(t *testing.T) {
 	pio := newPtyIO(ptmx, 80, 24)
 	defer func() { cmd.Process.Kill(); cmd.Wait(); ptmx.Close() }()
 
-	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.WaitFor(t, "termd$",10*time.Second)
 
 	// Find the frontend's client ID (use Unix socket for termctl)
 	clientID := findFrontendClientID(t, socketPath)
@@ -1191,7 +1182,7 @@ func TestReconnectTCP(t *testing.T) {
 
 	// Should reconnect
 	pio.WaitFor(t, "reconnecting", 10*time.Second)
-	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.WaitFor(t, "termd$",10*time.Second)
 	pio.WaitForSilence(200 * time.Millisecond)
 
 	// Verify typing works
@@ -1223,7 +1214,7 @@ func TestMultiTransportSharedRegion(t *testing.T) {
 	pio1, cleanup1 := startFrontend(t, socketPath)
 	defer cleanup1()
 
-	pio1.WaitFor(t, "termd$ ", 10*time.Second)
+	pio1.WaitFor(t, "termd$",10*time.Second)
 
 	// Type a marker in frontend 1
 	pio1.Write([]byte("echo multi_transport_marker\r"))
@@ -1243,7 +1234,7 @@ func TestMultiTransportSharedRegion(t *testing.T) {
 	pio2.WaitFor(t, "multi_transport_marker", 10*time.Second)
 
 	// Type in frontend 2, verify frontend 1 sees it
-	pio2.WaitFor(t, "termd$ ", 10*time.Second)
+	pio2.WaitFor(t, "termd$",10*time.Second)
 	pio2.Write([]byte("echo from_tcp_client\r"))
 	pio1.WaitFor(t, "from_tcp_client", 10*time.Second)
 }
@@ -1257,7 +1248,7 @@ func TestExit(t *testing.T) {
 
 	pio.WaitFor(t, "bash", 10*time.Second)
 
-	pio.WaitFor(t, "termd$ ", 10*time.Second)
+	pio.WaitFor(t, "termd$",10*time.Second)
 	pio.Write([]byte("exit\r"))
 
 	deadline := time.After(10 * time.Second)

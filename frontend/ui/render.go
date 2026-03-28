@@ -1,9 +1,7 @@
 package ui
 
 import (
-	"fmt"
 	"strings"
-	"time"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -18,7 +16,7 @@ var (
 			Padding(0, 1)
 )
 
-func renderView(s *SessionLayer, layerStatus string, layerStatusBold, layerStatusRed, hideCursor bool) string {
+func renderView(s *SessionLayer, hideCursor bool) string {
 	if s.err != "" {
 		return "error: " + s.err + "\n"
 	}
@@ -34,35 +32,9 @@ func renderView(s *SessionLayer, layerStatus string, layerStatusBold, layerStatu
 
 	var sb strings.Builder
 
-	// Right side of tab bar: status from layer stack or session state.
-	rightInfo := s.endpoint
-	rightBold := false
-	rightRed := false
-	if s.connStatus != "connected" && s.connStatus != "" {
-		rightInfo = s.connStatus
-	}
-	if s.status != "" {
-		rightInfo = s.status
-	}
-	if s.term != nil && s.term.ScrollbackActive() {
-		text, _, _ := s.term.Status()
-		rightInfo = text
-		rightBold = true
-	} else if layerStatus != "" {
-		rightInfo = layerStatus
-		rightBold = layerStatusBold
-		rightRed = layerStatusRed
-	} else if s.connStatus == "reconnecting" {
-		secs := int(time.Until(s.retryAt).Seconds()) + 1
-		rightInfo = fmt.Sprintf("reconnecting to %s in %ds...", s.endpoint, secs)
-		rightBold = true
-		rightRed = true
-	}
-	suffix := "termd-tui"
-	if s.version != "" && layerStatus != "" {
-		suffix = "termd-tui " + s.version
-	}
-	sb.WriteString(renderTabBar(s.regionName, rightInfo, suffix, rightBold, rightRed, width))
+	// Tab bar left side: terminal tabs. The right side (status + branding)
+	// is composited by Model as a separate layer.
+	sb.WriteString(renderTabBar(s.regionName, width))
 	sb.WriteByte('\n')
 
 	contentHeight := height - 1 // tab bar only
@@ -236,74 +208,26 @@ func teColorAttrs(c te.Color, isBg bool) []ansi.Attr {
 	return []ansi.Attr{ansi.AttrDefaultForegroundColor}
 }
 
-func renderScrollableOverlay(vpContent string, hScroll int, base string, width, height int) string {
-	overlayW := width * 80 / 100
-	overlayH := height * 80 / 100
-	if overlayW < 20 {
-		overlayW = 20
+// spliceStatusBar composites the status bar content onto the first line
+// (tab bar) of the base view. Uses the lipgloss compositor for just the
+// tab bar line, preserving the terminal content lines below unchanged.
+func spliceStatusBar(base, statusContent string, statusX, width int) string {
+	newline := strings.IndexByte(base, '\n')
+	if newline < 0 {
+		// Single line — composite the whole thing
+		tabLayer := lipgloss.NewLayer(base)
+		statusLayer := lipgloss.NewLayer(statusContent).X(statusX)
+		return lipgloss.NewCompositor(tabLayer, statusLayer).Render()
 	}
-	if overlayH < 5 {
-		overlayH = 5
-	}
+	tabLine := base[:newline]
+	rest := base[newline:] // includes the leading \n
 
-	maxLines := overlayH - 3
-	maxContentWidth := overlayW - 4
+	tabLayer := lipgloss.NewLayer(tabLine)
+	statusLayer := lipgloss.NewLayer(statusContent).X(statusX)
+	merged := lipgloss.NewCompositor(tabLayer, statusLayer).Render()
 
-	contentLines := strings.Split(vpContent, "\n")
-	if len(contentLines) > maxLines {
-		contentLines = contentLines[:maxLines]
-	}
-	for i, line := range contentLines {
-		runes := []rune(line)
-		if hScroll > 0 && hScroll < len(runes) {
-			runes = runes[hScroll:]
-		} else if hScroll >= len(runes) {
-			runes = nil
-		}
-		if len(runes) > maxContentWidth {
-			runes = runes[:maxContentWidth]
-		}
-		contentLines[i] = string(runes)
-	}
-
-	content := strings.Join(contentLines, "\n")
-
-	dialog := overlayBorder.
-		Width(overlayW).
-		Height(maxLines).
-		Render(content)
-
-	dialogLines := strings.Split(dialog, "\n")
-	maxBoxLines := maxLines + 2
-	if len(dialogLines) > maxBoxLines {
-		lastLine := dialogLines[len(dialogLines)-1]
-		dialogLines = dialogLines[:maxBoxLines-1]
-		dialogLines = append(dialogLines, lastLine)
-	}
-
-	help := barStyle.Render("• q/esc: close • ↑↓/pgup/pgdn: scroll • ←→: pan • home: top •")
-	helpPad := (overlayW + 2 - lipgloss.Width(help)) / 2
-	if helpPad < 0 {
-		helpPad = 0
-	}
-	dialogLines = append(dialogLines, strings.Repeat(" ", helpPad)+help)
-	dialog = strings.Join(dialogLines, "\n")
-
-	dialogH := strings.Count(dialog, "\n") + 1
-	x := (width - overlayW) / 2
-	y := (height - dialogH) / 2
-	if x < 0 {
-		x = 0
-	}
-	if y < 0 {
-		y = 0
-	}
-
-	baseLayer := lipgloss.NewLayer(base)
-	dialogLayer := lipgloss.NewLayer(dialog).X(x).Y(y).Z(1)
-	return lipgloss.NewCompositor(baseLayer, dialogLayer).Render()
+	return merged + rest
 }
-
 
 var (
 	barStyle        = lipgloss.NewStyle().Faint(true)
@@ -311,75 +235,58 @@ var (
 	barRedBoldStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1"))
 )
 
-// renderChromeBar renders a line like: ─ left ──── right ─ suffix ─
-// left, right, and suffix are optional. suffix is rendered bold (not faint).
-// The line fills to width with ─ characters.
-func renderChromeBar(left, right, suffix string, rightBold, rightRed bool, width int) string {
+// renderTabBar renders the left side of the tab bar: "• regionName •···•"
+// The right side (status + branding) is composited by Model as a
+// separate layer on top.
+func renderTabBar(regionName string, width int) string {
 	var sb strings.Builder
-	used := 0
 
-	// Leading: "• "
 	sb.WriteString("• ")
-	used += 2
+	used := 2
 
-	// Left content: "left •"
-	if left != "" {
-		sb.WriteString(left)
+	if regionName != "" {
+		sb.WriteString(regionName)
 		sb.WriteString(" •")
-		used += len([]rune(left)) + 2
+		used += len([]rune(regionName)) + 2
 	}
 
-	// Compute space needed for right side: "• right " or trailing "•"
-	rightTotal := 0
-	if right != "" {
-		rightTotal = len([]rune(right)) + 4 // "• right •"
-	} else {
-		rightTotal = 1 // trailing "•"
-	}
-
-	suffixTotal := 0
-	if suffix != "" {
-		suffixTotal = len([]rune(suffix)) + 3 // " suffix •"
-	}
-
-	// Fill with middle dots
-	fillCount := width - used - rightTotal - suffixTotal
+	fillCount := width - used - 1 // -1 for trailing "•"
 	if fillCount < 1 {
 		fillCount = 1
 	}
 	for range fillCount {
 		sb.WriteString("·")
 	}
+	sb.WriteString("•")
 
-	// Right content
-	var result string
-	if right != "" && rightBold {
-		// Faint everything up to here, then bold (or red+bold) "• right •"
-		result = barStyle.Render(sb.String())
-		style := barBoldStyle
-		if rightRed {
-			style = barRedBoldStyle
-		}
-		result += style.Render("• " + right + " •")
-	} else {
-		if right != "" {
-			sb.WriteString("• ")
-			sb.WriteString(right)
-			sb.WriteString(" •")
-		} else {
-			sb.WriteString("•")
-		}
-		result = barStyle.Render(sb.String())
-	}
-
-	// Bold suffix appended outside the faint span
-	if suffix != "" {
-		result += barStyle.Render(" ") + barBoldStyle.Render(suffix) + barStyle.Render(" •")
-	}
-
-	return result
+	return barStyle.Render(sb.String())
 }
 
-func renderTabBar(regionName, status, suffix string, rightBold, rightRed bool, width int) string {
-	return renderChromeBar(regionName, status, suffix, rightBold, rightRed, width)
+// renderStatusBar renders the right side of the tab bar for compositing
+// on top of the session view at row 0. Returns the rendered string and
+// its display width.
+func renderStatusBar(status, version string, statusBold, statusRed bool) (string, int) {
+	var result string
+	displayWidth := 0
+
+	if statusBold {
+		style := barBoldStyle
+		if statusRed {
+			style = barRedBoldStyle
+		}
+		result = style.Render("• " + status + " •")
+	} else {
+		result = barStyle.Render("• " + status + " •")
+	}
+	displayWidth = len([]rune("• " + status + " •"))
+
+	if version != "" && statusBold {
+		result += barStyle.Render(" ") + barBoldStyle.Render("termd-tui "+version) + barStyle.Render(" •")
+		displayWidth += 1 + len([]rune("termd-tui "+version)) + 2
+	} else {
+		result += barStyle.Render(" ") + barBoldStyle.Render("termd-tui") + barStyle.Render(" •")
+		displayWidth += 1 + len("termd-tui") + 2
+	}
+
+	return result, displayWidth
 }
