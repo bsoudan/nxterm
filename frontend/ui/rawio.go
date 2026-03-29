@@ -2,8 +2,11 @@ package ui
 
 import (
 	"bytes"
+	"errors"
 	"io"
+	"log/slog"
 	"os"
+	"runtime"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -140,6 +143,13 @@ func InputLoop(stdin *os.File, p *tea.Program, pipeW io.Writer, ready <-chan str
 				ch <- data
 			}
 			if err != nil {
+				if errors.Is(err, io.EOF) && runtime.GOOS == "windows" {
+					// On Windows, Ctrl+Z sends EOF but the console
+					// handle remains valid. Pass the keypress through.
+					ch <- []byte{0x1A}
+					continue
+				}
+				slog.Debug("stdin read failed", "error", err)
 				close(ch)
 				return
 			}
