@@ -9,7 +9,7 @@ endif
 all: build-server build-tui build-tui-windows build-termctl build-mousehelper
 
 build-server:
-	cd server && go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o ../.local/bin/termd .
+	go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o .local/bin/termd ./server
 
 changelog:
 	@tmp=$$(mktemp); \
@@ -23,25 +23,25 @@ changelog:
 	mv "$$tmp" frontend/changelog.txt
 
 build-tui: changelog
-	cd frontend && go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o ../.local/bin/termd-tui .
+	go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o .local/bin/termd-tui ./frontend
 
 build-tui-windows: changelog
-	cd frontend && GOOS=windows GOARCH=amd64 go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o ../.local/bin/termd-tui.exe .
+	GOOS=windows GOARCH=amd64 go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o .local/bin/termd-tui.exe ./frontend
 
 build-mousehelper:
 	cd e2e/testdata/mousehelper && go build -o ../../../.local/bin/mousehelper .
 
 build-termctl:
-	cd termctl && go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o ../.local/bin/termctl .
+	go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o .local/bin/termctl ./termctl
 
 check-windows:
-	cd frontend && GOOS=windows GOARCH=amd64 go build -o /dev/null .
-	cd transport && GOOS=windows GOARCH=amd64 go build -o /dev/null .
+	GOOS=windows GOARCH=amd64 go build -o /dev/null ./frontend
+	GOOS=windows GOARCH=amd64 go build -o /dev/null ./transport
 
 test: test-e2e
 
 test-e2e: all
-	cd e2e && PATH="$(CURDIR)/.local/bin:$(PATH)" go test -v -timeout 120s
+	PATH="$(CURDIR)/.local/bin:$(PATH)" go test -v -timeout 120s ./e2e
 
 # Stress test (quick). Override with env vars:
 #   STRESS_TUI_CLIENTS  — number of termd-tui instances    (default: 5)
@@ -49,15 +49,13 @@ test-e2e: all
 #   STRESS_DURATION     — how long to run                  (default: 30s)
 #   STRESS_SEED         — fixed RNG seed for reproduction  (default: random)
 test-stress: all
-	cd e2e && PATH="$(CURDIR)/.local/bin:$(PATH)" go test -v -tags stress -run TestStress -timeout 300s
+	PATH="$(CURDIR)/.local/bin:$(PATH)" go test -v -tags stress -run TestStress -timeout 300s ./e2e
 
 test-stress-long: all
-	cd e2e && PATH="$(CURDIR)/.local/bin:$(PATH)" \
+	PATH="$(CURDIR)/.local/bin:$(PATH)" \
 		STRESS_TUI_CLIENTS=10 STRESS_RAW_CLIENTS=5 STRESS_DURATION=120s \
-		go test -v -tags stress -run TestStress -timeout 300s
+		go test -v -tags stress -run TestStress -timeout 300s ./e2e
 
 clean:
 	rm -rf .local/bin
-	cd server && go clean ./...
-	cd frontend && go clean ./...
-	cd termctl && go clean ./...
+	go clean ./...
