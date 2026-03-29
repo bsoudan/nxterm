@@ -2,20 +2,19 @@ package ui
 
 import (
 	"log/slog"
-	"strconv"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
 )
 
-// Command is a named user action with a description, category, and a factory
-// that produces the tea.Cmd to dispatch. Commands that accept arguments
-// receive them as a string (e.g., "3" for switch-tab 3).
+// Command is a named user action. Category is for user-facing grouping
+// in the help overlay and TOML config. Layer determines which layer
+// handles the command ("session" → SessionLayer, "main" → MainLayer).
 type Command struct {
 	Name        string
-	Category    string
+	Category    string // "tab", "session", "main"
+	Layer       string // "session" or "main"
 	Description string
-	CmdFn       func(args string) tea.Cmd
 }
 
 // BindingType distinguishes raw-byte interception from prefix+key chords.
@@ -30,7 +29,7 @@ const (
 type resolvedBinding struct {
 	command *Command
 	args    string
-	key     string // display key for help
+	key     string
 }
 
 // alwaysBinding is a raw byte pattern that triggers a command.
@@ -38,20 +37,19 @@ type alwaysBinding struct {
 	raw     []byte
 	command *Command
 	args    string
-	key     string // display key for help
+	key     string
 }
 
 // Registry holds all commands and resolved bindings.
 type Registry struct {
-	commands []*Command                  // ordered for help display
-	byName   map[string]*Command        // name -> command
-	chords   map[string]resolvedBinding // chord key string -> binding
-	always   []alwaysBinding            // raw byte patterns to scan for
-	// display items grouped by category for help overlay
+	commands     []*Command
+	byName       map[string]*Command
+	chords       map[string]resolvedBinding
+	always       []alwaysBinding
 	displayOrder []displayEntry
 
-	PrefixKey byte   // 0x02 for ctrl+b, 0x01 for ctrl+a, etc.
-	PrefixStr string // "ctrl+b" for display
+	PrefixKey byte
+	PrefixStr string
 }
 
 type displayEntry struct {
@@ -59,13 +57,30 @@ type displayEntry struct {
 	description string
 	cmdFn       func() tea.Cmd // nil for display-only entries (always-bindings, headers)
 	chordKey    string         // chord key for shortcut matching in help, "" for always
-	isHeader    bool           // category header row
+	isHeader    bool
+}
+
+func cmdMsg(msg tea.Msg) tea.Cmd {
+	return func() tea.Msg { return msg }
+}
+
+// cmdForBinding returns a tea.Cmd that dispatches a SessionCmd or MainCmd
+// based on the command's Layer field.
+func cmdForBinding(cmd *Command, args string) tea.Cmd {
+	switch cmd.Layer {
+	case "session":
+		return cmdMsg(SessionCmd{Name: cmd.Name, Args: args})
+	case "main":
+		return cmdMsg(MainCmd{Name: cmd.Name, Args: args})
+	default:
+		return nil
+	}
 }
 
 // Dispatch looks up a chord key and returns the command's tea.Cmd, or nil.
 func (r *Registry) Dispatch(key string) tea.Cmd {
 	if b, ok := r.chords[key]; ok {
-		return b.command.CmdFn(b.args)
+		return cmdForBinding(b.command, b.args)
 	}
 	return nil
 }
@@ -77,60 +92,38 @@ func (r *Registry) DisplayEntries() []displayEntry {
 
 // --- Command definitions ---
 
-func cmdMsg(msg tea.Msg) tea.Cmd {
-	return func() tea.Msg { return msg }
-}
-
-// categories defines the display order of categories in the help overlay.
-var categories = []string{"tab", "session", "general"}
+// categories defines the display order of categories in the help overlay
+// and the TOML config sections.
+var categories = []string{"tab", "session", "main"}
 
 func allCommands() []*Command {
 	return []*Command{
-		// Tab management
-		{Name: "open-tab", Category: "tab", Description: "open new tab", CmdFn: func(string) tea.Cmd { return cmdMsg(SpawnRegionMsg{}) }},
-		{Name: "close-tab", Category: "tab", Description: "close active tab", CmdFn: func(string) tea.Cmd { return cmdMsg(CloseTabMsg{}) }},
-		{Name: "next-tab", Category: "tab", Description: "next tab", CmdFn: func(string) tea.Cmd { return cmdMsg(NextTabMsg{}) }},
-		{Name: "prev-tab", Category: "tab", Description: "previous tab", CmdFn: func(string) tea.Cmd { return cmdMsg(PrevTabMsg{}) }},
-		{Name: "switch-tab", Category: "tab", Description: "switch to tab N", CmdFn: func(args string) tea.Cmd {
-			if args == "" {
-				return cmdMsg(SpawnRegionMsg{})
-			}
-			idx, err := strconv.Atoi(args)
-			if err != nil || idx < 0 {
-				return nil
-			}
-			return cmdMsg(SwitchTabMsg{Index: idx - 1})
-		}},
-		// Session management
-		{Name: "open-session", Category: "session", Description: "create new session", CmdFn: func(string) tea.Cmd { return cmdMsg(NewSessionMsg{}) }},
-		{Name: "close-session", Category: "session", Description: "kill current session", CmdFn: func(string) tea.Cmd { return cmdMsg(KillSessionMsg{}) }},
-		{Name: "next-session", Category: "session", Description: "next session", CmdFn: func(string) tea.Cmd { return cmdMsg(NextSessionMsg{}) }},
-		{Name: "prev-session", Category: "session", Description: "previous session", CmdFn: func(string) tea.Cmd { return cmdMsg(PrevSessionMsg{}) }},
-		{Name: "switch-session", Category: "session", Description: "switch session", CmdFn: func(args string) tea.Cmd {
-			if args == "" {
-				return cmdMsg(OpenOverlayMsg{Name: "sessions"})
-			}
-			idx, err := strconv.Atoi(args)
-			if err != nil || idx < 0 {
-				return nil
-			}
-			return cmdMsg(SwitchSessionMsg{Index: idx - 1})
-		}},
-		// General
-		{Name: "detach", Category: "general", Description: "detach from all sessions", CmdFn: func(string) tea.Cmd { return cmdMsg(DetachRequestMsg{}) }},
-		{Name: "send-prefix", Category: "general", Description: "send literal prefix key", CmdFn: func(string) tea.Cmd { return cmdMsg(SendLiteralPrefixMsg{}) }},
-		{Name: "show-log", Category: "general", Description: "open log viewer", CmdFn: func(string) tea.Cmd { return cmdMsg(OpenOverlayMsg{Name: "logviewer"}) }},
-		{Name: "show-help", Category: "general", Description: "show keybindings", CmdFn: func(string) tea.Cmd { return cmdMsg(OpenOverlayMsg{Name: "help"}) }},
-		{Name: "show-status", Category: "general", Description: "show status dialog", CmdFn: func(string) tea.Cmd { return cmdMsg(OpenOverlayMsg{Name: "status"}) }},
-		{Name: "show-release-notes", Category: "general", Description: "show release notes", CmdFn: func(string) tea.Cmd { return cmdMsg(OpenOverlayMsg{Name: "release notes"}) }},
-		{Name: "enter-scrollback", Category: "general", Description: "enter scrollback mode", CmdFn: func(string) tea.Cmd { return cmdMsg(EnterScrollbackMsg{}) }},
-		{Name: "refresh-screen", Category: "general", Description: "refresh terminal screen", CmdFn: func(string) tea.Cmd { return cmdMsg(RefreshScreenMsg{}) }},
+		// Tab — user category "tab", handled by SessionLayer
+		{Name: "open-tab", Category: "tab", Layer: "session", Description: "open new tab"},
+		{Name: "close-tab", Category: "tab", Layer: "session", Description: "close active tab"},
+		{Name: "next-tab", Category: "tab", Layer: "session", Description: "next tab"},
+		{Name: "prev-tab", Category: "tab", Layer: "session", Description: "previous tab"},
+		{Name: "switch-tab", Category: "tab", Layer: "session", Description: "switch to tab N"},
+		// Session — user category "session", handled by MainLayer
+		{Name: "open-session", Category: "session", Layer: "main", Description: "create new session"},
+		{Name: "close-session", Category: "session", Layer: "main", Description: "kill current session"},
+		{Name: "next-session", Category: "session", Layer: "main", Description: "next session"},
+		{Name: "prev-session", Category: "session", Layer: "main", Description: "previous session"},
+		{Name: "switch-session", Category: "session", Layer: "main", Description: "switch session"},
+		// Main — user category "main", mixed handlers
+		{Name: "detach", Category: "main", Layer: "main", Description: "detach from all sessions"},
+		{Name: "send-prefix", Category: "main", Layer: "session", Description: "send literal prefix key"},
+		{Name: "show-log", Category: "main", Layer: "session", Description: "open log viewer"},
+		{Name: "show-help", Category: "main", Layer: "session", Description: "show keybindings"},
+		{Name: "show-status", Category: "main", Layer: "session", Description: "show status dialog"},
+		{Name: "show-release-notes", Category: "main", Layer: "session", Description: "show release notes"},
+		{Name: "enter-scrollback", Category: "main", Layer: "session", Description: "enter scrollback mode"},
+		{Name: "refresh-screen", Category: "main", Layer: "session", Description: "refresh terminal screen"},
 	}
 }
 
 // --- Style presets ---
 
-// binding is a compact representation used in preset definitions.
 type binding struct {
 	key         string // chord: key after prefix; always: "alt+X"
 	commandName string
@@ -281,7 +274,6 @@ func getPreset(style string) stylePreset {
 
 // --- Key parsing ---
 
-// keyToRawBytes converts a key spec like "alt+," to raw terminal bytes.
 func keyToRawBytes(key string) []byte {
 	if !strings.HasPrefix(key, "alt+") {
 		return nil
@@ -293,7 +285,6 @@ func keyToRawBytes(key string) []byte {
 	return []byte{0x1b, ch[0]}
 }
 
-// prefixKeyToByte converts "ctrl+X" to the corresponding control byte.
 func prefixKeyToByte(key string) byte {
 	if !strings.HasPrefix(key, "ctrl+") {
 		return 0x02
@@ -316,7 +307,6 @@ func isAlwaysKey(key string) bool {
 	return strings.HasPrefix(key, "alt+")
 }
 
-// parseCommandInvocation splits "switch-tab 3" into ("switch-tab", "3").
 func parseCommandInvocation(s string) (name, args string) {
 	if i := strings.IndexByte(s, ' '); i >= 0 {
 		return s[:i], s[i+1:]
@@ -324,7 +314,6 @@ func parseCommandInvocation(s string) (name, args string) {
 	return s, ""
 }
 
-// commandInvocation joins a command name and args back into "switch-tab 3".
 func commandInvocation(name, args string) string {
 	if args == "" {
 		return name
@@ -335,10 +324,6 @@ func commandInvocation(name, args string) string {
 // --- Registry builder ---
 
 // NewRegistry builds a Registry from a style preset and optional overrides.
-// style is "native", "tmux", "screen", or "zellij".
-// prefix overrides the preset's prefix key (e.g., "ctrl+a"). Empty uses preset default.
-// overrides maps command-invocation -> key-specs. An empty slice unbinds the command.
-// A nil map means no overrides.
 func NewRegistry(style, prefix string, overrides map[string][]string) *Registry {
 	preset := getPreset(style)
 
@@ -354,25 +339,20 @@ func NewRegistry(style, prefix string, overrides map[string][]string) *Registry 
 		byName[c.Name] = c
 	}
 
-	// Start with preset bindings.
 	bindings := make([]binding, len(preset.bindings))
 	copy(bindings, preset.bindings)
 
-	// Update send-prefix chord key to match the current prefix.
 	for i := range bindings {
 		if bindings[i].commandName == "send-prefix" {
 			bindings[i].key = prefixStr
 		}
 	}
 
-	// Apply overrides: for each overridden command, remove ALL its preset
-	// bindings, then add the new ones. Empty key list = unbind entirely.
 	if len(overrides) > 0 {
 		overriddenCmds := make(map[string]bool, len(overrides))
 		for invocation := range overrides {
 			overriddenCmds[invocation] = true
 		}
-		// Remove preset bindings for overridden commands.
 		filtered := bindings[:0]
 		for _, b := range bindings {
 			inv := commandInvocation(b.commandName, b.args)
@@ -381,7 +361,6 @@ func NewRegistry(style, prefix string, overrides map[string][]string) *Registry 
 			}
 		}
 		bindings = filtered
-		// Add override bindings.
 		for invocation, keys := range overrides {
 			cmdName, args := parseCommandInvocation(invocation)
 			if _, ok := byName[cmdName]; !ok {
@@ -394,11 +373,9 @@ func NewRegistry(style, prefix string, overrides map[string][]string) *Registry 
 		}
 	}
 
-	// Resolve bindings into chord and always maps, grouped by category.
 	chords := make(map[string]resolvedBinding)
 	var always []alwaysBinding
 
-	// Group bindings by category for display.
 	type catBinding struct {
 		b   binding
 		cmd *Command
@@ -422,17 +399,13 @@ func NewRegistry(style, prefix string, overrides map[string][]string) *Registry 
 		catBindings[cmd.Category] = append(catBindings[cmd.Category], catBinding{b: b, cmd: cmd})
 	}
 
-	// Build display entries with category headers.
 	var display []displayEntry
 	for _, cat := range categories {
 		entries := catBindings[cat]
 		if len(entries) == 0 {
 			continue
 		}
-		display = append(display, displayEntry{
-			keyDisplay: cat,
-			isHeader:   true,
-		})
+		display = append(display, displayEntry{keyDisplay: cat, isHeader: true})
 		for _, cb := range entries {
 			desc := cb.cmd.Description
 			if cb.b.args != "" {
@@ -447,7 +420,7 @@ func NewRegistry(style, prefix string, overrides map[string][]string) *Registry 
 				description: desc,
 			}
 			if !isAlwaysKey(cb.b.key) {
-				de.cmdFn = func() tea.Cmd { return cb.cmd.CmdFn(cb.b.args) }
+				de.cmdFn = func() tea.Cmd { return cmdForBinding(cb.cmd, cb.b.args) }
 				de.chordKey = cb.b.key
 			}
 			display = append(display, de)

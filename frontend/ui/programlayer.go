@@ -45,7 +45,7 @@ func (p *ProgramPickerLayer) handleKey(msg tea.KeyPressMsg) (tea.Msg, tea.Cmd, b
 		return nil, nil, true
 	case "enter":
 		name := p.programs[p.cursor].Name
-		return QuitLayerMsg{}, cmdMsg(SpawnProgramMsg{Name: name}), true
+		return QuitLayerMsg{}, cmdMsg(SessionCmd{Name: "open-tab", Args: name}), true
 	default:
 		return nil, nil, true
 	}

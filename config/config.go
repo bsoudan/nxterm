@@ -99,7 +99,7 @@ func LoadFrontendConfig(explicit string) (FrontendConfig, error) {
 }
 
 // KeybindConfig represents termd-tui/keybindings.toml.
-// Bindings are organized by category: [tab], [session], [general].
+// Bindings are organized by category: [tab], [session], [main].
 // Values are either a single key string or an array of key strings.
 // An empty string unbinds the command.
 type KeybindConfig struct {
@@ -107,14 +107,14 @@ type KeybindConfig struct {
 	Prefix  string         `toml:"prefix"`
 	Tab     map[string]any `toml:"tab"`
 	Session map[string]any `toml:"session"`
-	General map[string]any `toml:"general"`
+	Main    map[string]any `toml:"main"`
 }
 
 // Overrides flattens all category bindings into a single map
 // of command-invocation -> key-specs.
 func (c KeybindConfig) Overrides() map[string][]string {
 	result := make(map[string][]string)
-	for _, m := range []map[string]any{c.Tab, c.Session, c.General} {
+	for _, m := range []map[string]any{c.Tab, c.Session, c.Main} {
 		for cmd, v := range m {
 			result[cmd] = keysFromValue(v)
 		}

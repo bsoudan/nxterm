@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strconv"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -115,35 +116,12 @@ func (m *MainLayer) detach() (tea.Msg, tea.Cmd) {
 
 func (m *MainLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 	switch msg := msg.(type) {
-	// ── Session management commands ─────────────────────────────────────
+	// ── Keybinding commands (MainCmd) ───────────────────────────────────
 
-	case NewSessionMsg:
-		layer := &SessionNameLayer{}
-		return nil, func() tea.Msg { return PushLayerMsg{Layer: layer} }, true
+	case MainCmd:
+		return m.handleCmd(msg)
 
-	case CreateSessionMsg:
-		return nil, m.createSession(msg.Name), true
-
-	case KillSessionMsg:
-		return m.killSession()
-
-	case SwitchSessionMsg:
-		m.switchSession(msg.Index)
-		return nil, nil, true
-
-	case NextSessionMsg:
-		m.nextSession()
-		return nil, nil, true
-
-	case PrevSessionMsg:
-		m.prevSession()
-		return nil, nil, true
-
-	// ── Global messages ─────────────────────────────────────────────────
-
-	case DetachRequestMsg:
-		resp, cmd := m.detach()
-		return resp, cmd, true
+	// ── System messages ─────────────────────────────────────────────────
 
 	case DisconnectedMsg:
 		m.connStatus = "reconnecting"
@@ -159,7 +137,6 @@ func (m *MainLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 		for _, s := range m.sessions {
 			s.connStatus = "connected"
 		}
-		// Re-connect all sessions to refresh their region lists.
 		for _, s := range m.sessions {
 			s.Reconnect()
 		}
@@ -189,15 +166,6 @@ func (m *MainLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 		pushCmd := func() tea.Msg { return PushLayerMsg{Layer: &HintLayer{registry: m.registry}} }
 		hideCmd := tea.Tick(3*time.Second, func(time.Time) tea.Msg { return hideHintMsg{} })
 		return nil, tea.Batch(pushCmd, hideCmd), true
-
-	// ── Overlay routing ─────────────────────────────────────────────────
-
-	case OpenOverlayMsg:
-		if msg.Name == "sessions" {
-			return nil, m.openSessionPicker(), true
-		}
-		// Forward other overlays to active session.
-		return m.forwardToActiveSession(msg)
 
 	// ── Dimension tracking ──────────────────────────────────────────────
 
@@ -236,6 +204,39 @@ func (m *MainLayer) forwardToActiveSession(msg tea.Msg) (tea.Msg, tea.Cmd, bool)
 	}
 
 	return resp, cmd, true
+}
+
+func (m *MainLayer) handleCmd(msg MainCmd) (tea.Msg, tea.Cmd, bool) {
+	switch msg.Name {
+	case "open-session":
+		if msg.Args != "" {
+			return nil, m.createSession(msg.Args), true
+		}
+		layer := &SessionNameLayer{}
+		return nil, func() tea.Msg { return PushLayerMsg{Layer: layer} }, true
+	case "close-session":
+		return m.killSession()
+	case "next-session":
+		m.nextSession()
+		return nil, nil, true
+	case "prev-session":
+		m.prevSession()
+		return nil, nil, true
+	case "switch-session":
+		if msg.Args == "" {
+			return nil, m.openSessionPicker(), true
+		}
+		idx, err := strconv.Atoi(msg.Args)
+		if err == nil && idx > 0 {
+			m.switchSession(idx - 1)
+		}
+		return nil, nil, true
+	case "detach":
+		resp, cmd := m.detach()
+		return resp, cmd, true
+	default:
+		return nil, nil, true
+	}
 }
 
 func (m *MainLayer) createSession(name string) tea.Cmd {

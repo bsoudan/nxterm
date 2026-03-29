@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -228,68 +229,8 @@ func (s *SessionLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 		resp, cmd := s.handleRawInput([]byte(msg))
 		return resp, cmd, true
 
-	case SendLiteralPrefixMsg:
-		s.sendRawToServer([]byte{s.registry.PrefixKey})
-		return nil, nil, true
-
-	case OpenOverlayMsg:
-		cmd := s.openOverlay(msg.Name)
-		return nil, cmd, true
-
-	case EnterScrollbackMsg:
-		if t := s.activeTerm(); t != nil {
-			t.EnterScrollback(0)
-		}
-		return nil, nil, true
-
-	case RefreshScreenMsg:
-		if t := s.activeTerm(); t != nil {
-			t.SetPendingClear()
-			s.server.Send(protocol.GetScreenRequest{
-				RegionID: t.RegionID(),
-			})
-		}
-		return nil, nil, true
-
-	case SpawnRegionMsg:
-		if len(s.programs) == 1 {
-			s.status = "spawning..."
-			s.server.Send(protocol.SpawnRequest{
-				Session: s.sessionName,
-				Program: s.programs[0].Name,
-			})
-		} else if len(s.programs) > 1 {
-			picker := NewProgramPickerLayer(s.programs)
-			return nil, func() tea.Msg { return PushLayerMsg{Layer: picker} }, true
-		}
-		return nil, nil, true
-
-	case SpawnProgramMsg:
-		s.status = "spawning..."
-		s.server.Send(protocol.SpawnRequest{
-			Session: s.sessionName,
-			Program: msg.Name,
-		})
-		return nil, nil, true
-
-	case SwitchTabMsg:
-		s.switchToTab(msg.Index)
-		return nil, nil, true
-
-	case NextTabMsg:
-		s.nextTab()
-		return nil, nil, true
-
-	case PrevTabMsg:
-		s.prevTab()
-		return nil, nil, true
-
-	case CloseTabMsg:
-		id := s.activeRegionID()
-		if id != "" {
-			s.server.Send(protocol.KillRegionRequest{RegionID: id})
-		}
-		return nil, nil, true
+	case SessionCmd:
+		return s.handleCmd(msg)
 
 	case tea.WindowSizeMsg:
 		s.termWidth = msg.Width
@@ -434,6 +375,75 @@ func (s *SessionLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 		}
 		return nil, nil, true
 
+	default:
+		return nil, nil, true
+	}
+}
+
+func (s *SessionLayer) handleCmd(msg SessionCmd) (tea.Msg, tea.Cmd, bool) {
+	switch msg.Name {
+	case "open-tab":
+		if msg.Args != "" {
+			s.status = "spawning..."
+			s.server.Send(protocol.SpawnRequest{
+				Session: s.sessionName,
+				Program: msg.Args,
+			})
+		} else if len(s.programs) == 1 {
+			s.status = "spawning..."
+			s.server.Send(protocol.SpawnRequest{
+				Session: s.sessionName,
+				Program: s.programs[0].Name,
+			})
+		} else if len(s.programs) > 1 {
+			picker := NewProgramPickerLayer(s.programs)
+			return nil, func() tea.Msg { return PushLayerMsg{Layer: picker} }, true
+		}
+		return nil, nil, true
+	case "close-tab":
+		id := s.activeRegionID()
+		if id != "" {
+			s.server.Send(protocol.KillRegionRequest{RegionID: id})
+		}
+		return nil, nil, true
+	case "next-tab":
+		s.nextTab()
+		return nil, nil, true
+	case "prev-tab":
+		s.prevTab()
+		return nil, nil, true
+	case "switch-tab":
+		if msg.Args != "" {
+			idx, err := strconv.Atoi(msg.Args)
+			if err == nil && idx >= 0 {
+				s.switchToTab(idx - 1)
+			}
+		}
+		return nil, nil, true
+	case "send-prefix":
+		s.sendRawToServer([]byte{s.registry.PrefixKey})
+		return nil, nil, true
+	case "enter-scrollback":
+		if t := s.activeTerm(); t != nil {
+			t.EnterScrollback(0)
+		}
+		return nil, nil, true
+	case "refresh-screen":
+		if t := s.activeTerm(); t != nil {
+			t.SetPendingClear()
+			s.server.Send(protocol.GetScreenRequest{
+				RegionID: t.RegionID(),
+			})
+		}
+		return nil, nil, true
+	case "show-log":
+		return nil, s.openOverlay("logviewer"), true
+	case "show-help":
+		return nil, s.openOverlay("help"), true
+	case "show-status":
+		return nil, s.openOverlay("status"), true
+	case "show-release-notes":
+		return nil, s.openOverlay("release notes"), true
 	default:
 		return nil, nil, true
 	}

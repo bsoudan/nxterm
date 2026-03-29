@@ -221,7 +221,7 @@ func (s *SessionLayer) handleRawInput(chunk []byte) (tea.Msg, tea.Cmd) {
 					s.sendRawToServer(rest)
 					rest = nil
 				}
-				if cmd := ab.command.CmdFn(ab.args); cmd != nil {
+				if cmd := cmdForBinding(ab.command, ab.args); cmd != nil {
 					cmds = append(cmds, cmd)
 				}
 				matched = true

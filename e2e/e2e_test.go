@@ -1742,7 +1742,7 @@ func TestKeybindCustomOverride(t *testing.T) {
 	defer serverCleanup()
 
 	// Rebind ctrl+b x from close-tab to detach
-	writeTestKeybindConfig(t, env, "style = \"native\"\n\n[general]\ndetach = [\"d\", \"x\"]\n")
+	writeTestKeybindConfig(t, env, "style = \"native\"\n\n[main]\ndetach = [\"d\", \"x\"]\n")
 
 	fe := startFrontendWithEnv(t, socketPath, env)
 	defer fe.Kill()

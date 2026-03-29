@@ -9,7 +9,7 @@ style = "native"
 # native/tmux: "ctrl+b", screen: "ctrl+a"
 # prefix = "ctrl+a"
 
-# Bindings are organized by category: [tab], [session], [general].
+# Bindings are organized by category: [tab], [session], [main].
 # Each entry maps a command to a key or list of keys.
 #
 # Key formats:
@@ -51,9 +51,9 @@ style = "native"
 # prev-session = "("
 # switch-session = "w"
 
-# ── General ──────────────────────────────────────────────────────────
+# ── Main ─────────────────────────────────────────────────────────────
 
-[general]
+[main]
 # detach = "d"
 # send-prefix = "ctrl+b"
 # show-help = "?"
