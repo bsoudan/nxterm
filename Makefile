@@ -1,4 +1,4 @@
-.PHONY: all build-server changelog build-tui build-tui-windows build-termctl build-mousehelper check-windows test test-e2e clean
+.PHONY: all build-server changelog build-tui build-tui-windows build-termctl build-mousehelper check-windows test test-e2e test-stress clean
 
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/-g[0-9a-f]*//;s/-dirty/*/' || echo "dev")
 LDFLAGS := -X main.version=$(VERSION)
@@ -42,6 +42,9 @@ test: test-e2e
 
 test-e2e: all
 	cd e2e && PATH="$(CURDIR)/.local/bin:$(PATH)" go test -v -timeout 120s
+
+test-stress: all
+	cd e2e && PATH="$(CURDIR)/.local/bin:$(PATH)" go test -v -tags stress -run TestStress -timeout 300s
 
 clean:
 	rm -rf .local/bin
