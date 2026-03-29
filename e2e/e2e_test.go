@@ -1668,10 +1668,10 @@ func TestHelpOverlay(t *testing.T) {
 	pio.WaitFor(t, "detach", 5*time.Second)
 
 	lines := pio.ScreenLines()
-	// Should show category headers and keybindings.
+	// First category (main) and its commands should be visible.
 	foundMain := false
 	foundDetach := false
-	foundTab := false
+	foundSession := false
 	for _, line := range lines {
 		if strings.Contains(line, "main") {
 			foundMain = true
@@ -1679,8 +1679,8 @@ func TestHelpOverlay(t *testing.T) {
 		if strings.Contains(line, "detach") {
 			foundDetach = true
 		}
-		if strings.Contains(line, "tab") {
-			foundTab = true
+		if strings.Contains(line, "session") {
+			foundSession = true
 		}
 	}
 	if !foundMain {
@@ -1689,8 +1689,8 @@ func TestHelpOverlay(t *testing.T) {
 	if !foundDetach {
 		t.Error("help overlay should show 'detach' command")
 	}
-	if !foundTab {
-		t.Error("help overlay should show 'tab' category")
+	if !foundSession {
+		t.Error("help overlay should show 'session' category")
 	}
 
 	// Close with q.

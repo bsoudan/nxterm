@@ -15,6 +15,9 @@ style = "native"
 # Key formats:
 #   "d"       - chord binding (press after prefix key)
 #   "alt+."   - always-active binding (no prefix needed)
+#   "alt+f1"  - Alt+function key (always-active)
+#   "ctrl+f1" - Ctrl+function key (always-active)
+#   "ctrl+."  - Ctrl+punctuation (always-active, requires kitty keyboard protocol)
 #
 # Multiple bindings:
 #   next-tab = ["alt+.", "n"]   # both alt+. and prefix+n trigger next-tab
@@ -42,23 +45,32 @@ style = "native"
 [session]
 # open-session = "S"
 # close-session = "X"
-# next-session = ")"
-# prev-session = "("
+# next-session = "ctrl+."
+# prev-session = "ctrl+,"
 # switch-session = "w"
+# "switch-session 1" = "ctrl+f1"
+# "switch-session 2" = "ctrl+f2"
+# "switch-session 3" = "ctrl+f3"
+# "switch-session 4" = "ctrl+f4"
+# "switch-session 5" = "ctrl+f5"
+# "switch-session 6" = "ctrl+f6"
+# "switch-session 7" = "ctrl+f7"
+# "switch-session 8" = "ctrl+f8"
+# "switch-session 9" = "ctrl+f9"
 
 # ── Tab management ───────────────────────────────────────────────────
 
 [tab]
 # open-tab = "c"
 # close-tab = "x"
-# next-tab = ["alt+.", "n"]
-# prev-tab = ["alt+,", "p"]
-# "switch-tab 1" = "1"
-# "switch-tab 2" = "2"
-# "switch-tab 3" = "3"
-# "switch-tab 4" = "4"
-# "switch-tab 5" = "5"
-# "switch-tab 6" = "6"
-# "switch-tab 7" = "7"
-# "switch-tab 8" = "8"
-# "switch-tab 9" = "9"
+# next-tab = "alt+."
+# prev-tab = "alt+,"
+# "switch-tab 1" = ["1", "alt+f1"]
+# "switch-tab 2" = ["2", "alt+f2"]
+# "switch-tab 3" = ["3", "alt+f3"]
+# "switch-tab 4" = ["4", "alt+f4"]
+# "switch-tab 5" = ["5", "alt+f5"]
+# "switch-tab 6" = ["6", "alt+f6"]
+# "switch-tab 7" = ["7", "alt+f7"]
+# "switch-tab 8" = ["8", "alt+f8"]
+# "switch-tab 9" = ["9", "alt+f9"]

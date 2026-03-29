@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"log/slog"
 	"strings"
 
@@ -152,9 +153,29 @@ func nativePreset() stylePreset {
 			{"7", "switch-tab", "7"},
 			{"8", "switch-tab", "8"},
 			{"9", "switch-tab", "9"},
+			{"alt+f1", "switch-tab", "1"},
+			{"alt+f2", "switch-tab", "2"},
+			{"alt+f3", "switch-tab", "3"},
+			{"alt+f4", "switch-tab", "4"},
+			{"alt+f5", "switch-tab", "5"},
+			{"alt+f6", "switch-tab", "6"},
+			{"alt+f7", "switch-tab", "7"},
+			{"alt+f8", "switch-tab", "8"},
+			{"alt+f9", "switch-tab", "9"},
 			{"S", "open-session", ""},
 			{"X", "close-session", ""},
+			{"ctrl+.", "next-session", ""},
+			{"ctrl+,", "prev-session", ""},
 			{"w", "switch-session", ""},
+			{"ctrl+f1", "switch-session", "1"},
+			{"ctrl+f2", "switch-session", "2"},
+			{"ctrl+f3", "switch-session", "3"},
+			{"ctrl+f4", "switch-session", "4"},
+			{"ctrl+f5", "switch-session", "5"},
+			{"ctrl+f6", "switch-session", "6"},
+			{"ctrl+f7", "switch-session", "7"},
+			{"ctrl+f8", "switch-session", "8"},
+			{"ctrl+f9", "switch-session", "9"},
 			{"d", "detach", ""},
 			{"ctrl+b", "send-prefix", ""},
 			{"l", "show-log", ""},
@@ -274,15 +295,60 @@ func getPreset(style string) stylePreset {
 
 // --- Key parsing ---
 
+// Function key sequences (xterm format).
+// F1-F4 end with P/Q/R/S; F5-F12 use ~-terminated CSI with codes.
+var fnKeyCodes = map[string]struct {
+	code string // CSI parameter number
+	end  byte   // terminator: P/Q/R/S for F1-4, ~ for F5-12
+}{
+	"f1": {"1", 'P'}, "f2": {"1", 'Q'}, "f3": {"1", 'R'}, "f4": {"1", 'S'},
+	"f5": {"15", '~'}, "f6": {"17", '~'}, "f7": {"18", '~'}, "f8": {"19", '~'},
+	"f9": {"20", '~'}, "f10": {"21", '~'}, "f11": {"23", '~'}, "f12": {"24", '~'},
+}
+
+// Modifier codes for xterm-style CSI sequences.
+const (
+	modAlt  = "3" // xterm modifier for Alt
+	modCtrl = "5" // xterm modifier for Ctrl
+)
+
+// keyToRawBytes converts a key spec to raw terminal bytes for
+// always-active binding detection. Supports:
+//
+//	alt+x      → ESC x
+//	alt+f1     → CSI 1;3P (xterm Alt+F1)
+//	ctrl+f1    → CSI 1;5P (xterm Ctrl+F1)
+//	ctrl+,     → CSI 44;5u (kitty keyboard protocol)
+//	ctrl+.     → CSI 46;5u (kitty keyboard protocol)
 func keyToRawBytes(key string) []byte {
-	if !strings.HasPrefix(key, "alt+") {
+	if strings.HasPrefix(key, "alt+") {
+		rest := key[len("alt+"):]
+		// alt+fN → xterm function key with alt modifier
+		if fk, ok := fnKeyCodes[rest]; ok {
+			return []byte(fmt.Sprintf("\x1b[%s;%s%c", fk.code, modAlt, fk.end))
+		}
+		// alt+x → ESC x (single character)
+		if len(rest) == 1 {
+			return []byte{0x1b, rest[0]}
+		}
 		return nil
 	}
-	ch := key[len("alt+"):]
-	if len(ch) != 1 {
+	if strings.HasPrefix(key, "ctrl+") {
+		rest := key[len("ctrl+"):]
+		// ctrl+fN → xterm function key with ctrl modifier
+		if fk, ok := fnKeyCodes[rest]; ok {
+			return []byte(fmt.Sprintf("\x1b[%s;%s%c", fk.code, modCtrl, fk.end))
+		}
+		// ctrl+punctuation → kitty keyboard protocol: CSI codepoint;5u
+		if len(rest) == 1 {
+			c := rest[0]
+			if c >= '!' && c <= '~' && !(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') {
+				return []byte(fmt.Sprintf("\x1b[%d;5u", c))
+			}
+		}
 		return nil
 	}
-	return []byte{0x1b, ch[0]}
+	return nil
 }
 
 func prefixKeyToByte(key string) byte {
@@ -303,8 +369,24 @@ func prefixKeyToByte(key string) byte {
 	return 0x02
 }
 
+// isAlwaysKey returns true if the key spec is an always-active binding
+// (intercepted from raw bytes, no prefix key needed).
 func isAlwaysKey(key string) bool {
-	return strings.HasPrefix(key, "alt+")
+	if strings.HasPrefix(key, "alt+") {
+		return true
+	}
+	// ctrl+fN and ctrl+punctuation are always-bindings
+	if strings.HasPrefix(key, "ctrl+") {
+		rest := key[len("ctrl+"):]
+		if _, ok := fnKeyCodes[rest]; ok {
+			return true
+		}
+		if len(rest) == 1 {
+			c := rest[0]
+			return c >= '!' && c <= '~' && !(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z')
+		}
+	}
+	return false
 }
 
 func parseCommandInvocation(s string) (name, args string) {

@@ -16,8 +16,15 @@ func TestKeyToRawBytes(t *testing.T) {
 		{"alt+n", []byte{0x1b, 'n'}},
 		{"alt+1", []byte{0x1b, '1'}},
 		{"alt+d", []byte{0x1b, 'd'}},
+		{"alt+f1", []byte("\x1b[1;3P")},
+		{"alt+f5", []byte("\x1b[15;3~")},
+		{"alt+f9", []byte("\x1b[20;3~")},
+		{"ctrl+f1", []byte("\x1b[1;5P")},
+		{"ctrl+f5", []byte("\x1b[15;5~")},
+		{"ctrl+,", []byte("\x1b[44;5u")},
+		{"ctrl+.", []byte("\x1b[46;5u")},
 		{"d", nil},
-		{"ctrl+b", nil},
+		{"ctrl+b", nil},   // ctrl+letter is a prefix key, not always-binding
 		{"alt+", nil},
 		{"alt+ab", nil},
 	}
@@ -47,6 +54,28 @@ func TestPrefixKeyToByte(t *testing.T) {
 		got := prefixKeyToByte(tt.key)
 		if got != tt.want {
 			t.Errorf("prefixKeyToByte(%q) = 0x%02x, want 0x%02x", tt.key, got, tt.want)
+		}
+	}
+}
+
+func TestIsAlwaysKey(t *testing.T) {
+	tests := []struct {
+		key  string
+		want bool
+	}{
+		{"alt+.", true},
+		{"alt+f1", true},
+		{"ctrl+f1", true},
+		{"ctrl+,", true},
+		{"ctrl+.", true},
+		{"d", false},
+		{"ctrl+b", false}, // ctrl+letter is prefix, not always
+		{"?", false},
+	}
+	for _, tt := range tests {
+		got := isAlwaysKey(tt.key)
+		if got != tt.want {
+			t.Errorf("isAlwaysKey(%q) = %v, want %v", tt.key, got, tt.want)
 		}
 	}
 }
@@ -96,29 +125,31 @@ func TestRegistryNative(t *testing.T) {
 		t.Errorf("native: switch-tab 1 args = %q, want %q", b.args, "1")
 	}
 
-	if len(r.always) != 2 {
-		t.Fatalf("native: %d always bindings, want 2", len(r.always))
-	}
-	foundPrev, foundNext := false, false
+	// Check always bindings: alt+./,, alt+f1-f9, ctrl+./,, ctrl+f1-f9
+	alwaysByName := make(map[string]int)
 	for _, ab := range r.always {
-		switch ab.command.Name {
-		case "prev-tab":
-			foundPrev = true
-			if !bytes.Equal(ab.raw, []byte{0x1b, ','}) {
-				t.Errorf("prev-tab raw = %v, want {0x1b, ','}", ab.raw)
-			}
-		case "next-tab":
-			foundNext = true
-			if !bytes.Equal(ab.raw, []byte{0x1b, '.'}) {
-				t.Errorf("next-tab raw = %v, want {0x1b, '.'}", ab.raw)
-			}
+		alwaysByName[ab.command.Name]++
+	}
+	for _, name := range []string{"next-tab", "prev-tab", "next-session", "prev-session"} {
+		if alwaysByName[name] == 0 {
+			t.Errorf("native: always-binding for %q not found", name)
 		}
 	}
-	if !foundPrev {
-		t.Error("native: prev-tab always-binding not found")
+	// alt+. and alt+, should be present
+	foundAltDot, foundAltComma := false, false
+	for _, ab := range r.always {
+		if bytes.Equal(ab.raw, []byte{0x1b, '.'}) {
+			foundAltDot = true
+		}
+		if bytes.Equal(ab.raw, []byte{0x1b, ','}) {
+			foundAltComma = true
+		}
 	}
-	if !foundNext {
-		t.Error("native: next-tab always-binding not found")
+	if !foundAltDot {
+		t.Error("native: alt+. always-binding not found")
+	}
+	if !foundAltComma {
+		t.Error("native: alt+, always-binding not found")
 	}
 }
 
