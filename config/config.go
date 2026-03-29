@@ -26,14 +26,29 @@ type SessionsConfig struct {
 	DefaultPrograms []string `toml:"default-programs"`
 }
 
+// DiscoveryConfig holds mDNS service discovery settings.
+type DiscoveryConfig struct {
+	Enabled *bool  `toml:"enabled"` // pointer: nil means default (true)
+	Name    string `toml:"name"`    // mDNS instance name; default: "termd on <hostname>"
+}
+
+// IsEnabled returns whether discovery is enabled (default: true).
+func (d DiscoveryConfig) IsEnabled() bool {
+	if d.Enabled == nil {
+		return true
+	}
+	return *d.Enabled
+}
+
 // ServerConfig represents termd/server.toml.
 type ServerConfig struct {
-	Listen   []string        `toml:"listen"`
-	Debug    bool            `toml:"debug"`
-	Programs []ProgramConfig `toml:"programs"`
-	SSH      SSHConfig       `toml:"ssh"`
-	Termctl  TermctlConfig   `toml:"termctl"`
-	Sessions SessionsConfig  `toml:"sessions"`
+	Listen    []string        `toml:"listen"`
+	Debug     bool            `toml:"debug"`
+	Programs  []ProgramConfig `toml:"programs"`
+	SSH       SSHConfig       `toml:"ssh"`
+	Termctl   TermctlConfig   `toml:"termctl"`
+	Sessions  SessionsConfig  `toml:"sessions"`
+	Discovery DiscoveryConfig `toml:"discovery"`
 }
 
 // SSHConfig holds SSH-specific server settings.

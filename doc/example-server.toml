@@ -36,6 +36,14 @@
 # If empty, spawns the "default" program.
 # default-programs = ["shell"]
 
+[discovery]
+# mDNS service discovery (default: enabled)
+# Advertises network listeners (TCP, WS, SSH) on the local network.
+# enabled = true
+
+# Custom display name (default: "termd on <hostname>")
+# name = "my dev server"
+
 [ssh]
 # SSH host key file (auto-generated if missing)
 # host-key = "~/.config/termd/host_key"
