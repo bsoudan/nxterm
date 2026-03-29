@@ -1647,3 +1647,161 @@ func TestAllRegionsDestroyedQuits(t *testing.T) {
 		t.Fatalf("frontend did not exit cleanly: %v", err)
 	}
 }
+
+// ── Keybinding tests ────────────────────────────────────────────────
+
+func TestKeybindNativeNextPrevTab(t *testing.T) {
+	socketPath, serverCleanup := startServer(t)
+	defer serverCleanup()
+
+	pio, frontendCleanup := startFrontend(t, socketPath)
+	defer frontendCleanup()
+
+	pio.WaitFor(t, "1:bash", 10*time.Second)
+	pio.WaitFor(t, "termd$", 10*time.Second)
+
+	// Mark tab 1
+	pio.Write([]byte("echo TAB1_NATIVE\r"))
+	pio.WaitFor(t, "TAB1_NATIVE", 10*time.Second)
+
+	// Spawn second tab (ctrl+b c)
+	pio.Write([]byte("\x02c"))
+	pio.WaitFor(t, "2:bash", 10*time.Second)
+	pio.WaitFor(t, "termd$", 10*time.Second)
+
+	// Mark tab 2
+	pio.Write([]byte("echo TAB2_NATIVE\r"))
+	pio.WaitFor(t, "TAB2_NATIVE", 10*time.Second)
+
+	// Alt+, (prev-tab) → should go back to tab 1
+	pio.Write([]byte("\x1b,"))
+	pio.WaitFor(t, "TAB1_NATIVE", 10*time.Second)
+
+	// Alt+. (next-tab) → should go back to tab 2
+	pio.Write([]byte("\x1b."))
+	pio.WaitFor(t, "TAB2_NATIVE", 10*time.Second)
+}
+
+func TestKeybindTmuxStyle(t *testing.T) {
+	socketPath, env, serverCleanup := startServerReturnEnv(t)
+	defer serverCleanup()
+
+	writeTestKeybindConfig(t, env, `style = "tmux"`)
+
+	fe := startFrontendWithEnv(t, socketPath, env)
+	defer fe.Kill()
+
+	fe.WaitFor(t, "1:bash", 10*time.Second)
+	fe.WaitFor(t, "termd$", 10*time.Second)
+
+	// Mark tab 1
+	fe.Write([]byte("echo TAB1_TMUX\r"))
+	fe.WaitFor(t, "TAB1_TMUX", 10*time.Second)
+
+	// Spawn second tab (ctrl+b c — same as tmux)
+	fe.Write([]byte("\x02c"))
+	fe.WaitFor(t, "2:bash", 10*time.Second)
+	fe.WaitFor(t, "termd$", 10*time.Second)
+
+	// Mark tab 2
+	fe.Write([]byte("echo TAB2_TMUX\r"))
+	fe.WaitFor(t, "TAB2_TMUX", 10*time.Second)
+
+	// ctrl+b p (prev-tab in tmux) → should go to tab 1
+	fe.Write([]byte("\x02p"))
+	fe.WaitFor(t, "TAB1_TMUX", 10*time.Second)
+
+	// ctrl+b n (next-tab in tmux) → should go to tab 2
+	fe.Write([]byte("\x02n"))
+	fe.WaitFor(t, "TAB2_TMUX", 10*time.Second)
+}
+
+func TestKeybindScreenPrefix(t *testing.T) {
+	socketPath, env, serverCleanup := startServerReturnEnv(t)
+	defer serverCleanup()
+
+	writeTestKeybindConfig(t, env, `style = "screen"`)
+
+	fe := startFrontendWithEnv(t, socketPath, env)
+	defer fe.Kill()
+
+	fe.WaitFor(t, "1:bash", 10*time.Second)
+	fe.WaitFor(t, "termd$", 10*time.Second)
+
+	// ctrl+a d (detach in screen style; ctrl+a = 0x01)
+	fe.Write([]byte("\x01d"))
+
+	// Frontend should exit with detach
+	if err := fe.Wait(10 * time.Second); err != nil {
+		t.Fatalf("frontend did not exit after screen-style detach: %v", err)
+	}
+}
+
+func TestKeybindCustomOverride(t *testing.T) {
+	socketPath, env, serverCleanup := startServerReturnEnv(t)
+	defer serverCleanup()
+
+	// Rebind ctrl+b x from close-tab to detach
+	writeTestKeybindConfig(t, env, "style = \"native\"\n\n[general]\ndetach = [\"d\", \"x\"]\n")
+
+	fe := startFrontendWithEnv(t, socketPath, env)
+	defer fe.Kill()
+
+	fe.WaitFor(t, "1:bash", 10*time.Second)
+	fe.WaitFor(t, "termd$", 10*time.Second)
+
+	// ctrl+b x should now detach (instead of closing the tab)
+	fe.Write([]byte("\x02x"))
+
+	if err := fe.Wait(10 * time.Second); err != nil {
+		t.Fatalf("frontend did not exit after override detach: %v", err)
+	}
+}
+
+func TestKeybindNextPrevSession(t *testing.T) {
+	socketPath, env, serverCleanup := startServerReturnEnv(t)
+	defer serverCleanup()
+
+	// Use tmux style which has ) and ( for next/prev session
+	writeTestKeybindConfig(t, env, `style = "tmux"`)
+
+	fe := startFrontendWithEnv(t, socketPath, env)
+	defer fe.Kill()
+
+	fe.WaitFor(t, "1:bash", 10*time.Second)
+	fe.WaitFor(t, "termd$", 10*time.Second)
+
+	// Mark session 1
+	fe.Write([]byte("echo SESSION1_MARK\r"))
+	fe.WaitFor(t, "SESSION1_MARK", 10*time.Second)
+
+	// Create a second session: ctrl+b $ (open-session in tmux)
+	fe.Write([]byte{0x02})
+	time.Sleep(50 * time.Millisecond)
+	fe.Write([]byte("$"))
+	fe.WaitFor(t, "Session name:", 5*time.Second)
+	fe.WaitForSilence(200 * time.Millisecond)
+	fe.Write([]byte("dev"))
+	time.Sleep(100 * time.Millisecond)
+	fe.Write([]byte("\r"))
+	// Wait for the new session to connect (status shows "dev@...")
+	fe.WaitFor(t, "dev@", 10*time.Second)
+	fe.WaitFor(t, "termd$", 10*time.Second)
+	fe.WaitForSilence(200 * time.Millisecond)
+
+	// Mark session 2
+	fe.Write([]byte("echo SESSION2_MARK\r"))
+	fe.WaitFor(t, "SESSION2_MARK", 10*time.Second)
+
+	// ctrl+b ( (prev-session in tmux) → should go to session 1
+	fe.Write([]byte{0x02})
+	time.Sleep(50 * time.Millisecond)
+	fe.Write([]byte("("))
+	fe.WaitFor(t, "SESSION1_MARK", 10*time.Second)
+
+	// ctrl+b ) (next-session in tmux) → should go to session 2
+	fe.Write([]byte{0x02})
+	time.Sleep(50 * time.Millisecond)
+	fe.Write([]byte(")"))
+	fe.WaitFor(t, "SESSION2_MARK", 10*time.Second)
+}

@@ -168,36 +168,36 @@ rawMode:
 	parser.Run()
 }
 
-const prefixKey = 0x02 // ctrl+b
-
 // sgrMouseCSIPrefix identifies SGR mouse sequences (ESC [ <).
 var sgrMouseCSIPrefix = []byte{0x1b, '[', '<'}
 
-// Alt key sequences for tab navigation.
-var (
-	altPrevTab = []byte{0x1b, ','} // Alt+, = previous tab
-	altNextTab = []byte{0x1b, '.'} // Alt+. = next tab
-)
-
 // handleRawInput processes raw bytes in normal mode (no focus layer active,
-// ctrl+b already handled by Model). It uses DecodeSequence to iterate
-// complete tokens, routing SGR mouse sequences based on whether the child
-// terminal wants mouse input and forwarding everything else to the server.
+// prefix key already handled by Model). It uses DecodeSequence to iterate
+// complete tokens, routing SGR mouse sequences and always-active keybindings
+// from the registry, forwarding everything else to the server.
 //
 // InputParser guarantees that all sequences in chunk are complete, so
-// we can safely identify mouse sequences by prefix without worrying
-// about partial sequences.
+// we can safely identify sequences by prefix without worrying about
+// partial sequences.
 func (s *SessionLayer) handleRawInput(chunk []byte) (tea.Msg, tea.Cmd) {
 	// Fast path: no special sequences in the chunk at all.
-	if !bytes.Contains(chunk, sgrMouseCSIPrefix) &&
-		!bytes.Contains(chunk, altPrevTab) &&
-		!bytes.Contains(chunk, altNextTab) {
+	hasSpecial := bytes.Contains(chunk, sgrMouseCSIPrefix)
+	if !hasSpecial {
+		for _, ab := range s.registry.always {
+			if bytes.Contains(chunk, ab.raw) {
+				hasSpecial = true
+				break
+			}
+		}
+	}
+	if !hasSpecial {
 		s.sendRawToServer(chunk)
 		return nil, nil
 	}
 
 	// Iterate complete tokens, separating special sequences from regular input.
 	var mice []tea.MouseMsg
+	var cmds []tea.Cmd
 	var rest []byte
 	pos := 0
 	for pos < len(chunk) {
@@ -206,24 +206,29 @@ func (s *SessionLayer) handleRawInput(chunk []byte) (tea.Msg, tea.Cmd) {
 			break
 		}
 		seq := chunk[pos : pos+n]
-		switch {
-		case bytes.HasPrefix(seq, sgrMouseCSIPrefix):
+		if bytes.HasPrefix(seq, sgrMouseCSIPrefix) {
 			if msg := parseSGRMouse(seq); msg != nil {
 				mice = append(mice, msg)
 			}
-		case bytes.Equal(seq, altPrevTab):
-			if len(rest) > 0 {
-				s.sendRawToServer(rest)
-				rest = nil
+			pos += n
+			continue
+		}
+		// Check always-active bindings from the registry.
+		matched := false
+		for _, ab := range s.registry.always {
+			if bytes.Equal(seq, ab.raw) {
+				if len(rest) > 0 {
+					s.sendRawToServer(rest)
+					rest = nil
+				}
+				if cmd := ab.command.CmdFn(ab.args); cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+				matched = true
+				break
 			}
-			s.prevTab()
-		case bytes.Equal(seq, altNextTab):
-			if len(rest) > 0 {
-				s.sendRawToServer(rest)
-				rest = nil
-			}
-			s.nextTab()
-		default:
+		}
+		if !matched {
 			rest = append(rest, seq...)
 		}
 		pos += n
@@ -232,7 +237,6 @@ func (s *SessionLayer) handleRawInput(chunk []byte) (tea.Msg, tea.Cmd) {
 	if len(rest) > 0 {
 		s.sendRawToServer(rest)
 	}
-	var cmds []tea.Cmd
 	t := s.activeTerm()
 	for _, mouse := range mice {
 		if t != nil && t.ChildWantsMouse() {

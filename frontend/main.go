@@ -75,6 +75,12 @@ func runFrontend(_ context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("config: %w", err)
 	}
 
+	kbCfg, err := config.LoadKeybindConfig()
+	if err != nil {
+		return fmt.Errorf("keybind config: %w", err)
+	}
+	registry := ui.NewRegistry(kbCfg.Style, kbCfg.Prefix, kbCfg.Overrides())
+
 	debug := cmd.Bool("debug") || cfg.Debug
 	level := slog.LevelWarn
 	if debug {
@@ -114,7 +120,7 @@ func runFrontend(_ context.Context, cmd *cli.Command) error {
 	sessionName := cmd.String("session")
 
 	server := ui.NewServer(64, "termd-tui")
-	model := ui.NewModel(server, pipeW, logRing, endpoint, version, changelog, sessionName)
+	model := ui.NewModel(server, pipeW, registry, logRing, endpoint, version, changelog, sessionName)
 	p := tea.NewProgram(model,
 		tea.WithInput(pipeR),
 		tea.WithColorProfile(colorprofile.TrueColor),

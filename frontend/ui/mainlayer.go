@@ -19,6 +19,7 @@ type MainLayer struct {
 	server    *Server
 	pipeW     io.Writer
 	requestFn RequestFunc
+	registry  *Registry
 
 	sessions      []*SessionLayer
 	activeSession int
@@ -38,7 +39,7 @@ type MainLayer struct {
 }
 
 func NewMainLayer(
-	server *Server, pipeW io.Writer, requestFn RequestFunc,
+	server *Server, pipeW io.Writer, requestFn RequestFunc, registry *Registry,
 	logRing *termlog.LogRingBuffer,
 	endpoint, version, changelog, hostname, sessionName string,
 ) *MainLayer {
@@ -46,6 +47,7 @@ func NewMainLayer(
 		server:        server,
 		pipeW:         pipeW,
 		requestFn:     requestFn,
+		registry:      registry,
 		logRing:       logRing,
 		localHostname: hostname,
 		endpoint:      endpoint,
@@ -53,7 +55,7 @@ func NewMainLayer(
 		changelog:     changelog,
 		connStatus:    "connected",
 	}
-	session := NewSessionLayer(server, requestFn, logRing, endpoint, version, changelog, hostname, sessionName)
+	session := NewSessionLayer(server, requestFn, registry, logRing, endpoint, version, changelog, hostname, sessionName)
 	m.sessions = []*SessionLayer{session}
 	return m
 }
@@ -129,6 +131,14 @@ func (m *MainLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 		m.switchSession(msg.Index)
 		return nil, nil, true
 
+	case NextSessionMsg:
+		m.nextSession()
+		return nil, nil, true
+
+	case PrevSessionMsg:
+		m.prevSession()
+		return nil, nil, true
+
 	// ── Global messages ─────────────────────────────────────────────────
 
 	case DetachRequestMsg:
@@ -176,7 +186,7 @@ func (m *MainLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 		return nil, nil, true
 
 	case showHintMsg:
-		pushCmd := func() tea.Msg { return PushLayerMsg{Layer: &HintLayer{}} }
+		pushCmd := func() tea.Msg { return PushLayerMsg{Layer: &HintLayer{registry: m.registry}} }
 		hideCmd := tea.Tick(3*time.Second, func(time.Time) tea.Msg { return hideHintMsg{} })
 		return nil, tea.Batch(pushCmd, hideCmd), true
 
@@ -232,7 +242,7 @@ func (m *MainLayer) createSession(name string) tea.Cmd {
 	// Deactivate current session.
 	m.Deactivate()
 
-	session := NewSessionLayer(m.server, m.requestFn, m.logRing, m.endpoint, m.version, m.changelog, m.localHostname, name)
+	session := NewSessionLayer(m.server, m.requestFn, m.registry, m.logRing, m.endpoint, m.version, m.changelog, m.localHostname, name)
 	session.connStatus = m.connStatus
 	session.termWidth = m.termWidth
 	session.termHeight = m.termHeight
@@ -277,6 +287,20 @@ func (m *MainLayer) switchSession(idx int) {
 	m.activeSession = idx
 	// Reconnect to refresh the session's region list and subscribe.
 	m.activeSessionLayer().Reconnect()
+}
+
+func (m *MainLayer) nextSession() {
+	if len(m.sessions) <= 1 {
+		return
+	}
+	m.switchSession((m.activeSession + 1) % len(m.sessions))
+}
+
+func (m *MainLayer) prevSession() {
+	if len(m.sessions) <= 1 {
+		return
+	}
+	m.switchSession((m.activeSession - 1 + len(m.sessions)) % len(m.sessions))
 }
 
 func (m *MainLayer) openSessionPicker() tea.Cmd {

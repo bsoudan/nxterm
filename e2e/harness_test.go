@@ -34,6 +34,11 @@ func testEnv(t *testing.T) []string {
 }
 
 func startServer(t *testing.T) (string, func()) {
+	socketPath, _, cleanup := startServerReturnEnv(t)
+	return socketPath, cleanup
+}
+
+func startServerReturnEnv(t *testing.T) (string, []string, func()) {
 	t.Helper()
 
 	env := testEnv(t)
@@ -59,7 +64,7 @@ func startServer(t *testing.T) (string, func()) {
 		t.Fatalf("server socket never appeared at %s", socketPath)
 	}
 
-	return socketPath, func() {
+	return socketPath, env, func() {
 		cmd.Process.Kill()
 		cmd.Wait()
 	}
@@ -93,6 +98,18 @@ func writeTestServerConfigCustom(t *testing.T, env []string, content string) {
 	cfgDir := filepath.Join(xdg, "termd")
 	os.MkdirAll(cfgDir, 0o755)
 	os.WriteFile(filepath.Join(cfgDir, "server.toml"), []byte(content), 0o644)
+}
+
+// writeTestKeybindConfig creates a keybindings.toml in the XDG config dir.
+func writeTestKeybindConfig(t *testing.T, env []string, content string) {
+	t.Helper()
+	xdg := xdgFromEnv(env)
+	if xdg == "" {
+		return
+	}
+	cfgDir := filepath.Join(xdg, "termd-tui")
+	os.MkdirAll(cfgDir, 0o755)
+	os.WriteFile(filepath.Join(cfgDir, "keybindings.toml"), []byte(content), 0o644)
 }
 
 func xdgFromEnv(env []string) string {
@@ -258,13 +275,17 @@ func startFrontend(t *testing.T, socketPath string) (*ptyIO, func()) {
 }
 
 func startFrontendFull(t *testing.T, socketPath string) *frontend {
+	return startFrontendWithEnv(t, socketPath, testEnv(t))
+}
+
+func startFrontendWithEnv(t *testing.T, socketPath string, env []string) *frontend {
 	t.Helper()
 
 	cmd := exec.Command("termd-tui", "--socket", socketPath)
 	// TERM=dumb prevents bubbletea's package init() from sending an OSC
 	// terminal query that times out after 5 seconds in a raw PTY with no
 	// terminal emulator behind it.
-	cmd.Env = append(testEnv(t), "TERM=dumb")
+	cmd.Env = append(env, "TERM=dumb")
 
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 80})
 	if err != nil {

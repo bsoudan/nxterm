@@ -1,18 +1,18 @@
 package ui
 
 import (
-	"strconv"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 )
 
-// CommandLayer is a temporary layer pushed when ctrl+b is detected.
-// It captures the next KeyPressMsg, dispatches it as a specific message
-// for session to handle, and pops itself. It has no reference to
-// session — all communication is via message passing.
-type CommandLayer struct{}
+// CommandLayer is a temporary layer pushed when the prefix key is detected.
+// It captures the next KeyPressMsg, looks up the chord in the registry,
+// dispatches the command, and pops itself.
+type CommandLayer struct {
+	registry *Registry
+}
 
 func (c *CommandLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 	key, ok := msg.(tea.KeyPressMsg)
@@ -20,48 +20,8 @@ func (c *CommandLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 		return nil, nil, false
 	}
 
-	cmd := c.dispatch(key)
+	cmd := c.registry.Dispatch(key.String())
 	return QuitLayerMsg{}, cmd, true
-}
-
-func (c *CommandLayer) dispatch(msg tea.KeyPressMsg) tea.Cmd {
-	switch msg.String() {
-	case "d":
-		return cmdMsg(DetachRequestMsg{})
-	case "ctrl+b":
-		return cmdMsg(SendLiteralPrefixMsg{})
-	case "l":
-		return cmdMsg(OpenOverlayMsg{Name: "logviewer"})
-	case "?":
-		return cmdMsg(OpenOverlayMsg{Name: "help"})
-	case "s":
-		return cmdMsg(OpenOverlayMsg{Name: "status"})
-	case "n":
-		return cmdMsg(OpenOverlayMsg{Name: "release notes"})
-	case "[":
-		return cmdMsg(EnterScrollbackMsg{})
-	case "r":
-		return cmdMsg(RefreshScreenMsg{})
-	case "c":
-		return cmdMsg(SpawnRegionMsg{})
-	case "x":
-		return cmdMsg(CloseTabMsg{})
-	case "S":
-		return cmdMsg(NewSessionMsg{})
-	case "X":
-		return cmdMsg(KillSessionMsg{})
-	case "w":
-		return cmdMsg(OpenOverlayMsg{Name: "sessions"})
-	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
-		idx, _ := strconv.Atoi(msg.String())
-		return cmdMsg(SwitchTabMsg{Index: idx - 1})
-	default:
-		return nil
-	}
-}
-
-func cmdMsg(msg tea.Msg) tea.Cmd {
-	return func() tea.Msg { return msg }
 }
 
 func (c *CommandLayer) Activate() tea.Cmd                            { return nil }
@@ -69,11 +29,12 @@ func (c *CommandLayer) Deactivate()                                   {}
 func (c *CommandLayer) View(width, height int, active bool) []*lipgloss.Layer { return nil }
 func (c *CommandLayer) Status() (string, lipgloss.Style)              { return "?", lipgloss.Style{} }
 
-
 // HintLayer is a temporary layer pushed after startup to show
 // "ctrl+b ? for help" in the status bar and the termd logo in the
 // upper right corner. It pops itself on hideHintMsg.
-type HintLayer struct{}
+type HintLayer struct {
+	registry *Registry
+}
 
 func (h *HintLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 	if _, ok := msg.(hideHintMsg); ok {
@@ -112,4 +73,10 @@ func (h *HintLayer) View(width, height int, active bool) []*lipgloss.Layer {
 
 var logoStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4"))
 
-func (h *HintLayer) Status() (string, lipgloss.Style) { return "ctrl+b ? for help", lipgloss.Style{} }
+func (h *HintLayer) Status() (string, lipgloss.Style) {
+	prefix := "ctrl+b"
+	if h.registry != nil {
+		prefix = h.registry.PrefixStr
+	}
+	return prefix + " ? for help", lipgloss.Style{}
+}

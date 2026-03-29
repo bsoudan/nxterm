@@ -23,6 +23,7 @@ type tab struct {
 type SessionLayer struct {
 	server    *Server
 	requestFn RequestFunc
+	registry  *Registry
 
 	programs []protocol.ProgramInfo
 
@@ -119,13 +120,14 @@ func (s *SessionLayer) syncTabs(regions []protocol.RegionInfo) {
 
 // NewSessionLayer creates a session layer with the given dependencies.
 func NewSessionLayer(
-	server *Server, requestFn RequestFunc,
+	server *Server, requestFn RequestFunc, registry *Registry,
 	logRing *termlog.LogRingBuffer,
 	endpoint, version, changelog, hostname, sessionName string,
 ) *SessionLayer {
 	return &SessionLayer{
 		server:        server,
 		requestFn:     requestFn,
+		registry:      registry,
 		endpoint:      endpoint,
 		version:       version,
 		changelog:     changelog,
@@ -227,7 +229,7 @@ func (s *SessionLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 		return resp, cmd, true
 
 	case SendLiteralPrefixMsg:
-		s.sendRawToServer([]byte{prefixKey})
+		s.sendRawToServer([]byte{s.registry.PrefixKey})
 		return nil, nil, true
 
 	case OpenOverlayMsg:
@@ -272,6 +274,14 @@ func (s *SessionLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 
 	case SwitchTabMsg:
 		s.switchToTab(msg.Index)
+		return nil, nil, true
+
+	case NextTabMsg:
+		s.nextTab()
+		return nil, nil, true
+
+	case PrevTabMsg:
+		s.prevTab()
 		return nil, nil, true
 
 	case CloseTabMsg:
@@ -435,7 +445,7 @@ func (s *SessionLayer) openOverlay(name string) tea.Cmd {
 	case "logviewer":
 		layer = NewScrollableLayer("logviewer", s.logRing.String(), true, s.logRing, s.termWidth, s.termHeight)
 	case "help":
-		layer = NewHelpLayer(helpItems)
+		layer = NewHelpLayer(s.registry)
 	case "status":
 		sl := NewStatusLayer(s.buildStatusCaps())
 		s.requestFn(protocol.StatusRequest{}, func(payload any) {
@@ -560,7 +570,18 @@ func (s *SessionLayer) Status() (string, lipgloss.Style) {
 		name = s.sessionName + "@" + s.endpoint
 	}
 	if len(name) > 30 {
-		name = name[len(name)-30:]
+		if s.sessionName != "" {
+			// Trim only the endpoint, keeping "session@...path"
+			prefix := s.sessionName + "@..."
+			remain := 30 - len(prefix)
+			if remain > 0 {
+				name = prefix + s.endpoint[len(s.endpoint)-remain:]
+			} else {
+				name = name[len(name)-30:]
+			}
+		} else {
+			name = "..." + name[len(name)-27:]
+		}
 	}
 	return name, statusFaint
 }

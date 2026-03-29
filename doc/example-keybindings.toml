@@ -1,0 +1,64 @@
+# termd-tui keybindings configuration
+# Place this file at ~/.config/termd-tui/keybindings.toml
+#
+# style sets the base keybinding preset. All bindings below override the preset.
+# Options: "native" (default), "tmux", "screen", "zellij"
+style = "native"
+
+# prefix overrides the chord prefix key (default depends on style).
+# native/tmux: "ctrl+b", screen: "ctrl+a"
+# prefix = "ctrl+a"
+
+# Bindings are organized by category: [tab], [session], [general].
+# Each entry maps a command to a key or list of keys.
+#
+# Key formats:
+#   "d"       - chord binding (press after prefix key)
+#   "alt+."   - always-active binding (no prefix needed)
+#
+# Multiple bindings:
+#   next-tab = ["alt+.", "n"]   # both alt+. and prefix+n trigger next-tab
+#
+# Unbind a command:
+#   close-tab = ""              # removes all bindings for close-tab
+#
+# Commands with arguments:
+#   "switch-tab 1" = "1"       # prefix+1 switches to tab 1
+
+# ── Tab management ───────────────────────────────────────────────────
+
+[tab]
+# open-tab = "c"
+# close-tab = "x"
+# next-tab = ["alt+.", "n"]
+# prev-tab = ["alt+,", "p"]
+# "switch-tab 1" = "1"
+# "switch-tab 2" = "2"
+# "switch-tab 3" = "3"
+# "switch-tab 4" = "4"
+# "switch-tab 5" = "5"
+# "switch-tab 6" = "6"
+# "switch-tab 7" = "7"
+# "switch-tab 8" = "8"
+# "switch-tab 9" = "9"
+
+# ── Session management ───────────────────────────────────────────────
+
+[session]
+# open-session = "S"
+# close-session = "X"
+# next-session = ")"
+# prev-session = "("
+# switch-session = "w"
+
+# ── General ──────────────────────────────────────────────────────────
+
+[general]
+# detach = "d"
+# send-prefix = "ctrl+b"
+# show-help = "?"
+# show-log = "l"
+# show-status = "s"
+# show-release-notes = "n"
+# enter-scrollback = "["
+# refresh-screen = "r"

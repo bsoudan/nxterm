@@ -18,12 +18,13 @@ import (
 // matching, raw input routing, and overlay compositing happen here.
 type Model struct {
 	layers   []Layer
+	registry *Registry
 	req      *requestState
 	Detached bool
 	initDone chan struct{}
 }
 
-func NewModel(s *Server, pipeW io.Writer, ring *termlog.LogRingBuffer, endpoint, version, changelog, sessionName string) Model {
+func NewModel(s *Server, pipeW io.Writer, registry *Registry, ring *termlog.LogRingBuffer, endpoint, version, changelog, sessionName string) Model {
 	hostname, _ := os.Hostname()
 	req := &requestState{pending: make(map[uint64]ReplyFunc)}
 	requestFn := func(msg any, reply ReplyFunc) {
@@ -31,9 +32,10 @@ func NewModel(s *Server, pipeW io.Writer, ring *termlog.LogRingBuffer, endpoint,
 		req.pending[req.nextReqID] = reply
 		s.Send(protocol.TaggedWithReqID(msg, req.nextReqID))
 	}
-	main := NewMainLayer(s, pipeW, requestFn, ring, endpoint, version, changelog, hostname, sessionName)
+	main := NewMainLayer(s, pipeW, requestFn, registry, ring, endpoint, version, changelog, hostname, sessionName)
 	return Model{
 		layers:   []Layer{main},
+		registry: registry,
 		req:      req,
 		initDone: make(chan struct{}),
 	}
@@ -69,18 +71,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// RawInputMsg: Model handles focus mode routing and ctrl+b detection.
+	// RawInputMsg: Model handles focus mode routing and prefix key detection.
 	// This must happen before the normal layer iteration because:
 	//  - Focus mode needs to feed one sequence at a time through pipeW
 	//    so overlay/command layers can pop between keystrokes.
-	//  - ctrl+b detection pushes CommandLayer before delivering the
+	//  - Prefix key detection pushes CommandLayer before delivering the
 	//    remaining bytes, ensuring proper sequencing.
 	if raw, ok := msg.(RawInputMsg); ok {
 		main := m.layers[0].(*MainLayer)
 		if m.hasFocusLayer(main) {
 			return m.handleFocusInput(raw, main.pipeW)
 		}
-		if idx := bytes.IndexByte([]byte(raw), prefixKey); idx >= 0 {
+		if idx := bytes.IndexByte([]byte(raw), m.registry.PrefixKey); idx >= 0 {
 			return m.handlePrefixDetected(raw, idx, main)
 		}
 		// Normal mode — fall through to layer iteration.
@@ -156,7 +158,7 @@ func (m Model) handlePrefixDetected(raw RawInputMsg, idx int, main *MainLayer) (
 		main.sendRawToServer(raw[:idx])
 	}
 
-	pushCmd := func() tea.Msg { return PushLayerMsg{Layer: &CommandLayer{}} }
+	pushCmd := func() tea.Msg { return PushLayerMsg{Layer: &CommandLayer{registry: m.registry}} }
 	rest := raw[idx+1:]
 	if len(rest) > 0 {
 		restCopy := make([]byte, len(rest))

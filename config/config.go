@@ -98,6 +98,63 @@ func LoadFrontendConfig(explicit string) (FrontendConfig, error) {
 	return cfg, nil
 }
 
+// KeybindConfig represents termd-tui/keybindings.toml.
+// Bindings are organized by category: [tab], [session], [general].
+// Values are either a single key string or an array of key strings.
+// An empty string unbinds the command.
+type KeybindConfig struct {
+	Style   string         `toml:"style"`
+	Prefix  string         `toml:"prefix"`
+	Tab     map[string]any `toml:"tab"`
+	Session map[string]any `toml:"session"`
+	General map[string]any `toml:"general"`
+}
+
+// Overrides flattens all category bindings into a single map
+// of command-invocation -> key-specs.
+func (c KeybindConfig) Overrides() map[string][]string {
+	result := make(map[string][]string)
+	for _, m := range []map[string]any{c.Tab, c.Session, c.General} {
+		for cmd, v := range m {
+			result[cmd] = keysFromValue(v)
+		}
+	}
+	return result
+}
+
+// keysFromValue extracts key specs from a TOML value that is
+// either a string or an array of strings.
+func keysFromValue(v any) []string {
+	switch v := v.(type) {
+	case string:
+		if v == "" {
+			return nil // explicit unbind
+		}
+		return []string{v}
+	case []any:
+		var keys []string
+		for _, item := range v {
+			if s, ok := item.(string); ok && s != "" {
+				keys = append(keys, s)
+			}
+		}
+		return keys
+	}
+	return nil
+}
+
+// LoadKeybindConfig reads the keybinding configuration file.
+// Returns zero config if no file found (caller defaults to "native" style).
+func LoadKeybindConfig() (KeybindConfig, error) {
+	var cfg KeybindConfig
+	path := findConfig("termd-tui", "keybindings.toml")
+	if path == "" {
+		return cfg, nil
+	}
+	_, err := toml.DecodeFile(path, &cfg)
+	return cfg, err
+}
+
 // findConfig returns the path to a config file if it exists, checking
 // XDG_CONFIG_HOME first, then ~/.config.
 func findConfig(appDir, filename string) string {
