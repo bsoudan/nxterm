@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"unicode/utf8"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/creack/pty"
 	te "github.com/rcarmo/go-te/pkg/te"
 	"termd/frontend/protocol"
@@ -98,14 +99,24 @@ func NewRegion(cmdStr string, args []string, env map[string]string, width, heigh
 	return r, nil
 }
 
+// maxCarry is the maximum number of bytes carried across reads. This must be
+// large enough to hold any incomplete ANSI escape sequence or UTF-8 character
+// that could span a read boundary.
+const maxCarry = 256
+
 func (r *Region) readLoop() {
 	defer close(r.readerDone)
 	buf := make([]byte, 4096)
+	var carry [maxCarry]byte
+	var carryN int
 	for {
 		n, err := r.ptmx.Read(buf)
 		if n > 0 {
+			data, cn := sequenceSafe(carry[:carryN], buf[:n], carry[:])
+			carryN = cn
+
 			r.mu.Lock()
-			r.stream.FeedBytes(buf[:n])
+			r.stream.FeedBytes(data)
 			r.mu.Unlock()
 
 			// Non-blocking send to coalesce multiple reads into one notification
@@ -118,6 +129,54 @@ func (r *Region) readLoop() {
 			break
 		}
 	}
+}
+
+// sequenceSafe prepends any carried-over bytes from a previous read to chunk,
+// then returns the longest prefix that ends on a complete sequence boundary.
+// It uses charmbracelet's DecodeSequence to detect incomplete ANSI escape
+// sequences, and additionally checks for incomplete UTF-8 at the tail (which
+// DecodeSequence does not catch). Remaining bytes are copied into carry.
+func sequenceSafe(carry, chunk, carryBuf []byte) (safe []byte, carryN int) {
+	var buf []byte
+	if len(carry) > 0 {
+		buf = make([]byte, len(carry)+len(chunk))
+		copy(buf, carry)
+		copy(buf[len(carry):], chunk)
+	} else {
+		buf = chunk
+	}
+
+	if len(buf) == 0 {
+		return nil, 0
+	}
+
+	// Walk through complete sequences using DecodeSequence.
+	safeEnd := 0
+	for safeEnd < len(buf) {
+		_, _, n, newState := ansi.DecodeSequence(buf[safeEnd:], ansi.NormalState, nil)
+		if n == 0 {
+			break
+		}
+		if newState != ansi.NormalState {
+			// Mid-escape-sequence — carry the rest.
+			break
+		}
+		safeEnd += n
+	}
+
+	// DecodeSequence treats incomplete UTF-8 leader bytes (e.g. 0xC3 alone)
+	// as valid single-byte sequences. Check whether the last consumed byte
+	// starts an incomplete UTF-8 character and pull it back into carry.
+	for safeEnd > 0 && !utf8.Valid(buf[:safeEnd]) {
+		safeEnd--
+	}
+
+	remaining := buf[safeEnd:]
+	if len(remaining) > len(carryBuf) {
+		// Carry buffer overflow — feed everything to avoid unbounded growth.
+		return buf, 0
+	}
+	return buf[:safeEnd], copy(carryBuf, remaining)
 }
 
 func (r *Region) waitLoop() {
