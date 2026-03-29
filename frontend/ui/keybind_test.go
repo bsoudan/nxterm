@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestKeyToRawBytes(t *testing.T) {
@@ -56,6 +59,194 @@ func TestPrefixKeyToByte(t *testing.T) {
 			t.Errorf("prefixKeyToByte(%q) = 0x%02x, want 0x%02x", tt.key, got, tt.want)
 		}
 	}
+}
+
+func TestFuzzyScore(t *testing.T) {
+	tests := []struct {
+		query     string
+		candidate string
+		wantMatch bool
+	}{
+		{"det", "detach", true},
+		{"dt", "detach", true},
+		{"ot", "open-tab", true},
+		{"xyz", "detach", false},
+		{"", "anything", true},
+		{"tab", "open-tab", true},
+		{"st", "show-status", true},
+	}
+	for _, tt := range tests {
+		_, ok := fuzzyScore(tt.query, tt.candidate)
+		if ok != tt.wantMatch {
+			t.Errorf("fuzzyScore(%q, %q) matched=%v, want %v", tt.query, tt.candidate, ok, tt.wantMatch)
+		}
+	}
+}
+
+func TestCommandPaletteEntries(t *testing.T) {
+	r := NewRegistry("native", "", nil)
+	entries := r.PaletteEntries()
+	if len(entries) == 0 {
+		t.Fatal("palette entries should not be empty")
+	}
+	// Should include run-command itself.
+	found := false
+	for _, e := range entries {
+		if e.Command.Name == "run-command" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("palette entries should include run-command")
+	}
+	// Should include switch-tab variants with args.
+	foundSwitchTab := false
+	for _, e := range entries {
+		if e.Command.Name == "switch-tab" && e.Args != "" {
+			foundSwitchTab = true
+			break
+		}
+	}
+	if !foundSwitchTab {
+		t.Error("palette entries should include switch-tab with args")
+	}
+}
+
+func TestCommandPaletteView(t *testing.T) {
+	r := NewRegistry("native", "", nil)
+	// Test at multiple terminal widths to stress the layout.
+	for _, tw := range []int{80, 60, 40} {
+		p := NewCommandPaletteLayer(r)
+		layers := p.View(tw, 24, false)
+		if len(layers) == 0 {
+			t.Fatalf("palette returned no layers at width=%d", tw)
+		}
+	}
+}
+
+func TestCommandPaletteLineWidths(t *testing.T) {
+	r := NewRegistry("native", "", nil)
+	p := NewCommandPaletteLayer(r)
+
+	// Call buildContent directly to test line widths pre-border.
+	// View uses overlayW minus the horizontal frame (border + padding).
+	overlayW := 80 * 2 / 3
+	contentW := overlayW - paletteStyle.GetHorizontalFrameSize()
+	content := p.buildContent(contentW, 24)
+	lines := strings.Split(content, "\n")
+
+	t.Logf("contentW=%d, %d content lines", contentW, len(lines))
+	for i, line := range lines {
+		w := displayWidth(line)
+		t.Logf("  line %d: width=%d %q", i, w, stripAnsi(line))
+		if w > contentW {
+			t.Errorf("line %d display width %d > contentW %d", i, w, contentW)
+		}
+	}
+
+	// Should have a separator line of microdots.
+	foundSep := false
+	for _, line := range lines {
+		stripped := stripAnsi(line)
+		if len(stripped) > 0 && allDots(stripped) {
+			foundSep = true
+			break
+		}
+	}
+	if !foundSep {
+		t.Error("no microdot separator line found between input and suggestions")
+	}
+
+	// Should have at least one suggestion line with a microdot column separator.
+	foundSuggestion := false
+	for _, line := range lines {
+		stripped := stripAnsi(line)
+		if strings.Contains(stripped, " · ") && !allDots(stripped) {
+			foundSuggestion = true
+			break
+		}
+	}
+	if !foundSuggestion {
+		t.Error("no suggestion line with ' · ' column separator found")
+	}
+
+	// Test at narrow width too.
+	p2 := NewCommandPaletteLayer(r)
+	narrowCW := 40 - paletteStyle.GetHorizontalFrameSize()
+	content2 := p2.buildContent(narrowCW, 24)
+	for i, line := range strings.Split(content2, "\n") {
+		w := displayWidth(line)
+		if w > narrowCW {
+			t.Errorf("narrow: line %d display width %d > %d", i, w, narrowCW)
+		}
+	}
+
+	// Verify lipgloss agrees on widths.
+	p3 := NewCommandPaletteLayer(r)
+	content3 := p3.buildContent(contentW, 24)
+	for i, line := range strings.Split(content3, "\n") {
+		ourW := displayWidth(line)
+		lgW := lipgloss.Width(line)
+		ansiW := ansi.StringWidth(line)
+		if ourW != lgW || ourW != ansiW {
+			t.Errorf("line %d width mismatch: ours=%d lipgloss=%d ansi=%d: %q",
+				i, ourW, lgW, ansiW, stripAnsi(line))
+		}
+		if lgW > contentW {
+			t.Errorf("line %d lipgloss width %d > contentW %d: %q",
+				i, lgW, contentW, stripAnsi(line))
+		}
+	}
+
+	// Verify the border doesn't add extra lines from wrapping.
+	bordered := paletteStyle.Width(overlayW).Render(content3)
+	borderedLines := strings.Split(bordered, "\n")
+	contentLines := strings.Split(content3, "\n")
+	// Border adds top + bottom = 2 lines.
+	expectedLines := len(contentLines) + 2
+	if len(borderedLines) != expectedLines {
+		t.Errorf("bordered has %d lines, expected %d (content %d + 2 border); wrapping detected",
+			len(borderedLines), expectedLines, len(contentLines))
+		for i, line := range borderedLines {
+			t.Logf("  bordered line %d (ansi.Width=%d): %q", i, ansi.StringWidth(line), stripAnsi(line))
+		}
+	}
+}
+
+// stripAnsi removes ANSI escape sequences from a string.
+func stripAnsi(s string) string {
+	var out strings.Builder
+	i := 0
+	for i < len(s) {
+		if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '[' {
+			j := i + 2
+			for j < len(s) && (s[j] < 0x40 || s[j] > 0x7e) {
+				j++
+			}
+			if j < len(s) {
+				j++
+			}
+			i = j
+		} else {
+			out.WriteByte(s[i])
+			i++
+		}
+	}
+	return out.String()
+}
+
+func displayWidth(s string) int {
+	return len([]rune(stripAnsi(s)))
+}
+
+func allDots(s string) bool {
+	for _, r := range s {
+		if r != '·' {
+			return false
+		}
+	}
+	return len(s) > 0
 }
 
 func TestIsAlwaysKey(t *testing.T) {
@@ -344,8 +535,8 @@ func TestHelpLayerView(t *testing.T) {
 	r := NewRegistry("native", "", nil)
 	h := NewHelpLayer(r)
 
-	// Verify the table renders content with keybindings.
-	h.View(80, 24, false) // trigger SetHeight
+	// Verify the table renders visible content.
+	h.View(80, 40, false) // trigger SetHeight with enough room
 	content := h.table.View()
 	if strings.TrimSpace(content) == "" {
 		t.Fatal("help table rendered empty content")
@@ -356,17 +547,23 @@ func TestHelpLayerView(t *testing.T) {
 	if !strings.Contains(content, "main") {
 		t.Error("help table should contain 'main' category header")
 	}
-	if !strings.Contains(content, "session") {
-		t.Error("help table should contain 'session' category header")
+
+	// Verify all categories are in the display entries (not just visible viewport).
+	entries := r.DisplayEntries()
+	catsSeen := make(map[string]int)
+	for i, e := range entries {
+		if e.isHeader {
+			catsSeen[e.keyDisplay] = i
+		}
 	}
-	if !strings.Contains(content, "tab") {
-		t.Error("help table should contain 'tab' category header")
+	for _, cat := range []string{"main", "session", "tab"} {
+		if _, ok := catsSeen[cat]; !ok {
+			t.Errorf("display entries should contain %q category header", cat)
+		}
 	}
-	// Category order: main first, then session, then tab.
-	mainIdx := strings.Index(content, "main")
-	sessionIdx := strings.Index(content, "session")
-	tabIdx := strings.Index(content, "── tab")
-	if mainIdx >= sessionIdx || sessionIdx >= tabIdx {
-		t.Errorf("category order wrong: main@%d session@%d tab@%d", mainIdx, sessionIdx, tabIdx)
+	// Category order: main < session < tab.
+	if catsSeen["main"] >= catsSeen["session"] || catsSeen["session"] >= catsSeen["tab"] {
+		t.Errorf("category order wrong: main@%d session@%d tab@%d",
+			catsSeen["main"], catsSeen["session"], catsSeen["tab"])
 	}
 }

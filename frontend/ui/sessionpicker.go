@@ -93,7 +93,7 @@ func (p *SessionPickerLayer) View(width, height int, active bool) []*lipgloss.La
 
 	help := statusFaint.Render("• ↑↓/enter: select • q/esc: close •")
 	dialogLines := strings.Split(dialog, "\n")
-	helpPad := (overlayW + 2 - lipgloss.Width(help)) / 2
+	helpPad := (overlayW + overlayBorder.GetHorizontalBorderSize() - lipgloss.Width(help)) / 2
 	if helpPad < 0 {
 		helpPad = 0
 	}

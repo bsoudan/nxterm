@@ -444,6 +444,9 @@ func (s *SessionLayer) handleCmd(msg SessionCmd) (tea.Msg, tea.Cmd, bool) {
 		return nil, s.openOverlay("status"), true
 	case "show-release-notes":
 		return nil, s.openOverlay("release notes"), true
+	case "run-command":
+		palette := NewCommandPaletteLayer(s.registry)
+		return nil, func() tea.Msg { return PushLayerMsg{Layer: palette} }, true
 	default:
 		return nil, nil, true
 	}

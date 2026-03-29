@@ -91,6 +91,86 @@ func (r *Registry) DisplayEntries() []displayEntry {
 	return r.displayOrder
 }
 
+// PaletteEntry is one row in the command palette.
+type PaletteEntry struct {
+	Command    *Command
+	Args       string
+	KeyDisplay string // primary keybinding display, "" if unbound
+}
+
+// PaletteEntries returns one entry per command invocation with its
+// first (primary) keybinding. Ordered by display order, deduplicated.
+func (r *Registry) PaletteEntries() []PaletteEntry {
+	seen := make(map[string]bool)
+	var entries []PaletteEntry
+	// Walk display order for stable ordering; take first binding per invocation.
+	for _, de := range r.displayOrder {
+		if de.isHeader {
+			continue
+		}
+		// Reconstruct the invocation from the display entry.
+		// Display entries don't carry command/args directly, so
+		// match via the binding data in chords and always.
+		// Skip duplicates (same command with different bindings).
+	}
+
+	// Use chords and always in preset order instead (bindings list is stable).
+	seen = make(map[string]bool)
+	entries = nil
+	// Walk all bindings (chords first, then always) to get first key per invocation.
+	firstKey := make(map[string]string)
+	for key, b := range r.chords {
+		inv := commandInvocation(b.command.Name, b.args)
+		if _, ok := firstKey[inv]; !ok {
+			firstKey[inv] = r.PrefixStr + ", " + key
+		}
+	}
+	for _, ab := range r.always {
+		inv := commandInvocation(ab.command.Name, ab.args)
+		if _, ok := firstKey[inv]; !ok {
+			firstKey[inv] = ab.key
+		}
+	}
+	// Build entries from all commands, including arg variants from bindings.
+	for _, cmd := range r.commands {
+		inv := cmd.Name
+		if firstKey[inv] != "" || !hasArgVariants(firstKey, cmd.Name) {
+			entries = append(entries, PaletteEntry{
+				Command:    cmd,
+				KeyDisplay: firstKey[inv],
+			})
+			seen[inv] = true
+		}
+	}
+	// Add arg variants (switch-tab 1, switch-tab 2, etc.).
+	for inv, key := range firstKey {
+		if seen[inv] {
+			continue
+		}
+		name, args := parseCommandInvocation(inv)
+		cmd := r.byName[name]
+		if cmd == nil {
+			continue
+		}
+		entries = append(entries, PaletteEntry{
+			Command:    cmd,
+			Args:       args,
+			KeyDisplay: key,
+		})
+	}
+	return entries
+}
+
+func hasArgVariants(keys map[string]string, name string) bool {
+	prefix := name + " "
+	for inv := range keys {
+		if strings.HasPrefix(inv, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // --- Command definitions ---
 
 // categories defines the display order of categories in the help overlay
@@ -100,6 +180,7 @@ var categories = []string{"main", "session", "tab"}
 func allCommands() []*Command {
 	return []*Command{
 		// Main — user category "main", mixed handlers
+		{Name: "run-command", Category: "main", Layer: "session", Description: "command palette"},
 		{Name: "detach", Category: "main", Layer: "main", Description: "detach"},
 		{Name: "send-prefix", Category: "main", Layer: "session", Description: "send literal prefix key"},
 		{Name: "show-help", Category: "main", Layer: "session", Description: "show keybindings"},
@@ -177,6 +258,7 @@ func nativePreset() stylePreset {
 			{"ctrl+f8", "switch-session", "8"},
 			{"ctrl+f9", "switch-session", "9"},
 			{"d", "detach", ""},
+			{":", "run-command", ""},
 			{"ctrl+b", "send-prefix", ""},
 			{"l", "show-log", ""},
 			{"?", "show-help", ""},
@@ -495,7 +577,7 @@ func NewRegistry(style, prefix string, overrides map[string][]string) *Registry 
 			}
 			keyDisp := cb.b.key
 			if !isAlwaysKey(cb.b.key) {
-				keyDisp = prefixStr + " " + cb.b.key
+				keyDisp = prefixStr + ", " + cb.b.key
 			}
 			de := displayEntry{
 				keyDisplay:  keyDisp,

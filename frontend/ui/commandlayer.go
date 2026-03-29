@@ -78,5 +78,5 @@ func (h *HintLayer) Status() (string, lipgloss.Style) {
 	if h.registry != nil {
 		prefix = h.registry.PrefixStr
 	}
-	return prefix + " ? for help", lipgloss.Style{}
+	return prefix + ", ? for help", lipgloss.Style{}
 }

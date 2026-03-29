@@ -1698,6 +1698,63 @@ func TestHelpOverlay(t *testing.T) {
 	pio.WaitFor(t, "termd$", 5*time.Second)
 }
 
+func TestCommandPalette(t *testing.T) {
+	socketPath, serverCleanup := startServer(t)
+	defer serverCleanup()
+
+	pio, frontendCleanup := startFrontend(t, socketPath)
+	defer frontendCleanup()
+
+	pio.WaitFor(t, "bash", 10*time.Second)
+	pio.WaitFor(t, "termd$", 10*time.Second)
+	pio.WaitForSilence(200 * time.Millisecond)
+
+	// Open command palette: ctrl+b :
+	pio.Write([]byte{0x02})
+	time.Sleep(50 * time.Millisecond)
+	pio.Write([]byte(":"))
+
+	// Should show the palette with commands listed.
+	pio.WaitFor(t, "detach", 5*time.Second)
+
+	// Type to filter.
+	pio.Write([]byte("det"))
+	pio.WaitFor(t, "detach", 5*time.Second)
+
+	// Pressing enter on "detach" should detach.
+	pio.Write([]byte("\r"))
+}
+
+func TestCommandPaletteEsc(t *testing.T) {
+	socketPath, serverCleanup := startServer(t)
+	defer serverCleanup()
+
+	pio, frontendCleanup := startFrontend(t, socketPath)
+	defer frontendCleanup()
+
+	pio.WaitFor(t, "bash", 10*time.Second)
+	pio.WaitFor(t, "termd$", 10*time.Second)
+	pio.WaitForSilence(200 * time.Millisecond)
+
+	// Open command palette.
+	pio.Write([]byte{0x02})
+	time.Sleep(50 * time.Millisecond)
+	pio.Write([]byte(":"))
+	pio.WaitFor(t, "detach", 5*time.Second)
+	pio.WaitForSilence(200 * time.Millisecond)
+
+	// Ctrl+G should close the palette (unambiguous single byte,
+	// unlike ESC which requires timeout-based disambiguation).
+	pio.Write([]byte{0x07})
+
+	// Should return to normal prompt.
+	pio.WaitFor(t, "termd$", 5*time.Second)
+
+	// Verify palette is gone — type something and it should go to the shell.
+	pio.Write([]byte("echo PALETTE_CLOSED\r"))
+	pio.WaitFor(t, "PALETTE_CLOSED", 5*time.Second)
+}
+
 // ── Keybinding tests ────────────────────────────────────────────────
 
 func TestKeybindNativeNextPrevTab(t *testing.T) {

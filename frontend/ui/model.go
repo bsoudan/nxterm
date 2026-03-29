@@ -114,7 +114,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) hasFocusLayer(main *MainLayer) bool {
 	for i := 1; i < len(m.layers); i++ {
 		switch m.layers[i].(type) {
-		case *CommandLayer, *ScrollableLayer, *StatusLayer, *HelpLayer, *ProgramPickerLayer, *SessionPickerLayer, *SessionNameLayer:
+		case *CommandLayer, *ScrollableLayer, *StatusLayer, *HelpLayer, *ProgramPickerLayer, *SessionPickerLayer, *SessionNameLayer, *CommandPaletteLayer:
 			return true
 		}
 	}
@@ -197,7 +197,7 @@ func (m Model) View() tea.View {
 			}
 		}
 		switch m.layers[i].(type) {
-		case *ScrollableLayer, *StatusLayer, *HelpLayer, *ProgramPickerLayer, *SessionPickerLayer, *SessionNameLayer:
+		case *ScrollableLayer, *StatusLayer, *HelpLayer, *ProgramPickerLayer, *SessionPickerLayer, *SessionNameLayer, *CommandPaletteLayer:
 			hasOverlay = true
 		}
 	}

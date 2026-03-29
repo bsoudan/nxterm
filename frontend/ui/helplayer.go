@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"strings"
+
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
@@ -42,10 +44,19 @@ func NewHelpLayer(registry *Registry) *HelpLayer {
 		{Title: "", Width: maxDesc},
 	}
 
+	// Total row width across both columns including cell padding.
+	totalW := maxKey + maxDesc + 2
+
 	rows := make([]table.Row, len(entries))
 	for i, e := range entries {
 		if e.isHeader {
-			rows[i] = table.Row{"── " + e.keyDisplay + " ──", ""}
+			label := "── " + e.keyDisplay + " ──"
+			// Right-justify in the second column.
+			pad := maxDesc - len([]rune(label))
+			if pad > 0 {
+				label = strings.Repeat(" ", pad) + label
+			}
+			rows[i] = table.Row{"", label}
 		} else {
 			rows[i] = table.Row{e.keyDisplay, e.description}
 		}
@@ -60,9 +71,6 @@ func NewHelpLayer(registry *Registry) *HelpLayer {
 		LineUp:   key.NewBinding(key.WithKeys("up", "k")),
 		LineDown: key.NewBinding(key.WithKeys("down", "j")),
 	}
-
-	// Total width: column widths + cell padding (1 right pad per cell).
-	totalW := maxKey + maxDesc + 2
 
 	t := table.New(
 		table.WithColumns(cols),
@@ -128,7 +136,9 @@ func (h *HelpLayer) View(width, height int, active bool) []*lipgloss.Layer {
 
 	content := h.table.View()
 
-	overlayW := h.table.Width()
+	// overlayBorder.Width sets total rendered width; content area is
+	// total minus the horizontal frame (border + padding).
+	overlayW := h.table.Width() + overlayBorder.GetHorizontalFrameSize()
 	if overlayW < 38 {
 		overlayW = 38
 	}
@@ -143,7 +153,7 @@ func (h *HelpLayer) View(width, height int, active bool) []*lipgloss.Layer {
 	dialogLines := lipgloss.JoinVertical(lipgloss.Left, dialog, help)
 
 	dialogH := lipgloss.Height(dialogLines)
-	x := (width - overlayW - 2) / 2
+	x := (width - overlayW) / 2
 	y := (height - dialogH) / 2
 	if x < 0 {
 		x = 0
