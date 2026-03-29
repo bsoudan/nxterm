@@ -1,7 +1,7 @@
 package main
 
 // Session groups regions under a named session.
-// All fields are protected by Server.mu.
+// All fields are owned by the server event loop.
 type Session struct {
 	name    string
 	regions map[string]*Region // region ID → *Region

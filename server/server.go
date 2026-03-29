@@ -76,6 +76,18 @@ func NewServer(listeners []net.Listener, version string, cfg config.ServerConfig
 	return s
 }
 
+// send sends a request to the event loop, returning false if the server
+// is shutting down. Callers that need a response should check the return
+// value before reading from their response channel.
+func (s *Server) send(req any) bool {
+	select {
+	case s.requests <- req:
+		return true
+	case <-s.done:
+		return false
+	}
+}
+
 func (s *Server) Run() {
 	var wg sync.WaitGroup
 	for _, ln := range s.listeners {
@@ -125,7 +137,12 @@ func (s *Server) acceptClient(conn net.Conn) {
 	id := s.nextClientID.Add(1) - 1
 	client := NewClient(conn, s, id)
 
-	s.requests <- addClientReq{client: client}
+	resp := make(chan struct{}, 1)
+	if !s.send(addClientReq{client: client, resp: resp}) {
+		client.Close()
+		return
+	}
+	<-resp
 
 	slog.Debug("client connected", "id", id)
 	client.sendIdentify()
@@ -139,7 +156,10 @@ func (s *Server) SpawnRegion(sessionName, cmd string, args []string, env map[str
 	}
 
 	resp := make(chan struct{}, 1)
-	s.requests <- spawnRegionReq{region: region, sessionName: sessionName, resp: resp}
+	if !s.send(spawnRegionReq{region: region, sessionName: sessionName, resp: resp}) {
+		region.Close()
+		return nil, fmt.Errorf("server shutting down")
+	}
 	<-resp
 
 	slog.Info("spawned region", "region_id", region.id, "cmd", cmd, "session", sessionName)
@@ -159,7 +179,9 @@ func (s *Server) watchRegion(region *Region) {
 
 func (s *Server) destroyRegion(regionID string) {
 	resp := make(chan destroyResult, 1)
-	s.requests <- destroyRegionReq{regionID: regionID, resp: resp}
+	if !s.send(destroyRegionReq{regionID: regionID, resp: resp}) {
+		return
+	}
 	result := <-resp
 
 	if !result.found {
@@ -179,13 +201,17 @@ func (s *Server) destroyRegion(regionID string) {
 
 func (s *Server) FindRegion(regionID string) *Region {
 	resp := make(chan *Region, 1)
-	s.requests <- findRegionReq{regionID: regionID, resp: resp}
+	if !s.send(findRegionReq{regionID: regionID, resp: resp}) {
+		return nil
+	}
 	return <-resp
 }
 
 func (s *Server) Broadcast(msg any) {
 	resp := make(chan []*Client, 1)
-	s.requests <- getClientsReq{resp: resp}
+	if !s.send(getClientsReq{resp: resp}) {
+		return
+	}
 	for _, c := range <-resp {
 		c.SendMessage(msg)
 	}
@@ -193,7 +219,9 @@ func (s *Server) Broadcast(msg any) {
 
 func (s *Server) KillRegion(regionID string) bool {
 	resp := make(chan *Region, 1)
-	s.requests <- killRegionReq{regionID: regionID, resp: resp}
+	if !s.send(killRegionReq{regionID: regionID, resp: resp}) {
+		return false
+	}
 	region := <-resp
 	if region == nil {
 		return false
@@ -204,7 +232,9 @@ func (s *Server) KillRegion(regionID string) bool {
 
 func (s *Server) KillClient(clientID uint32) bool {
 	resp := make(chan *Client, 1)
-	s.requests <- killClientReq{clientID: clientID, resp: resp}
+	if !s.send(killClientReq{clientID: clientID, resp: resp}) {
+		return false
+	}
 	client := <-resp
 	if client == nil {
 		return false
@@ -214,7 +244,7 @@ func (s *Server) KillClient(clientID uint32) bool {
 }
 
 func (s *Server) removeClient(id uint32) {
-	s.requests <- removeClientReq{clientID: id}
+	s.send(removeClientReq{clientID: id})
 }
 
 func (s *Server) sendTerminalEvents(region *Region) {
@@ -225,7 +255,9 @@ func (s *Server) sendTerminalEvents(region *Region) {
 	}
 
 	resp := make(chan []*Client, 1)
-	s.requests <- getSubscribersReq{regionID: region.id, resp: resp}
+	if !s.send(getSubscribersReq{regionID: region.id, resp: resp}) {
+		return
+	}
 	subscribers := <-resp
 
 	if len(subscribers) == 0 {
@@ -262,7 +294,9 @@ func (s *Server) sendTerminalEvents(region *Region) {
 
 func (s *Server) getStatus() protocol.StatusResponse {
 	resp := make(chan statusCounts, 1)
-	s.requests <- getStatusReq{resp: resp}
+	if !s.send(getStatusReq{resp: resp}) {
+		return protocol.StatusResponse{Type: "status_response", Error: true, Message: "server shutting down"}
+	}
 	counts := <-resp
 
 	hostname, _ := os.Hostname()
@@ -292,7 +326,9 @@ func (s *Server) listenerAddrs() string {
 // SpawnProgram looks up a program by name and spawns it into the given session.
 func (s *Server) SpawnProgram(sessionName, programName string) (*Region, error) {
 	resp := make(chan *config.ProgramConfig, 1)
-	s.requests <- lookupProgramReq{name: programName, resp: resp}
+	if !s.send(lookupProgramReq{name: programName, resp: resp}) {
+		return nil, fmt.Errorf("server shutting down")
+	}
 	prog := <-resp
 	if prog == nil {
 		return nil, fmt.Errorf("unknown program: %s", programName)
@@ -308,7 +344,9 @@ func (s *Server) findOrCreateSession(name string) (*Session, []protocol.RegionIn
 	}
 
 	resp := make(chan sessionConnectResult, 1)
-	s.requests <- sessionConnectReq{name: name, resp: resp}
+	if !s.send(sessionConnectReq{name: name, resp: resp}) {
+		return nil, nil, fmt.Errorf("server shutting down")
+	}
 	result := <-resp
 
 	if result.exists {
@@ -337,57 +375,73 @@ func (s *Server) findOrCreateSession(name string) (*Session, []protocol.RegionIn
 
 func (s *Server) listProgramInfos() []protocol.ProgramInfo {
 	resp := make(chan []protocol.ProgramInfo, 1)
-	s.requests <- listProgramsReq{resp: resp}
+	if !s.send(listProgramsReq{resp: resp}) {
+		return nil
+	}
 	return <-resp
 }
 
 func (s *Server) addProgram(p config.ProgramConfig) error {
 	resp := make(chan error, 1)
-	s.requests <- addProgramReq{prog: p, resp: resp}
+	if !s.send(addProgramReq{prog: p, resp: resp}) {
+		return fmt.Errorf("server shutting down")
+	}
 	return <-resp
 }
 
 func (s *Server) removeProgram(name string) error {
 	resp := make(chan error, 1)
-	s.requests <- removeProgramReq{name: name, resp: resp}
+	if !s.send(removeProgramReq{name: name, resp: resp}) {
+		return fmt.Errorf("server shutting down")
+	}
 	return <-resp
 }
 
 func (s *Server) getRegionInfos(sessionFilter string) []protocol.RegionInfo {
 	resp := make(chan []protocol.RegionInfo, 1)
-	s.requests <- getRegionInfosReq{session: sessionFilter, resp: resp}
+	if !s.send(getRegionInfosReq{session: sessionFilter, resp: resp}) {
+		return nil
+	}
 	return <-resp
 }
 
 func (s *Server) getClientInfos() []protocol.ClientInfoData {
 	resp := make(chan []protocol.ClientInfoData, 1)
-	s.requests <- getClientInfosReq{resp: resp}
+	if !s.send(getClientInfosReq{resp: resp}) {
+		return nil
+	}
 	return <-resp
 }
 
 func (s *Server) getSessionInfos() []protocol.SessionInfo {
 	resp := make(chan []protocol.SessionInfo, 1)
-	s.requests <- getSessionInfosReq{resp: resp}
+	if !s.send(getSessionInfosReq{resp: resp}) {
+		return nil
+	}
 	return <-resp
 }
 
-func (s *Server) Subscribe(clientID uint32, regionID string) bool {
-	resp := make(chan bool, 1)
-	s.requests <- subscribeReq{clientID: clientID, regionID: regionID, resp: resp}
+func (s *Server) Subscribe(clientID uint32, regionID string) *Region {
+	resp := make(chan *Region, 1)
+	if !s.send(subscribeReq{clientID: clientID, regionID: regionID, resp: resp}) {
+		return nil
+	}
 	return <-resp
 }
 
 func (s *Server) Unsubscribe(clientID uint32) {
-	s.requests <- unsubscribeReq{clientID: clientID}
+	s.send(unsubscribeReq{clientID: clientID})
 }
 
 func (s *Server) SetClientSession(clientID uint32, sessionName string) {
-	s.requests <- setClientSessionReq{clientID: clientID, sessionName: sessionName}
+	s.send(setClientSessionReq{clientID: clientID, sessionName: sessionName})
 }
 
 func (s *Server) GetClientSession(clientID uint32) string {
 	resp := make(chan string, 1)
-	s.requests <- getClientSessionReq{clientID: clientID, resp: resp}
+	if !s.send(getClientSessionReq{clientID: clientID, resp: resp}) {
+		return ""
+	}
 	return <-resp
 }
 

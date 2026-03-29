@@ -93,6 +93,10 @@ func (c *Client) writeLoop() {
 			writtenByteIndex = msg.byteIndex + uint64(len(msg.data))
 
 		case <-c.closeCh:
+			// Drain any buffered messages so they don't pin memory.
+			for range len(c.writeCh) {
+				<-c.writeCh
+			}
 			return
 		}
 	}
@@ -356,7 +360,7 @@ func (c *Client) handleSubscribe(msg protocol.SubscribeRequest, reply func(any))
 		return
 	}
 
-	region := c.server.FindRegion(msg.RegionID)
+	region := c.server.Subscribe(c.id, msg.RegionID)
 	if region == nil {
 		reply(protocol.SubscribeResponse{
 			Type:     "subscribe_response",
@@ -366,8 +370,6 @@ func (c *Client) handleSubscribe(msg protocol.SubscribeRequest, reply func(any))
 		})
 		return
 	}
-
-	c.server.Subscribe(c.id, region.id)
 
 	snap := region.Snapshot()
 	c.SendMessage(protocol.ScreenUpdate{

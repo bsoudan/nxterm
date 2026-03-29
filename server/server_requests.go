@@ -12,6 +12,7 @@ import (
 
 type addClientReq struct {
 	client *Client
+	resp   chan struct{}
 }
 
 type removeClientReq struct {
@@ -115,7 +116,7 @@ type getSessionInfosReq struct {
 type subscribeReq struct {
 	clientID uint32
 	regionID string
-	resp     chan bool // true if region exists
+	resp     chan *Region // nil if region not found
 }
 
 type unsubscribeReq struct {
@@ -151,8 +152,9 @@ func (s *Server) eventLoop() {
 	s.initSessions = nil
 	s.initPrograms = nil
 
-	subscriptions := make(map[uint32]string)  // clientID → regionID
-	clientSessions := make(map[uint32]string)  // clientID → sessionName
+	subscriptions := make(map[uint32]string)          // clientID → regionID
+	regionSubs := make(map[string]map[uint32]struct{}) // regionID → set of clientIDs
+	clientSessions := make(map[uint32]string)          // clientID → sessionName
 
 	for {
 		select {
@@ -161,10 +163,19 @@ func (s *Server) eventLoop() {
 
 			case addClientReq:
 				clients[r.client.id] = r.client
+				r.resp <- struct{}{}
 
 			case removeClientReq:
+				if rid, ok := subscriptions[r.clientID]; ok {
+					delete(subscriptions, r.clientID)
+					if s := regionSubs[rid]; s != nil {
+						delete(s, r.clientID)
+						if len(s) == 0 {
+							delete(regionSubs, rid)
+						}
+					}
+				}
 				delete(clients, r.clientID)
-				delete(subscriptions, r.clientID)
 				delete(clientSessions, r.clientID)
 				slog.Debug("client disconnected", "id", r.clientID)
 
@@ -194,13 +205,14 @@ func (s *Server) eventLoop() {
 					}
 				}
 				var subscribers []*Client
-				for clientID, subRegion := range subscriptions {
-					if subRegion == r.regionID {
+				if subs := regionSubs[r.regionID]; subs != nil {
+					for clientID := range subs {
 						delete(subscriptions, clientID)
 						if c, ok := clients[clientID]; ok {
 							subscribers = append(subscribers, c)
 						}
 					}
+					delete(regionSubs, r.regionID)
 				}
 				r.resp <- destroyResult{region: region, subscribers: subscribers, found: true}
 
@@ -222,11 +234,9 @@ func (s *Server) eventLoop() {
 
 			case getSubscribersReq:
 				var subs []*Client
-				for clientID, subRegion := range subscriptions {
-					if subRegion == r.regionID {
-						if c, ok := clients[clientID]; ok {
-							subs = append(subs, c)
-						}
+				for clientID := range regionSubs[r.regionID] {
+					if c, ok := clients[clientID]; ok {
+						subs = append(subs, c)
 					}
 				}
 				r.resp <- subs
@@ -354,14 +364,37 @@ func (s *Server) eventLoop() {
 				r.resp <- infos
 
 			case subscribeReq:
-				_, exists := regions[r.regionID]
-				if exists {
-					subscriptions[r.clientID] = r.regionID
+				region, exists := regions[r.regionID]
+				if !exists {
+					r.resp <- nil
+					break
 				}
-				r.resp <- exists
+				// Remove from previous subscription if any.
+				if prev, ok := subscriptions[r.clientID]; ok && prev != r.regionID {
+					if s := regionSubs[prev]; s != nil {
+						delete(s, r.clientID)
+						if len(s) == 0 {
+							delete(regionSubs, prev)
+						}
+					}
+				}
+				subscriptions[r.clientID] = r.regionID
+				if regionSubs[r.regionID] == nil {
+					regionSubs[r.regionID] = make(map[uint32]struct{})
+				}
+				regionSubs[r.regionID][r.clientID] = struct{}{}
+				r.resp <- region
 
 			case unsubscribeReq:
-				delete(subscriptions, r.clientID)
+				if rid, ok := subscriptions[r.clientID]; ok {
+					delete(subscriptions, r.clientID)
+					if s := regionSubs[rid]; s != nil {
+						delete(s, r.clientID)
+						if len(s) == 0 {
+							delete(regionSubs, rid)
+						}
+					}
+				}
 
 			case setClientSessionReq:
 				clientSessions[r.clientID] = r.sessionName

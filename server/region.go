@@ -48,7 +48,6 @@ type Region struct {
 	mu      sync.Mutex
 
 	notify     chan struct{}
-	done       chan struct{}
 	readerDone chan struct{}
 }
 
@@ -88,7 +87,6 @@ func NewRegion(cmdStr string, args []string, env map[string]string, width, heigh
 		proxy:   proxy,
 		stream:  stream,
 		notify:     make(chan struct{}, 1),
-		done:       make(chan struct{}),
 		readerDone: make(chan struct{}),
 	}
 
