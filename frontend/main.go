@@ -49,6 +49,11 @@ func main() {
 				Sources: cli.EnvVars("TERMD_SESSION"),
 			},
 			&cli.BoolFlag{
+				Name:    "browse",
+				Aliases: []string{"b"},
+				Usage:   "open the server connect dialog on startup",
+			},
+			&cli.BoolFlag{
 				Name:    "debug",
 				Aliases: []string{"d"},
 				Usage:   "enable debug logging",
@@ -98,16 +103,32 @@ func runFrontend(_ context.Context, cmd *cli.Command) error {
 
 	// CLI --socket > config connect > platform default
 	socketVal := cmd.String("socket")
-	if socketVal == defaultSocket && cfg.Connect != "" {
+	userSetSocket := cmd.IsSet("socket")
+	if !userSetSocket && cfg.Connect != "" {
 		socketVal = cfg.Connect
+		userSetSocket = true
 	}
 	endpoint := inferEndpoint(socketVal)
+	browse := cmd.Bool("browse")
 
-	dialFn := func() (net.Conn, error) { return transport.Dial(endpoint) }
-	conn, err := dialFn()
-	if err != nil {
-		return fmt.Errorf("connect %s: %w", endpoint, err)
+	// Try to connect. If the user didn't explicitly set an address and
+	// the default socket doesn't exist, start in disconnected mode.
+	// --browse forces disconnected mode to show the connect dialog.
+	var conn net.Conn
+	if !browse {
+		dialFn := func() (net.Conn, error) { return transport.Dial(endpoint) }
+		if userSetSocket {
+			var err error
+			conn, err = dialFn()
+			if err != nil {
+				return fmt.Errorf("connect %s: %w", endpoint, err)
+			}
+		} else {
+			conn, _ = dialFn()
+		}
 	}
+
+	disconnected := conn == nil
 
 	restore, err := ui.SetupRawTerminal()
 	if err != nil {
@@ -116,12 +137,38 @@ func runFrontend(_ context.Context, cmd *cli.Command) error {
 	defer restore()
 
 	pipeR, pipeW := io.Pipe()
-
 	sessionName := cmd.String("session")
-
 	server := ui.NewServer(64, "termd-tui")
-	model := ui.NewModel(server, pipeW, registry, logRing, endpoint, version, changelog, sessionName)
-	p := tea.NewProgram(model,
+
+	// p is declared here so the connectFn closure can capture it.
+	// It is assigned after NewModel below.
+	var p *tea.Program
+	var wg sync.WaitGroup
+
+	// connectFn dials a server and starts a Server.Run goroutine.
+	// It creates a fresh Server each time so it works for both the
+	// initial connect and subsequent reconnects from the connect overlay.
+	connectFn := func(ep string) {
+		go func() {
+			c, err := transport.Dial(ep)
+			if err != nil {
+				p.Send(ui.ConnectErrorMsg{Endpoint: ep, Error: err.Error()})
+				return
+			}
+			df := func() (net.Conn, error) { return transport.Dial(ep) }
+			newSrv := ui.NewServer(64, "termd-tui")
+			p.Send(ui.ConnectedMsg{Endpoint: ep, Server: newSrv})
+			newSrv.Run(c, df, p)
+		}()
+	}
+
+	initEndpoint := endpoint
+	if disconnected {
+		initEndpoint = ""
+	}
+
+	model := ui.NewModel(server, pipeW, registry, logRing, initEndpoint, version, changelog, sessionName, connectFn)
+	p = tea.NewProgram(model,
 		tea.WithInput(pipeR),
 		tea.WithColorProfile(colorprofile.TrueColor),
 	)
@@ -133,12 +180,21 @@ func runFrontend(_ context.Context, cmd *cli.Command) error {
 
 	logHandler.SetNotifyFn(func() { p.Send(ui.LogEntryMsg{}) })
 
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() { defer wg.Done(); server.Run(conn, dialFn, p) }()
+	if !disconnected {
+		dialFn := func() (net.Conn, error) { return transport.Dial(endpoint) }
+		wg.Add(1)
+		go func() { defer wg.Done(); server.Run(conn, dialFn, p) }()
+	}
+	wg.Add(1)
 	go func() { defer wg.Done(); ui.InputLoop(stdinDup, p, pipeW, model.InitDone()) }()
 
+	// Start mDNS browsing when the connect overlay is shown.
+	browseCtx, browseCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	go browseServers(browseCtx, p)
+
 	finalModel, err := p.Run()
+
+	browseCancel()
 
 	// Ordered shutdown:
 	// 1. Close server (unsubscribe+disconnect already sent by model.quit())

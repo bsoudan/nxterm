@@ -24,15 +24,19 @@ type Model struct {
 	initDone chan struct{}
 }
 
-func NewModel(s *Server, pipeW io.Writer, registry *Registry, ring *termlog.LogRingBuffer, endpoint, version, changelog, sessionName string) Model {
+func NewModel(s *Server, pipeW io.Writer, registry *Registry, ring *termlog.LogRingBuffer, endpoint, version, changelog, sessionName string, connectFn func(string)) Model {
 	hostname, _ := os.Hostname()
 	req := &requestState{pending: make(map[uint64]ReplyFunc)}
+	// currentServer is a mutable pointer so requestFn always uses the
+	// latest server even after a reconnect swaps it.
+	currentServer := s
 	requestFn := func(msg any, reply ReplyFunc) {
 		req.nextReqID++
 		req.pending[req.nextReqID] = reply
-		s.Send(protocol.TaggedWithReqID(msg, req.nextReqID))
+		currentServer.Send(protocol.TaggedWithReqID(msg, req.nextReqID))
 	}
-	main := NewMainLayer(s, pipeW, requestFn, registry, ring, endpoint, version, changelog, hostname, sessionName)
+	main := NewMainLayer(s, pipeW, requestFn, registry, ring, endpoint, version, changelog, hostname, sessionName, connectFn)
+	main.swapServerFn = func(newSrv *Server) { currentServer = newSrv }
 	return Model{
 		layers:   []Layer{main},
 		registry: registry,
@@ -197,7 +201,7 @@ func (m Model) View() tea.View {
 			}
 		}
 		switch m.layers[i].(type) {
-		case *ScrollableLayer, *StatusLayer, *HelpLayer, *ProgramPickerLayer, *SessionPickerLayer, *SessionNameLayer, *CommandPaletteLayer:
+		case *ScrollableLayer, *StatusLayer, *HelpLayer, *ProgramPickerLayer, *SessionPickerLayer, *SessionNameLayer, *CommandPaletteLayer, *ConnectLayer:
 			hasOverlay = true
 		}
 	}

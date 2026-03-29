@@ -1627,24 +1627,8 @@ func TestAllRegionsDestroyedShowsNoSession(t *testing.T) {
 	pio.WaitFor(t, "no session", 10*time.Second)
 	pio.WaitForSilence(200 * time.Millisecond)
 
-	// Open a new session from the no-session screen using a single-packet
-	// chord sequence (ctrl+b S) to exercise the real prefix detection path.
-	pio.Write([]byte("\x02S"))
-	pio.WaitFor(t, "Session name:", 5*time.Second)
-	pio.WaitForSilence(200 * time.Millisecond)
-	pio.Write([]byte("recover\r"))
-
-	// Wait for the session to appear on the server.
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		out := runTermctl(t, socketPath, "session", "list")
-		if strings.Contains(out, "recover") {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	pio.WaitFor(t, "$", 10*time.Second)
-	pio.WaitForSilence(200 * time.Millisecond)
+	// Reconnect from the no-session screen using the connect overlay.
+	connectViaUI(t, pio, socketPath)
 
 	// Verify we're back in a live shell.
 	pio.Write([]byte("echo ALIVE\r"))
@@ -1868,11 +1852,11 @@ func TestKeybindCustomOverride(t *testing.T) {
 	}
 }
 
-func TestKeybindNextPrevSession(t *testing.T) {
+func TestKeybindOpenSessionTmux(t *testing.T) {
 	socketPath, env, serverCleanup := startServerReturnEnv(t)
 	defer serverCleanup()
 
-	// Use tmux style which has ) and ( for next/prev session
+	// Use tmux style which has $ for open-session
 	writeTestKeybindConfig(t, env, `style = "tmux"`)
 
 	fe := startFrontendWithEnv(t, socketPath, env)
@@ -1881,37 +1865,13 @@ func TestKeybindNextPrevSession(t *testing.T) {
 	fe.WaitFor(t, "1:bash", 10*time.Second)
 	fe.WaitFor(t, "termd$", 10*time.Second)
 
-	// Mark session 1
-	fe.Write([]byte("echo SESSION1_MARK\r"))
-	fe.WaitFor(t, "SESSION1_MARK", 10*time.Second)
-
-	// Create a second session: ctrl+b $ (open-session in tmux)
+	// ctrl+b $ (open-session in tmux) should open the connect overlay.
 	fe.Write([]byte{0x02})
 	time.Sleep(50 * time.Millisecond)
 	fe.Write([]byte("$"))
-	fe.WaitFor(t, "Session name:", 5*time.Second)
-	fe.WaitForSilence(200 * time.Millisecond)
-	fe.Write([]byte("dev"))
-	time.Sleep(100 * time.Millisecond)
-	fe.Write([]byte("\r"))
-	// Wait for the new session to connect (status shows "dev@...")
-	fe.WaitFor(t, "dev@", 10*time.Second)
-	fe.WaitFor(t, "termd$", 10*time.Second)
-	fe.WaitForSilence(200 * time.Millisecond)
+	fe.WaitFor(t, "type a server address", 5*time.Second)
 
-	// Mark session 2
-	fe.Write([]byte("echo SESSION2_MARK\r"))
-	fe.WaitFor(t, "SESSION2_MARK", 10*time.Second)
-
-	// ctrl+b ( (prev-session in tmux) → should go to session 1
-	fe.Write([]byte{0x02})
-	time.Sleep(50 * time.Millisecond)
-	fe.Write([]byte("("))
-	fe.WaitFor(t, "SESSION1_MARK", 10*time.Second)
-
-	// ctrl+b ) (next-session in tmux) → should go to session 2
-	fe.Write([]byte{0x02})
-	time.Sleep(50 * time.Millisecond)
-	fe.Write([]byte(")"))
-	fe.WaitFor(t, "SESSION2_MARK", 10*time.Second)
+	// Cancel and verify we're back.
+	fe.Write([]byte{0x1b})
+	fe.WaitFor(t, "termd$", 5*time.Second)
 }

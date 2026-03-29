@@ -38,12 +38,17 @@ type MainLayer struct {
 
 	termWidth  int
 	termHeight int
+
+	connectFn    func(string) // dials a server and sends ConnectedMsg
+	sessionName  string       // initial session name, used after deferred connect
+	swapServerFn func(*Server) // updates the requestFn's server reference
 }
 
 func NewMainLayer(
 	server *Server, pipeW io.Writer, requestFn RequestFunc, registry *Registry,
 	logRing *termlog.LogRingBuffer,
 	endpoint, version, changelog, hostname, sessionName string,
+	connectFn func(string),
 ) *MainLayer {
 	m := &MainLayer{
 		server:        server,
@@ -56,9 +61,14 @@ func NewMainLayer(
 		version:       version,
 		changelog:     changelog,
 		connStatus:    "connected",
+		connectFn:     connectFn,
+		sessionName:   sessionName,
 	}
-	session := NewSessionLayer(server, requestFn, registry, logRing, endpoint, version, changelog, hostname, sessionName)
-	m.sessions = []*SessionLayer{session}
+	if endpoint != "" {
+		// Connected mode: create initial session immediately.
+		session := NewSessionLayer(server, requestFn, registry, logRing, endpoint, version, changelog, hostname, sessionName)
+		m.sessions = []*SessionLayer{session}
+	}
 	return m
 }
 
@@ -84,7 +94,14 @@ func (m *MainLayer) sendRawToServer(raw []byte) {
 }
 
 // Init delegates to the first session and starts the hint timer.
+// If started in disconnected mode, pushes the connect overlay instead.
 func (m *MainLayer) Init() tea.Cmd {
+	if len(m.sessions) == 0 {
+		recents := LoadRecents()
+		return func() tea.Msg {
+			return PushLayerMsg{Layer: NewConnectLayer(recents)}
+		}
+	}
 	s := m.sessions[0]
 	s.server.Send(protocol.SessionConnectRequest{Session: s.sessionName})
 	return tea.Tick(3*time.Second, func(time.Time) tea.Msg { return showHintMsg{} })
@@ -121,6 +138,35 @@ func (m *MainLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 
 	case MainCmd:
 		return m.handleCmd(msg)
+
+	// ── Connect overlay flow ────────────────────────────────────────────
+
+	case ConnectToServerMsg:
+		// Close the old server so its Run goroutine exits cleanly.
+		m.server.Close()
+		m.Deactivate()
+		m.sessions = nil
+		m.activeSession = 0
+		m.connectFn(msg.Endpoint)
+		return nil, nil, true
+
+	case ConnectedMsg:
+		m.server = msg.Server
+		m.swapServerFn(msg.Server)
+		m.endpoint = msg.Endpoint
+		m.connStatus = "connected"
+		session := NewSessionLayer(m.server, m.requestFn, m.registry, m.logRing, m.endpoint, m.version, m.changelog, m.localHostname, m.sessionName)
+		m.sessions = []*SessionLayer{session}
+		m.activeSession = 0
+		session.server.Send(protocol.SessionConnectRequest{Session: session.sessionName})
+		SaveRecent(msg.Endpoint, msg.Endpoint)
+		return nil, tea.Tick(3*time.Second, func(time.Time) tea.Msg { return showHintMsg{} }), true
+
+	case ConnectErrorMsg:
+		return nil, nil, false // let ConnectLayer handle it
+
+	case DiscoveredServerMsg:
+		return nil, nil, false // let ConnectLayer handle it
 
 	// ── System messages ─────────────────────────────────────────────────
 
@@ -214,10 +260,8 @@ func (m *MainLayer) handleCmd(msg MainCmd) (tea.Msg, tea.Cmd, bool) {
 
 	// ── Session management ─────────────────────────────────────────────
 	case "open-session":
-		if msg.Args != "" {
-			return nil, m.createSession(msg.Args), true
-		}
-		return push(&SessionNameLayer{})
+		recents := LoadRecents()
+		return push(NewConnectLayer(recents))
 	case "close-session":
 		return m.killSession()
 	case "next-session":
@@ -297,22 +341,6 @@ func (m *MainLayer) handleCmd(msg MainCmd) (tea.Msg, tea.Cmd, bool) {
 	default:
 		return nil, nil, true
 	}
-}
-
-func (m *MainLayer) createSession(name string) tea.Cmd {
-	// Deactivate current session.
-	m.Deactivate()
-
-	session := NewSessionLayer(m.server, m.requestFn, m.registry, m.logRing, m.endpoint, m.version, m.changelog, m.localHostname, name)
-	session.connStatus = m.connStatus
-	session.termWidth = m.termWidth
-	session.termHeight = m.termHeight
-	m.sessions = append(m.sessions, session)
-	m.activeSession = len(m.sessions) - 1
-
-	// Connect to the new session.
-	session.server.Send(protocol.SessionConnectRequest{Session: name})
-	return nil
 }
 
 func (m *MainLayer) killSession() (tea.Msg, tea.Cmd, bool) {
