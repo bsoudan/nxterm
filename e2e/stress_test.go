@@ -16,8 +16,11 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
+
+	"github.com/creack/pty"
 )
 
 // ── Configuration ───────────────────────────────────────────────────────────
@@ -91,12 +94,16 @@ func (ec *errorCollector) count() int {
 const opTimeout = 3 * time.Second
 
 type tuiClient struct {
-	id           int
-	name         string
-	fe           *frontend
-	rng          *rand.Rand
-	errs         *errorCollector
-	t            *testing.T
+	id         int
+	name       string
+	fe         *frontend
+	mu         sync.RWMutex // protects fe during restart; snapshot goroutine takes RLock
+	socketPath string
+	session    string // "home" session for reconnection after restart
+	rng        *rand.Rand
+	errs       *errorCollector
+	t          *testing.T
+
 	sessionCount int
 	opCount      atomic.Int64
 	cmdCounter   int
@@ -120,6 +127,9 @@ var tuiOps = []struct {
 	{"create_session", 3, (*tuiClient).opCreateSession},
 	{"switch_session", 4, (*tuiClient).opSwitchSession},
 	{"kill_session", 3, (*tuiClient).opKillSession},
+	{"detach", 2, (*tuiClient).opDetach},
+	{"kill_restart", 2, (*tuiClient).opKillRestart},
+	{"pause_resume", 3, (*tuiClient).opPauseResume},
 }
 
 func (tc *tuiClient) pickOp() (string, func(*tuiClient)) {
@@ -226,6 +236,47 @@ func (tc *tuiClient) run(ctx context.Context) {
 		case <-time.After(d):
 		}
 	}
+}
+
+// tryStartFrontend starts a termd-tui in a PTY, returning an error instead
+// of calling t.Fatal. Used for mid-test restarts from goroutines.
+func tryStartFrontend(t *testing.T, socketPath, session string) (*frontend, error) {
+	args := []string{"--socket", socketPath}
+	if session != "" {
+		args = append(args, "--session", session)
+	}
+	cmd := exec.Command("termd-tui", args...)
+	cmd.Env = append(testEnv(t), "TERM=dumb")
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 80})
+	if err != nil {
+		return nil, fmt.Errorf("start frontend: %w", err)
+	}
+	return &frontend{
+		ptyIO: newPtyIO(ptmx, 80, 24),
+		cmd:   cmd,
+		ptmx:  ptmx,
+	}, nil
+}
+
+func (tc *tuiClient) restart() {
+	tc.fe.ptmx.Close()
+
+	fe, err := tryStartFrontend(tc.t, tc.socketPath, tc.session)
+	if err != nil {
+		tc.errs.add("[%s] restart failed: %v", tc.name, err)
+		return
+	}
+
+	tc.mu.Lock()
+	tc.fe = fe
+	tc.mu.Unlock()
+
+	if !tc.tryWaitFor("$", 10*time.Second) {
+		tc.errs.add("[%s] restart: prompt never appeared", tc.name)
+		tc.tryRecover()
+	}
+	tc.fe.WaitForSilence(200 * time.Millisecond)
+	tc.t.Logf("[%s] restarted", tc.name)
 }
 
 // ── TUI Operations ─────────────────────────────────────────────────────────
@@ -358,6 +409,33 @@ func (tc *tuiClient) opKillSession() {
 	tc.ctrlB('X')
 	tc.fe.WaitForSilence(500 * time.Millisecond)
 	tc.sessionCount--
+}
+
+func (tc *tuiClient) opDetach() {
+	tc.ctrlB('d')
+	if err := tc.fe.Wait(5 * time.Second); err != nil {
+		tc.errs.add("[%s] detach: %v", tc.name, err)
+	}
+	tc.restart()
+}
+
+func (tc *tuiClient) opKillRestart() {
+	tc.fe.cmd.Process.Signal(syscall.SIGINT)
+	if err := tc.fe.Wait(5 * time.Second); err != nil {
+		tc.errs.add("[%s] kill_restart: %v", tc.name, err)
+	}
+	tc.restart()
+}
+
+// opPauseResume sends SIGSTOP to freeze the TUI so it stops reading from
+// the server (exercising the server's write-buffer and drop-detection),
+// then SIGCONT to resume.
+func (tc *tuiClient) opPauseResume() {
+	tc.fe.cmd.Process.Signal(syscall.SIGSTOP)
+	d := time.Duration(tc.rng.IntN(2000)+500) * time.Millisecond
+	time.Sleep(d)
+	tc.fe.cmd.Process.Signal(syscall.SIGCONT)
+	tc.fe.WaitForSilence(500 * time.Millisecond)
 }
 
 // ── Raw Protocol Stress Client ─────────────────────────────────────────────
@@ -648,7 +726,9 @@ func snapshotLoop(ctx context.Context, t *testing.T, dir string, clients []*tuiC
 func snapshotAll(t *testing.T, dir string, clients []*tuiClient, seq int) {
 	ts := time.Now().Format("150405")
 	for _, tc := range clients {
+		tc.mu.RLock()
 		lines := tc.fe.ScreenLines()
+		tc.mu.RUnlock()
 		name := fmt.Sprintf("%s_%03d_%s.txt", tc.name, seq, ts)
 		path := filepath.Join(dir, name)
 		os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
@@ -695,10 +775,13 @@ func TestStress(t *testing.T) {
 		fe := startFrontendFull(t, socketPath)
 		defer fe.Kill()
 
+		sessName := fmt.Sprintf("stress-%d", i)
 		tc := &tuiClient{
 			id:           i,
 			name:         name,
 			fe:           fe,
+			socketPath:   socketPath,
+			session:      sessName,
 			rng:          rng,
 			errs:         errs,
 			t:            t,
@@ -711,7 +794,6 @@ func TestStress(t *testing.T) {
 		}
 		tc.fe.WaitForSilence(200 * time.Millisecond)
 
-		sessName := fmt.Sprintf("stress-%d", i)
 		tc.ctrlB('S')
 		if !tc.tryWaitFor("Session name:", 5*time.Second) {
 			t.Fatalf("[%s] session name prompt never appeared", name)
@@ -776,6 +858,11 @@ func TestStress(t *testing.T) {
 	case <-done:
 	case <-time.After(10 * time.Second):
 		t.Error("client goroutines did not stop within 10s of context cancellation")
+	}
+
+	// Kill current frontends (covers any that were restarted mid-test)
+	for _, tc := range tuiClients {
+		tc.fe.Kill()
 	}
 
 	// Final health check

@@ -1,4 +1,4 @@
-.PHONY: all build-server changelog build-tui build-tui-windows build-termctl build-mousehelper check-windows test test-e2e test-stress clean
+.PHONY: all build-server changelog build-tui build-tui-windows build-termctl build-mousehelper check-windows test test-e2e test-stress test-stress-long clean
 
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/-g[0-9a-f]*//;s/-dirty/*/' || echo "dev")
 LDFLAGS := -X main.version=$(VERSION)
@@ -43,8 +43,18 @@ test: test-e2e
 test-e2e: all
 	cd e2e && PATH="$(CURDIR)/.local/bin:$(PATH)" go test -v -timeout 120s
 
+# Stress test (quick). Override with env vars:
+#   STRESS_TUI_CLIENTS  — number of termd-tui instances    (default: 5)
+#   STRESS_RAW_CLIENTS  — number of raw protocol clients   (default: 3)
+#   STRESS_DURATION     — how long to run                  (default: 30s)
+#   STRESS_SEED         — fixed RNG seed for reproduction  (default: random)
 test-stress: all
 	cd e2e && PATH="$(CURDIR)/.local/bin:$(PATH)" go test -v -tags stress -run TestStress -timeout 300s
+
+test-stress-long: all
+	cd e2e && PATH="$(CURDIR)/.local/bin:$(PATH)" \
+		STRESS_TUI_CLIENTS=10 STRESS_RAW_CLIENTS=5 STRESS_DURATION=120s \
+		go test -v -tags stress -run TestStress -timeout 300s
 
 clean:
 	rm -rf .local/bin
