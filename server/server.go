@@ -17,6 +17,7 @@ import (
 
 type Server struct {
 	version      string
+	binariesDir  string
 	listeners    []net.Listener
 	startTime    time.Time
 	nextClientID atomic.Uint32
@@ -58,6 +59,7 @@ func NewServer(listeners []net.Listener, version string, cfg config.ServerConfig
 
 	s := &Server{
 		version:      version,
+		binariesDir:  cfg.Upgrade.BinariesDir,
 		listeners:    listeners,
 		startTime:    time.Now(),
 		sessionsCfg:  sessionsCfg,

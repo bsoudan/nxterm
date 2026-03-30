@@ -90,6 +90,24 @@ type Disconnect struct {
 	Type string `json:"type,omitempty"`
 }
 
+type UpgradeCheckRequest struct {
+	Type          string `json:"type,omitempty"`
+	ClientVersion string `json:"client_version"`
+	OS            string `json:"os"`
+	Arch          string `json:"arch"`
+}
+
+type ServerUpgradeRequest struct {
+	Type string `json:"type,omitempty"`
+}
+
+type ClientBinaryRequest struct {
+	Type   string `json:"type,omitempty"`
+	OS     string `json:"os"`
+	Arch   string `json:"arch"`
+	Offset int64  `json:"offset"`
+}
+
 type ListProgramsRequest struct {
 	Type string `json:"type,omitempty"`
 }
@@ -294,6 +312,37 @@ type RemoveProgramResponse struct {
 	Message string `json:"message"`
 }
 
+type UpgradeCheckResponse struct {
+	Type             string `json:"type,omitempty"`
+	ServerAvailable  bool   `json:"server_available"`
+	ServerVersion    string `json:"server_version,omitempty"`
+	ClientAvailable  bool   `json:"client_available"`
+	ClientVersion    string `json:"client_version,omitempty"`
+	Error            bool   `json:"error"`
+	Message          string `json:"message"`
+}
+
+type ServerUpgradeResponse struct {
+	Type    string `json:"type,omitempty"`
+	Error   bool   `json:"error"`
+	Message string `json:"message"`
+}
+
+type ClientBinaryChunk struct {
+	Type   string `json:"type,omitempty"`
+	Offset int64  `json:"offset"`
+	Data   string `json:"data"`
+	Final  bool   `json:"final"`
+}
+
+type ClientBinaryResponse struct {
+	Type    string `json:"type,omitempty"`
+	SHA256  string `json:"sha256"`
+	Size    int64  `json:"size"`
+	Error   bool   `json:"error"`
+	Message string `json:"message"`
+}
+
 type Warning struct {
 	Type     string `json:"type"`
 	WarnType string `json:"warn_type"`
@@ -405,6 +454,18 @@ func parsePayload(typ string, line []byte) (any, error) {
 	case "remove_program_response":
 		var msg RemoveProgramResponse
 		return msg, json.Unmarshal(line, &msg)
+	case "upgrade_check_response":
+		var msg UpgradeCheckResponse
+		return msg, json.Unmarshal(line, &msg)
+	case "server_upgrade_response":
+		var msg ServerUpgradeResponse
+		return msg, json.Unmarshal(line, &msg)
+	case "client_binary_chunk":
+		var msg ClientBinaryChunk
+		return msg, json.Unmarshal(line, &msg)
+	case "client_binary_response":
+		var msg ClientBinaryResponse
+		return msg, json.Unmarshal(line, &msg)
 	default:
 		return nil, fmt.Errorf("unknown message type: %s", typ)
 	}
@@ -496,6 +557,12 @@ func typeTag(msg any) string {
 		return "add_program_request"
 	case RemoveProgramRequest:
 		return "remove_program_request"
+	case UpgradeCheckRequest:
+		return "upgrade_check_request"
+	case ServerUpgradeRequest:
+		return "server_upgrade_request"
+	case ClientBinaryRequest:
+		return "client_binary_request"
 	case Disconnect:
 		return "disconnect"
 	default:

@@ -40,6 +40,11 @@ func (d DiscoveryConfig) IsEnabled() bool {
 	return *d.Enabled
 }
 
+// UpgradeConfig holds settings for client/server binary upgrades.
+type UpgradeConfig struct {
+	BinariesDir string `toml:"binaries-dir"`
+}
+
 // ServerConfig represents termd/server.toml.
 type ServerConfig struct {
 	Listen    []string        `toml:"listen"`
@@ -49,6 +54,7 @@ type ServerConfig struct {
 	Termctl   TermctlConfig   `toml:"termctl"`
 	Sessions  SessionsConfig  `toml:"sessions"`
 	Discovery DiscoveryConfig `toml:"discovery"`
+	Upgrade   UpgradeConfig   `toml:"upgrade"`
 }
 
 // SSHConfig holds SSH-specific server settings.

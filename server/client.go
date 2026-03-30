@@ -276,6 +276,18 @@ func (c *Client) handleMessage(line []byte) {
 		if json.Unmarshal(line, &msg) == nil {
 			c.handleRemoveProgram(msg, reply)
 		}
+	case "upgrade_check_request":
+		var msg protocol.UpgradeCheckRequest
+		if json.Unmarshal(line, &msg) == nil {
+			c.handleUpgradeCheck(msg, reply)
+		}
+	case "server_upgrade_request":
+		c.handleServerUpgrade(reply)
+	case "client_binary_request":
+		var msg protocol.ClientBinaryRequest
+		if json.Unmarshal(line, &msg) == nil {
+			c.handleClientBinaryDownload(msg, reply)
+		}
 	case "disconnect":
 		slog.Info("client disconnecting gracefully", "client_id", c.id)
 		c.Close()

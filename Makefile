@@ -1,4 +1,4 @@
-.PHONY: all build-server changelog build-tui build-tui-windows build-termctl build-mousehelper check-windows test test-e2e test-stress test-stress-long clean
+.PHONY: all build-server changelog build-tui build-tui-windows build-termctl build-mousehelper build-upgrade-test-binaries check-windows test test-e2e test-stress test-stress-long clean
 
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/-g[0-9a-f]*//;s/-dirty/*/' || echo "dev")
 LDFLAGS := -X main.version=$(VERSION)
@@ -35,14 +35,22 @@ build-mousehelper:
 build-termctl:
 	go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o .local/bin/termctl ./termctl
 
+UPGRADE_TEST_DIR := .local/upgrade-binaries
+UPGRADE_TEST_VERSION := upgrade-test-v2
+
+build-upgrade-test-binaries: changelog
+	@mkdir -p $(UPGRADE_TEST_DIR)
+	go build $(GCFLAGS) -ldflags "-X main.version=$(UPGRADE_TEST_VERSION)" -o $(UPGRADE_TEST_DIR)/termd-$$(go env GOOS)-$$(go env GOARCH) ./server
+	go build $(GCFLAGS) -ldflags "-X main.version=$(UPGRADE_TEST_VERSION)" -o $(UPGRADE_TEST_DIR)/termd-tui-$$(go env GOOS)-$$(go env GOARCH) ./frontend
+
 check-windows:
 	GOOS=windows GOARCH=amd64 go build -o /dev/null ./frontend
 	GOOS=windows GOARCH=amd64 go build -o /dev/null ./transport
 
 test: test-e2e
 
-test-e2e: all
-	PATH="$(CURDIR)/.local/bin:$(PATH)" go test -v -timeout 120s ./e2e
+test-e2e: all build-upgrade-test-binaries
+	PATH="$(CURDIR)/.local/bin:$(PATH)" UPGRADE_BINARIES_DIR="$(CURDIR)/$(UPGRADE_TEST_DIR)" go test -v -timeout 120s ./e2e
 
 # Stress test (quick). Override with env vars:
 #   STRESS_TUI_CLIENTS  — number of termd-tui instances    (default: 5)

@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"io"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -35,6 +36,12 @@ type MainLayer struct {
 	connStatus string
 	retryAt    time.Time
 	err        string
+
+	// Upgrade state
+	upgradeServerAvail  bool
+	upgradeServerVer    string
+	upgradeClientAvail  bool
+	upgradeClientVer    string
 
 	termWidth  int
 	termHeight int
@@ -104,6 +111,7 @@ func (m *MainLayer) Init() tea.Cmd {
 	}
 	s := m.sessions[0]
 	s.server.Send(protocol.SessionConnectRequest{Session: s.sessionName})
+	m.checkForUpgrades()
 	return tea.Tick(3*time.Second, func(time.Time) tea.Msg { return showHintMsg{} })
 }
 
@@ -160,6 +168,7 @@ func (m *MainLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 		m.activeSession = 0
 		session.server.Send(protocol.SessionConnectRequest{Session: session.sessionName})
 		SaveRecent(msg.Endpoint, msg.Endpoint)
+		m.checkForUpgrades()
 		return nil, tea.Tick(3*time.Second, func(time.Time) tea.Msg { return showHintMsg{} }), true
 
 	case ConnectErrorMsg:
@@ -187,6 +196,7 @@ func (m *MainLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 		for _, s := range m.sessions {
 			s.Reconnect()
 		}
+		m.checkForUpgrades()
 		return nil, nil, true
 
 	case reconnectTickMsg:
@@ -282,6 +292,15 @@ func (m *MainLayer) handleCmd(msg MainCmd) (tea.Msg, tea.Cmd, bool) {
 	case "detach":
 		resp, cmd := m.detach()
 		return resp, cmd, true
+
+	case "upgrade":
+		if !m.upgradeServerAvail && !m.upgradeClientAvail {
+			return nil, nil, true
+		}
+		ul := NewUpgradeLayer(m.server, m.requestFn, m.version,
+			m.upgradeServerAvail, m.upgradeServerVer,
+			m.upgradeClientAvail, m.upgradeClientVer)
+		return push(ul)
 
 	// ── Overlays ───────────────────────────────────────────────────────
 	case "run-command":
@@ -467,9 +486,39 @@ func (m *MainLayer) Status() (string, lipgloss.Style) {
 		secs := int(time.Until(m.retryAt).Seconds()) + 1
 		return fmt.Sprintf("reconnecting to %s in %ds...", m.endpoint, secs), statusBoldRed
 	}
+
+	var text string
+	var style lipgloss.Style
+
 	s := m.activeSessionLayer()
 	if s == nil {
-		return "no session", statusFaint
+		text, style = "no session", statusFaint
+	} else {
+		text, style = s.Status()
 	}
-	return s.Status()
+
+	if m.upgradeServerAvail || m.upgradeClientAvail {
+		text += " | update available (ctrl+b u)"
+	}
+	return text, style
+}
+
+// UpgradeAvailable reports whether any upgrade is available.
+func (m *MainLayer) UpgradeAvailable() bool {
+	return m.upgradeServerAvail || m.upgradeClientAvail
+}
+
+func (m *MainLayer) checkForUpgrades() {
+	m.requestFn(protocol.UpgradeCheckRequest{
+		ClientVersion: m.version,
+		OS:            runtime.GOOS,
+		Arch:          runtime.GOARCH,
+	}, func(payload any) {
+		if resp, ok := payload.(protocol.UpgradeCheckResponse); ok && !resp.Error {
+			m.upgradeServerAvail = resp.ServerAvailable
+			m.upgradeServerVer = resp.ServerVersion
+			m.upgradeClientAvail = resp.ClientAvailable
+			m.upgradeClientVer = resp.ClientVersion
+		}
+	})
 }

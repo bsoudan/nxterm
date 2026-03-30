@@ -189,6 +189,7 @@ func allCommands() []*Command {
 		{Name: "show-release-notes", Category: "main", Layer: "main", Description: "show release notes"},
 		{Name: "enter-scrollback", Category: "main", Layer: "main", Description: "enter scrollback mode"},
 		{Name: "refresh-screen", Category: "main", Layer: "main", Description: "refresh screen"},
+		{Name: "upgrade", Category: "main", Layer: "main", Description: "upgrade server/client"},
 		// Session — user category "session"
 		{Name: "open-session", Category: "session", Layer: "main", Description: "create new session"},
 		{Name: "close-session", Category: "session", Layer: "main", Description: "kill current session"},
@@ -266,6 +267,7 @@ func nativePreset() stylePreset {
 			{"n", "show-release-notes", ""},
 			{"[", "enter-scrollback", ""},
 			{"r", "refresh-screen", ""},
+			{"u", "upgrade", ""},
 		},
 	}
 }

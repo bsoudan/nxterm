@@ -165,6 +165,7 @@ func buildUpgradeState(s *Server, result upgradeResult, specs []string) *Upgrade
 		ListenerSpecs: specs,
 		NextClientID:  s.nextClientID.Load(),
 		Programs:      make(map[string]ProgramConfigJSON),
+		BinariesDir:   s.binariesDir,
 	}
 	state.SessionsCfg = SessionsCfgJSON{
 		DefaultName:     s.sessionsCfg.DefaultName,

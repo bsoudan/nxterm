@@ -13,7 +13,9 @@ import (
 )
 
 // RecvUpgrade receives a live upgrade handoff from an old termd process.
-func RecvUpgrade(fd int, sshCfg transport.SSHListenerConfig) (*Server, []net.Listener, []string, error) {
+// The version parameter is the new binary's compiled-in version, which
+// takes precedence over the version in the upgrade state (from the old binary).
+func RecvUpgrade(fd int, sshCfg transport.SSHListenerConfig, version string) (*Server, []net.Listener, []string, error) {
 	file := os.NewFile(uintptr(fd), "upgrade-recv")
 	netConn, err := net.FileConn(file)
 	file.Close()
@@ -86,13 +88,14 @@ func RecvUpgrade(fd int, sshCfg transport.SSHListenerConfig) (*Server, []net.Lis
 	cfg := config.ServerConfig{}
 	cfg.Sessions.DefaultName = state.SessionsCfg.DefaultName
 	cfg.Sessions.DefaultPrograms = state.SessionsCfg.DefaultPrograms
+	cfg.Upgrade.BinariesDir = state.BinariesDir
 	for _, p := range state.Programs {
 		cfg.Programs = append(cfg.Programs, config.ProgramConfig{
 			Name: p.Name, Cmd: p.Cmd, Args: p.Args, Env: p.Env,
 		})
 	}
 
-	srv := NewServer(listeners, state.Version, cfg)
+	srv := NewServer(listeners, version, cfg)
 	srv.nextClientID.Store(state.NextClientID)
 
 	for _, rs := range state.Regions {

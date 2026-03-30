@@ -21,6 +21,7 @@ type UpgradeState struct {
 	Programs      map[string]ProgramConfigJSON `json:"programs"`
 	SessionsCfg   SessionsCfgJSON              `json:"sessions_cfg"`
 	NextClientID  uint32                       `json:"next_client_id"`
+	BinariesDir   string                       `json:"binaries_dir,omitempty"`
 }
 
 type SessionState struct {

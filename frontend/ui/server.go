@@ -34,6 +34,9 @@ type Server struct {
 	done        chan struct{} // closed by Close() to prevent Send() panic
 	closeOnce   sync.Once
 	processName string
+
+	downloadMu sync.Mutex
+	download   *Download // set during client binary download
 }
 
 func NewServer(bufSize int, processName string) *Server {
@@ -57,6 +60,15 @@ func (s *Server) Send(msg any) {
 	case <-s.done:
 	default:
 	}
+}
+
+// SetDownload registers or clears the active binary download.
+// When set, dispatchInbound writes chunks directly to the download
+// instead of sending them through bubbletea.
+func (s *Server) SetDownload(d *Download) {
+	s.downloadMu.Lock()
+	s.download = d
+	s.downloadMu.Unlock()
 }
 
 // Close signals the server goroutine to exit. Safe to call multiple times.
@@ -92,6 +104,16 @@ func (s *Server) Run(conn net.Conn, dialFn func() (net.Conn, error), p *tea.Prog
 func (s *Server) runConnection(c *client.Client, p *tea.Program) (exit bool) {
 	recv := c.Recv()
 
+	// Buffer inbound messages to bubbletea so that p.Send() blocking
+	// (e.g. during PTY rendering) doesn't stall the recv drain.
+	inboundBuf := make(chan any, 256)
+	go func() {
+		for msg := range inboundBuf {
+			p.Send(msg)
+		}
+	}()
+	defer close(inboundBuf)
+
 	for {
 		select {
 		case msg, ok := <-s.ch:
@@ -108,7 +130,7 @@ func (s *Server) runConnection(c *client.Client, p *tea.Program) (exit bool) {
 				c.Close()
 				return false
 			}
-			s.dispatchInbound(msg, recv, p)
+			s.dispatchInbound(msg, recv, inboundBuf)
 		}
 	}
 }
@@ -165,13 +187,24 @@ func (s *Server) dispatchOutbound(c *client.Client, msg any) {
 	}
 }
 
-// dispatchInbound sends a message to bubbletea as a protocol.Message
-// (preserving ReqID so the model can match replies). TerminalEvents
-// are batched for performance.
-func (s *Server) dispatchInbound(msg protocol.Message, recv <-chan protocol.Message, p *tea.Program) {
+// dispatchInbound sends a message to bubbletea via the inbound buffer.
+// TerminalEvents are batched for performance. Binary chunks are written
+// directly to the active download to avoid backpressure through bubbletea.
+func (s *Server) dispatchInbound(msg protocol.Message, recv <-chan protocol.Message, inbound chan<- any) {
+	// Fast path: write binary chunks directly to the download file.
+	if chunk, ok := msg.Payload.(protocol.ClientBinaryChunk); ok {
+		s.downloadMu.Lock()
+		dl := s.download
+		s.downloadMu.Unlock()
+		if dl != nil {
+			dl.HandleChunk(chunk)
+			return
+		}
+	}
+
 	te, ok := msg.Payload.(protocol.TerminalEvents)
 	if !ok {
-		p.Send(msg)
+		inbound <- msg
 		return
 	}
 
@@ -188,15 +221,15 @@ drain:
 			if te2, ok := next.Payload.(protocol.TerminalEvents); ok && te2.RegionID == regionID {
 				batch = append(batch, te2.Events...)
 			} else {
-				p.Send(protocol.Message{Payload: protocol.TerminalEvents{RegionID: regionID, Events: batch}})
-				s.dispatchInbound(next, recv, p)
+				inbound <- protocol.Message{Payload: protocol.TerminalEvents{RegionID: regionID, Events: batch}}
+				s.dispatchInbound(next, recv, inbound)
 				return
 			}
 		default:
 			break drain
 		}
 	}
-	p.Send(protocol.Message{Payload: protocol.TerminalEvents{RegionID: regionID, Events: batch}})
+	inbound <- protocol.Message{Payload: protocol.TerminalEvents{RegionID: regionID, Events: batch}}
 }
 
 func (s *Server) sendIdentify(c *client.Client) {

@@ -286,7 +286,7 @@ func cmdLiveUpgrade(_ context.Context, cmd *cli.Command) error {
 
 func runUpgradeReceiver(fd int, sshCfg transport.SSHListenerConfig) error {
 	slog.Info("starting in upgrade receiver mode", "fd", fd)
-	srv, _, specs, err := RecvUpgrade(fd, sshCfg)
+	srv, _, specs, err := RecvUpgrade(fd, sshCfg, version)
 	if err != nil {
 		return fmt.Errorf("upgrade recv: %w", err)
 	}
