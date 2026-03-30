@@ -286,11 +286,10 @@ func cmdLiveUpgrade(_ context.Context, cmd *cli.Command) error {
 
 func runUpgradeReceiver(fd int, sshCfg transport.SSHListenerConfig) error {
 	slog.Info("starting in upgrade receiver mode", "fd", fd)
-	srv, listeners, err := RecvUpgrade(fd, sshCfg)
+	srv, _, specs, err := RecvUpgrade(fd, sshCfg)
 	if err != nil {
 		return fmt.Errorf("upgrade recv: %w", err)
 	}
-	_ = listeners // listeners are already inside srv
 
 	// Tell systemd we're the new main process and we're ready.
 	sdNotify(fmt.Sprintf("MAINPID=%d", os.Getpid()))
@@ -304,8 +303,13 @@ func runUpgradeReceiver(fd int, sshCfg transport.SSHListenerConfig) error {
 			switch sig {
 			case syscall.SIGUSR2:
 				slog.Info("received upgrade signal (SIGUSR2)")
-				// TODO: support chained upgrades
-				slog.Warn("chained upgrades not yet supported; ignoring")
+				if err := srv.HandleUpgrade(specs, sshCfg); err != nil {
+					slog.Error("live upgrade failed", "err", err)
+					continue
+				}
+				srv.SetUnlinkOnClose(false)
+				srv.Shutdown()
+				return
 			default:
 				slog.Info("received shutdown signal")
 				srv.Shutdown()
