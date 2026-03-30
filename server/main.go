@@ -222,7 +222,9 @@ func runServer(_ context.Context, cmd *cli.Command) error {
 					slog.Error("live upgrade failed", "err", err)
 					continue // server keeps running
 				}
-				// Upgrade succeeded — stop the server.
+				// Upgrade succeeded — stop the server. Don't remove
+				// Unix socket files; the new process owns them now.
+				srv.SetUnlinkOnClose(false)
 				srv.Shutdown()
 				return
 			default:

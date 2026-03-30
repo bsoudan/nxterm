@@ -114,6 +114,17 @@ func (s *Server) acceptLoop(ln net.Listener) {
 	}
 }
 
+// SetUnlinkOnClose prevents Unix socket listeners from removing their
+// socket files when closed. Call before Shutdown after a live upgrade
+// so the new process's socket remains reachable.
+func (s *Server) SetUnlinkOnClose(unlink bool) {
+	for _, ln := range s.listeners {
+		if ul, ok := ln.(interface{ SetUnlinkOnClose(bool) }); ok {
+			ul.SetUnlinkOnClose(unlink)
+		}
+	}
+}
+
 func (s *Server) Shutdown() {
 	if !s.shutdown.CompareAndSwap(false, true) {
 		return

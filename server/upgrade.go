@@ -196,10 +196,11 @@ func buildUpgradeState(s *Server, result upgradeResult, specs []string) *Upgrade
 }
 
 func (s *Server) stopAccepting() {
-	// Just set the flag. Accept loops will exit when Shutdown() closes
-	// the listeners. During upgrade, the accept loops are irrelevant
-	// since the new process takes over the dup'd listener FDs.
-	s.shutdown.Store(true)
+	// No-op: accept loops keep running until Shutdown() closes the
+	// listeners. We must NOT set s.shutdown here — Shutdown() uses
+	// CompareAndSwap, so setting it early would cause Shutdown() to
+	// skip closing listeners and the done channel, leaving Run()
+	// blocked forever.
 }
 
 func (s *Server) disconnectAllClients() {
