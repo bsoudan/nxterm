@@ -1,4 +1,4 @@
-.PHONY: all build-server changelog build-tui build-tui-windows build-termctl build-mousehelper build-upgrade-test-binaries check-windows test test-e2e test-stress test-stress-long clean
+.PHONY: all build-server changelog build-tui build-tui-windows build-termctl build-mousehelper build-upgrade-binaries build-upgrade-test-binaries check-windows test test-e2e test-stress test-stress-long clean
 
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/-g[0-9a-f]*//;s/-dirty/*/' || echo "dev")
 LDFLAGS := -X main.version=$(VERSION)
@@ -6,7 +6,7 @@ ifndef RELEASE
   GCFLAGS := -gcflags "all=-N -l"
 endif
 
-all: build-server build-tui build-tui-windows build-termctl build-mousehelper
+all: build-server build-tui build-tui-windows build-termctl build-mousehelper build-upgrade-binaries
 
 build-server:
 	go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o .local/bin/termd ./server
@@ -34,6 +34,14 @@ build-mousehelper:
 
 build-termctl:
 	go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o .local/bin/termctl ./termctl
+
+UPGRADE_DIR := .local/share/termd
+
+build-upgrade-binaries: changelog
+	@mkdir -p $(UPGRADE_DIR)
+	RELEASE=1 go build -ldflags "$(LDFLAGS)" -o $(UPGRADE_DIR)/termd-$$(go env GOOS)-$$(go env GOARCH) ./server
+	RELEASE=1 go build -ldflags "$(LDFLAGS)" -o $(UPGRADE_DIR)/termd-tui-$$(go env GOOS)-$$(go env GOARCH) ./frontend
+	GOOS=windows GOARCH=amd64 RELEASE=1 go build -ldflags "$(LDFLAGS)" -o $(UPGRADE_DIR)/termd-tui-windows-amd64.exe ./frontend
 
 UPGRADE_TEST_DIR := .local/upgrade-binaries
 UPGRADE_TEST_VERSION := upgrade-test-v2
