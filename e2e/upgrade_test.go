@@ -2,7 +2,6 @@ package e2e
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,7 +13,6 @@ import (
 	"time"
 
 	"github.com/creack/pty"
-	"termd/transport"
 )
 
 // TestLiveUpgrade starts a server with Unix, TCP, WebSocket, and SSH
@@ -104,8 +102,7 @@ func TestLiveUpgrade(t *testing.T) {
 		t.Fatalf("missing addrs: tcp=%q ws=%q ssh=%q (found %d total)", tcpAddr, wsAddr, sshAddr, found)
 	}
 
-	// Get server PID via the protocol.
-	serverPID := getServerPID(t, socketPath)
+	serverPID := cmd.Process.Pid
 	t.Logf("server PID: %d", serverPID)
 	t.Logf("transports: unix=%s tcp=%s ws=%s ssh=%s", socketPath, tcpAddr, wsAddr, sshAddr)
 
@@ -190,34 +187,6 @@ func TestLiveUpgrade(t *testing.T) {
 	}
 }
 
-// getServerPID connects to the server, reads the Identify message, and
-// returns the server PID.
-func getServerPID(t *testing.T, socketPath string) int {
-	t.Helper()
-	conn, err := transport.Dial(socketPath)
-	if err != nil {
-		t.Fatalf("connect for PID: %v", err)
-	}
-	defer conn.Close()
-
-	buf := make([]byte, 4096)
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	n, err := conn.Read(buf)
-	if err != nil {
-		t.Fatalf("read identify: %v", err)
-	}
-	var ident struct {
-		Pid int `json:"pid"`
-	}
-	if err := json.Unmarshal(buf[:n], &ident); err != nil {
-		t.Fatalf("parse identify: %v", err)
-	}
-	if ident.Pid == 0 {
-		t.Fatal("server PID is 0")
-	}
-	return ident.Pid
-}
-
 // TestLiveUpgradeSimple starts a server with a single Unix socket, connects
 // one frontend, triggers SIGUSR2, and verifies the old process is gone and
 // the frontend reconnects with its shell intact.
@@ -250,8 +219,7 @@ func TestLiveUpgradeSimple(t *testing.T) {
 	defer fe.Kill()
 	fe.WaitFor(t, "termd$", 10*time.Second)
 
-	// Read old PID from the in-GUI status pane.
-	oldPID := getStatusPID(t, fe)
+	oldPID := cmd.Process.Pid
 	t.Logf("old server PID: %d", oldPID)
 
 	// Type a marker so we can verify the shell survives.
