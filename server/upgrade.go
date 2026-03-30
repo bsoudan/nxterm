@@ -87,12 +87,13 @@ func (s *Server) HandleUpgrade(specs []string, sshCfg transport.SSHListenerConfi
 	result := s.drainForUpgrade()
 	slog.Info("upgrade: event loop drained")
 
-	// Stop readLoops — StopReadLoop dups the FD and closes the original.
+	// Dup PTY FDs for handoff. The old readLoops keep running —
+	// they'll get errors when the old process exits.
 	ptyDups := make(map[string]*os.File) // regionID → dup'd PTY file
 	for id, r := range result.regions {
-		ptyDups[id] = r.StopReadLoop()
+		ptyDups[id] = r.DetachPTY()
 	}
-	slog.Info("upgrade: stopped readLoops", "regions", len(result.regions))
+	slog.Info("upgrade: detached PTY FDs", "regions", len(result.regions))
 
 	// Build and send state.
 	state := buildUpgradeState(s, result, specs)

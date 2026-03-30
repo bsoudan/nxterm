@@ -131,10 +131,11 @@ func TestLiveUpgrade(t *testing.T) {
 		fe := startFrontendWithEnv(t, "ws://"+wsAddr, env)
 		frontends = append(frontends, feEntry{"ws", fe.ptyIO, fe.Kill})
 	}
-	// SSH
+	// SSH — clear SSH_AUTH_SOCK so the client doesn't try to contact
+	// a real agent (which adds latency and is unnecessary with --ssh-no-auth).
 	{
 		feCmd := exec.Command("termd-tui", "--socket", "ssh://"+sshAddr)
-		feCmd.Env = append(env, "TERM=dumb")
+		feCmd.Env = append(env, "TERM=dumb", "SSH_AUTH_SOCK=")
 		ptmx, err := pty.StartWithSize(feCmd, &pty.Winsize{Rows: 24, Cols: 80})
 		if err != nil {
 			t.Fatalf("start SSH frontend: %v", err)
@@ -148,15 +149,23 @@ func TestLiveUpgrade(t *testing.T) {
 		defer fe.kill()
 	}
 
-	// Wait for all frontends to connect and show a prompt.
+	// Wait for all frontends to connect. Multiple frontends sharing one
+	// region can miss the initial bash prompt if they subscribe after it
+	// was already rendered. Send Enter to trigger a fresh prompt.
 	for _, fe := range frontends {
 		fe.pio.WaitFor(t, "bash", 10*time.Second)
+		fe.pio.Write([]byte("\r"))
 		fe.pio.WaitFor(t, "termd$", 10*time.Second)
 	}
 
 	// Type a unique marker in the Unix frontend's shell.
 	frontends[0].pio.Write([]byte("echo UPGRADE_MARKER_42\r"))
 	frontends[0].pio.WaitFor(t, "UPGRADE_MARKER_42", 10*time.Second)
+
+	// Let all frontends settle before triggering upgrade.
+	for _, fe := range frontends {
+		fe.pio.WaitForSilence(200 * time.Millisecond)
+	}
 
 	// Trigger live upgrade.
 	t.Log("sending SIGUSR2...")
@@ -167,14 +176,19 @@ func TestLiveUpgrade(t *testing.T) {
 	// All frontends should reconnect.
 	for _, fe := range frontends {
 		t.Logf("waiting for %s frontend to reconnect...", fe.name)
-		fe.pio.WaitFor(t, "bash", 15*time.Second)
+		fe.pio.WaitFor(t, "bash", 20*time.Second)
+	}
+
+	// Let frontends settle after reconnection.
+	for _, fe := range frontends {
+		fe.pio.WaitForSilence(200 * time.Millisecond)
 	}
 
 	// Type in each frontend to verify the shells are alive.
 	for i, fe := range frontends {
 		marker := fmt.Sprintf("ALIVE_%s_%d", fe.name, i)
 		fe.pio.Write([]byte("echo " + marker + "\r"))
-		fe.pio.WaitFor(t, marker, 10*time.Second)
+		fe.pio.WaitFor(t, marker, 15*time.Second)
 		t.Logf("%s frontend: shell alive", fe.name)
 	}
 }

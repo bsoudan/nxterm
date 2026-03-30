@@ -11,7 +11,6 @@ import (
 	"strings"
 	"sync"
 	"syscall"
-	"time"
 	"unicode/utf8"
 
 	"github.com/charmbracelet/x/ansi"
@@ -360,32 +359,17 @@ func (r *Region) Close() {
 // StopReadLoop stops the readLoop goroutine and returns a dup'd PTY FD
 // for handoff. The original FD is closed (unblocking readLoop's Read).
 // The caller should use the returned file for the new process.
-// StopReadLoop stops the readLoop by sending SIGWINCH to the child process
-// (which causes the PTY to become readable) and signaling via stopRead.
-// Returns a dup'd PTY FD for handoff. If readLoop doesn't exit quickly,
-// proceeds without waiting (the FD is dup'd so the handoff still works).
-func (r *Region) StopReadLoop() *os.File {
+// DetachPTY dups the PTY master FD for handoff to a new process.
+// The old readLoop keeps running on the original FD — it will get
+// an error when the old process exits and the FD is closed.
+// The caller gets a fresh FD that survives the old process exit.
+func (r *Region) DetachPTY() *os.File {
 	newFD, err := syscall.Dup(int(r.ptmx.Fd()))
 	if err != nil {
-		slog.Error("StopReadLoop: dup failed", "err", err)
+		slog.Error("DetachPTY: dup failed", "region_id", r.id, "err", err)
 		return nil
 	}
-	dupFile := os.NewFile(uintptr(newFD), r.ptmx.Name())
-
-	close(r.stopRead)
-	// Send SIGWINCH to child to generate PTY activity, unblocking the Read.
-	if r.pid > 0 {
-		syscall.Kill(r.pid, syscall.SIGWINCH)
-	}
-	// Wait briefly for readLoop to notice and exit.
-	select {
-	case <-r.readerDone:
-	case <-time.After(500 * time.Millisecond):
-		slog.Debug("StopReadLoop: readLoop did not exit in time, proceeding", "region_id", r.id)
-	}
-
-	r.ptmx = dupFile
-	return dupFile
+	return os.NewFile(uintptr(newFD), r.ptmx.Name())
 }
 
 // RestoreRegion reconstructs a Region from serialized state and a PTY FD.

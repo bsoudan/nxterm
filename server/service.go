@@ -52,8 +52,10 @@ func generateUnit(execPath string, cmd *cli.Command) string {
 Description=termd %s
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=all
 ExecStart=%s
+ExecReload=/bin/kill -USR2 $MAINPID
 Restart=on-failure
 Environment=TERMD_VERSION=%s
 Environment=PATH=%s
@@ -207,7 +209,7 @@ func cmdRestart(ctx context.Context, cmd *cli.Command) error {
 	args = append(args, prevArgs...)
 	execLine := strings.Join(args, " ")
 
-	unit := fmt.Sprintf("[Unit]\nDescription=termd %s\n\n[Service]\nType=simple\nExecStart=%s\nRestart=on-failure\nEnvironment=TERMD_VERSION=%s\nEnvironment=PATH=%s\n\n[Install]\nWantedBy=default.target\n",
+	unit := fmt.Sprintf("[Unit]\nDescription=termd %s\n\n[Service]\nType=notify\nNotifyAccess=all\nExecStart=%s\nExecReload=/bin/kill -USR2 $MAINPID\nRestart=on-failure\nEnvironment=TERMD_VERSION=%s\nEnvironment=PATH=%s\n\n[Install]\nWantedBy=default.target\n",
 		version, execLine, version, os.Getenv("PATH"))
 
 	if err := os.WriteFile(unitPath, []byte(unit), 0644); err != nil {

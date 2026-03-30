@@ -233,6 +233,9 @@ func runServer(_ context.Context, cmd *cli.Command) error {
 		}
 	}()
 
+	// Notify systemd that the server is ready.
+	sdNotify("READY=1")
+
 	srv.Run()
 	return nil
 }
@@ -286,6 +289,10 @@ func runUpgradeReceiver(fd int, sshCfg transport.SSHListenerConfig) error {
 		return fmt.Errorf("upgrade recv: %w", err)
 	}
 	_ = listeners // listeners are already inside srv
+
+	// Tell systemd we're the new main process and we're ready.
+	sdNotify(fmt.Sprintf("MAINPID=%d", os.Getpid()))
+	sdNotify("READY=1")
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT, syscall.SIGUSR2)
