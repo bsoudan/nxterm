@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/creack/pty"
 )
 
@@ -261,4 +262,170 @@ func TestSessionClientListShowsSession(t *testing.T) {
 	if !found {
 		t.Fatalf("client list missing session 'visible' for termd-tui:\n%s", out)
 	}
+}
+
+func TestSessionPersistence(t *testing.T) {
+	socketPath, serverCleanup := startServer(t)
+	defer serverCleanup()
+
+	pio1, cleanup1 := startFrontend(t, socketPath)
+
+	pio1.WaitFor(t, "bash", 10*time.Second)
+	pio1.WaitFor(t, "termd$",10*time.Second)
+
+	// Output colored text before detaching
+	pio1.Write([]byte("printf '" +
+		shellSGR(ansi.AttrRedForegroundColor) + "COLOR_PERSIST" + shellResetStyle +
+		`\n'` + "\r"))
+
+	pio1.WaitForScreen(t, func(lines []string) bool {
+		for _, line := range lines {
+			if strings.HasPrefix(line, "COLOR_PERSIST") {
+				return true
+			}
+		}
+		return false
+	}, "output line starting with 'COLOR_PERSIST'", 10*time.Second)
+	pio1.WaitForSilence(200 * time.Millisecond)
+
+	// Verify colors are present before detach
+	cells1 := pio1.ScreenCells()
+	for row, line := range cells1 {
+		if len(line) > 0 && line[0].Data == "C" &&
+			len(line) > 12 && line[12].Data == "T" {
+			fg := line[0].Attr.Fg
+			t.Logf("before detach: 'COLOR_PERSIST' at row %d, fg=%d/%q", row, fg.Mode, fg.Name)
+			if fg.Name != "red" {
+				t.Fatalf("before detach: expected red fg, got %q", fg.Name)
+			}
+			break
+		}
+	}
+
+	// Detach
+	pio1.Write([]byte{0x02, 'd'})
+
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case <-deadline:
+			cleanup1()
+			t.Fatal("timeout waiting for first frontend to exit")
+		case _, ok := <-pio1.ch:
+			if !ok {
+				goto reconnect
+			}
+		}
+	}
+
+reconnect:
+	cleanup1()
+
+	// Reattach
+	pio2, cleanup2 := startFrontend(t, socketPath)
+	defer cleanup2()
+
+	pio2.WaitFor(t, "COLOR_PERSIST", 10*time.Second)
+	pio2.WaitForSilence(200 * time.Millisecond)
+
+	// Verify colors survived reattach
+	cells2 := pio2.ScreenCells()
+	found := false
+	for row, line := range cells2 {
+		if len(line) > 0 && line[0].Data == "C" &&
+			len(line) > 12 && line[12].Data == "T" {
+			fg := line[0].Attr.Fg
+			t.Logf("after reattach: 'COLOR_PERSIST' at row %d, fg=%d/%q", row, fg.Mode, fg.Name)
+			if fg.Name != "red" {
+				t.Errorf("after reattach: expected red fg, got mode=%d name=%q", fg.Mode, fg.Name)
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("could not find 'COLOR_PERSIST' output line after reattach")
+	}
+}
+
+func TestConnectPicksUpExistingRegions(t *testing.T) {
+	socketPath, serverCleanup := startServer(t)
+	defer serverCleanup()
+
+	// Pre-create two regions via termctl before the frontend connects.
+	spawnRegion(t, socketPath, "shell")
+	spawnRegion(t, socketPath, "shell")
+
+	// Now start the frontend — it should enumerate both regions as tabs.
+	pio, frontendCleanup := startFrontend(t, socketPath)
+	defer frontendCleanup()
+
+	pio.WaitForScreen(t, func(lines []string) bool {
+		if len(lines) == 0 {
+			return false
+		}
+		return strings.Contains(lines[0], "1:") && strings.Contains(lines[0], "2:")
+	}, "tab bar with two pre-existing regions", 10*time.Second)
+}
+
+func TestReconnectRestoresTabs(t *testing.T) {
+	socketPath, serverCleanup := startServer(t)
+	defer serverCleanup()
+
+	pio, frontendCleanup := startFrontend(t, socketPath)
+	defer frontendCleanup()
+
+	pio.WaitFor(t, "1:bash", 10*time.Second)
+	pio.WaitFor(t, "termd$", 10*time.Second)
+
+	// Spawn a second region
+	pio.Write([]byte("\x02c"))
+	pio.WaitForScreen(t, func(lines []string) bool {
+		if len(lines) == 0 {
+			return false
+		}
+		return strings.Contains(lines[0], "1:bash") && strings.Contains(lines[0], "2:bash")
+	}, "tab bar with '1:bash' and '2:bash'", 10*time.Second)
+	pio.WaitFor(t, "termd$", 10*time.Second)
+
+	// Kill the client connection to force reconnect
+	clientID := findFrontendClientID(t, socketPath)
+	runTermctl(t, socketPath, "client", "kill", clientID)
+
+	// Wait for reconnecting then reconnected
+	pio.WaitFor(t, "reconnecting", 10*time.Second)
+	pio.WaitFor(t, "termd$", 10*time.Second)
+
+	// Both tabs should be restored after reconnect
+	pio.WaitForScreen(t, func(lines []string) bool {
+		if len(lines) == 0 {
+			return false
+		}
+		return strings.Contains(lines[0], "1:bash") && strings.Contains(lines[0], "2:bash")
+	}, "both tabs restored after reconnect", 10*time.Second)
+}
+
+func TestAllRegionsDestroyedShowsNoSession(t *testing.T) {
+	socketPath, serverCleanup := startServer(t)
+	defer serverCleanup()
+
+	pio, frontendCleanup := startFrontend(t, socketPath)
+	defer frontendCleanup()
+
+	pio.WaitFor(t, "1:bash", 10*time.Second)
+	pio.WaitFor(t, "termd$", 10*time.Second)
+
+	// Exit the only shell.
+	pio.Write([]byte("exit\r"))
+
+	// Frontend should enter the no-session screen instead of exiting.
+	pio.WaitFor(t, "no session", 10*time.Second)
+	pio.WaitForSilence(200 * time.Millisecond)
+
+	// Reconnect from the no-session screen using the connect overlay.
+	connectViaUI(t, pio, socketPath)
+
+	// Verify we're back in a live shell.
+	pio.Write([]byte("echo ALIVE\r"))
+	pio.WaitFor(t, "ALIVE", 10*time.Second)
 }
