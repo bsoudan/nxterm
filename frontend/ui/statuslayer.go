@@ -27,6 +27,11 @@ type StatusCaps struct {
 	BgDark        *bool
 	TermEnv       map[string]string
 	MouseModes    string
+
+	ClientUpgradeAvail bool
+	ClientUpgradeVer   string
+	ServerUpgradeAvail bool
+	ServerUpgradeVer   string
 }
 
 func NewStatusLayer(caps StatusCaps) *StatusLayer {
@@ -58,7 +63,11 @@ func (s *StatusLayer) Deactivate()       {}
 func (s *StatusLayer) View(width, height int, active bool) []*lipgloss.Layer {
 	var lines []string
 
-	lines = append(lines, "termd-tui:")
+	header := "termd-tui:"
+	if s.caps.ClientUpgradeAvail {
+		header += " (upgrade available: " + s.caps.ClientUpgradeVer + ")"
+	}
+	lines = append(lines, header)
 	lines = append(lines, fmt.Sprintf("  Hostname:  %s", s.caps.Hostname))
 	lines = append(lines, fmt.Sprintf("  Version:   %s", s.caps.Version))
 	endpointStr := s.caps.Endpoint
@@ -111,7 +120,11 @@ func (s *StatusLayer) View(width, height int, active bool) []*lipgloss.Layer {
 	}
 	lines = append(lines, "")
 
-	lines = append(lines, "termd:")
+	srvHeader := "termd:"
+	if s.caps.ServerUpgradeAvail {
+		srvHeader += " (upgrade available: " + s.caps.ServerUpgradeVer + ")"
+	}
+	lines = append(lines, srvHeader)
 	if s.status != nil {
 		d := time.Duration(s.status.UptimeSeconds) * time.Second
 		lines = append(lines, fmt.Sprintf("  Hostname:  %s", s.status.Hostname))

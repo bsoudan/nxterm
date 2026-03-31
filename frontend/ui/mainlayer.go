@@ -318,10 +318,14 @@ func (m *MainLayer) handleCmd(msg MainCmd) (tea.Msg, tea.Cmd, bool) {
 		return push(NewScrollableLayer("release notes", strings.TrimRight(m.changelog, "\n"), false, nil, m.termWidth, m.termHeight))
 	case "show-status":
 		caps := StatusCaps{
-			Hostname:    m.localHostname,
-			Endpoint:    m.endpoint,
-			Version:     m.version,
-			ConnStatus:  m.connStatus,
+			Hostname:           m.localHostname,
+			Endpoint:           m.endpoint,
+			Version:            m.version,
+			ConnStatus:         m.connStatus,
+			ClientUpgradeAvail: m.upgradeClientAvail,
+			ClientUpgradeVer:   m.upgradeClientVer,
+			ServerUpgradeAvail: m.upgradeServerAvail,
+			ServerUpgradeVer:   m.upgradeServerVer,
 		}
 		if s := m.activeSessionLayer(); s != nil {
 			caps.SessionName = s.sessionName
