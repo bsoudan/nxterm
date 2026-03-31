@@ -287,7 +287,11 @@ func (u *UpgradeLayer) applyClientUpgrade(expectedHash string, expectedSize int6
 
 	targetPath := exePath
 	if filepath.Dir(tmpPath) != filepath.Dir(exePath) {
-		targetPath = filepath.Join(filepath.Dir(tmpPath), "termd-tui")
+		name := filepath.Base(exePath)
+		if name == "" || name == "." {
+			name = "termd-tui"
+		}
+		targetPath = filepath.Join(filepath.Dir(tmpPath), name)
 	}
 
 	if err := replaceAndExec(tmpPath, targetPath); err != nil {

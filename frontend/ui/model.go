@@ -64,6 +64,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if reply, ok := m.req.pending[pmsg.ReqID]; ok {
 				delete(m.req.pending, pmsg.ReqID)
 				reply(pmsg.Payload)
+				// Check if the reply callback set a deferred command
+				// (e.g. upgrade check opening the upgrade layer).
+				main := m.layers[0].(*MainLayer)
+				if cmd := main.deferredCmd; cmd != nil {
+					main.deferredCmd = nil
+					return m, cmd
+				}
 				return m, nil
 			}
 		}

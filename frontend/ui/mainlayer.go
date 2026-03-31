@@ -42,6 +42,7 @@ type MainLayer struct {
 	upgradeServerVer    string
 	upgradeClientAvail  bool
 	upgradeClientVer    string
+	deferredCmd         tea.Cmd
 
 	termWidth  int
 	termHeight int
@@ -294,13 +295,17 @@ func (m *MainLayer) handleCmd(msg MainCmd) (tea.Msg, tea.Cmd, bool) {
 		return resp, cmd, true
 
 	case "upgrade":
-		if !m.upgradeServerAvail && !m.upgradeClientAvail {
-			return nil, ShowToast("Already up to date", 3*time.Second), true
-		}
-		ul := NewUpgradeLayer(m.server, m.requestFn, m.version,
-			m.upgradeServerAvail, m.upgradeServerVer,
-			m.upgradeClientAvail, m.upgradeClientVer)
-		return push(ul)
+		m.checkForUpgrades(func() {
+			if !m.upgradeServerAvail && !m.upgradeClientAvail {
+				m.deferredCmd = ShowToast("Already up to date", 3*time.Second)
+				return
+			}
+			ul := NewUpgradeLayer(m.server, m.requestFn, m.version,
+				m.upgradeServerAvail, m.upgradeServerVer,
+				m.upgradeClientAvail, m.upgradeClientVer)
+			m.deferredCmd = func() tea.Msg { return PushLayerMsg{Layer: ul} }
+		})
+		return nil, nil, true
 
 	// ── Overlays ───────────────────────────────────────────────────────
 	case "run-command":
@@ -508,7 +513,7 @@ func (m *MainLayer) UpgradeAvailable() bool {
 	return m.upgradeServerAvail || m.upgradeClientAvail
 }
 
-func (m *MainLayer) checkForUpgrades() {
+func (m *MainLayer) checkForUpgrades(done ...func()) {
 	m.requestFn(protocol.UpgradeCheckRequest{
 		ClientVersion: m.version,
 		OS:            runtime.GOOS,
@@ -519,6 +524,9 @@ func (m *MainLayer) checkForUpgrades() {
 			m.upgradeServerVer = resp.ServerVersion
 			m.upgradeClientAvail = resp.ClientAvailable
 			m.upgradeClientVer = resp.ClientVersion
+		}
+		if len(done) > 0 && done[0] != nil {
+			done[0]()
 		}
 	})
 }

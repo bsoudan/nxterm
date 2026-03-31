@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -19,10 +20,10 @@ func replaceAndExec(tmpPath, targetPath string) error {
 		return fmt.Errorf("rename running binary %s -> %s: %w", targetPath, oldPath, err)
 	}
 
-	if err := os.Rename(tmpPath, targetPath); err != nil {
+	if err := moveFile(tmpPath, targetPath); err != nil {
 		// Try to restore the old binary.
 		os.Rename(oldPath, targetPath)
-		return fmt.Errorf("rename %s -> %s: %w", tmpPath, targetPath, err)
+		return fmt.Errorf("move %s -> %s: %w", tmpPath, targetPath, err)
 	}
 
 	slog.Info("client upgrade: starting new process", "binary", targetPath)
@@ -37,4 +38,37 @@ func replaceAndExec(tmpPath, targetPath string) error {
 
 	os.Exit(0)
 	return nil // unreachable
+}
+
+// moveFile tries os.Rename first, falling back to copy+delete for
+// cross-drive moves (os.Rename fails across drives on Windows).
+func moveFile(src, dst string) error {
+	if err := os.Rename(src, dst); err == nil {
+		return nil
+	}
+	return copyAndRemove(src, dst)
+}
+
+func copyAndRemove(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		os.Remove(dst)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		os.Remove(dst)
+		return err
+	}
+	os.Remove(src)
+	return nil
 }
