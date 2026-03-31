@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -298,17 +297,16 @@ func TestTUIUpgradeE2E(t *testing.T) {
 	serverCmd := exec.Command(serverBin, "unix:"+socketPath)
 	serverCmd.Env = env
 	serverCmd.Stderr = os.Stderr
+	serverCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := serverCmd.Start(); err != nil {
 		t.Fatalf("start server: %v", err)
 	}
 	oldServerPID := serverCmd.Process.Pid
-	var newServerPID int
+	// Kill the entire process group so the new server spawned by
+	// HandleUpgrade is also cleaned up.
 	defer func() {
-		serverCmd.Process.Kill()
+		syscall.Kill(-serverCmd.Process.Pid, syscall.SIGKILL)
 		serverCmd.Wait()
-		if newServerPID > 0 {
-			syscall.Kill(newServerPID, syscall.SIGTERM)
-		}
 	}()
 
 	deadline := time.Now().Add(5 * time.Second)
@@ -418,21 +416,6 @@ func TestTUIUpgradeE2E(t *testing.T) {
 	}, "status pane showing Version: upgrade-test-v2 for both client and server", 10*time.Second)
 	t.Log("status pane confirms both versions are upgrade-test-v2")
 
-	// Extract the new server PID for cleanup.
-	pio.WaitForScreen(t, func(lines []string) bool {
-		for _, line := range lines {
-			if idx := strings.Index(line, "PID:"); idx >= 0 {
-				for _, f := range strings.Fields(line[idx+len("PID:"):]) {
-					if n, err := strconv.Atoi(f); err == nil && n > 0 {
-						newServerPID = n
-						return true
-					}
-				}
-			}
-		}
-		return false
-	}, "PID in status pane", 5*time.Second)
-
 	// Close status pane.
 	pio.Write([]byte("q"))
 	pio.WaitForSilence(200 * time.Millisecond)
@@ -441,6 +424,4 @@ func TestTUIUpgradeE2E(t *testing.T) {
 	pio.Write([]byte("echo POST_UPGRADE_ALIVE\r"))
 	pio.WaitFor(t, "POST_UPGRADE_ALIVE", 10*time.Second)
 	t.Log("shell alive after upgrade")
-
-	t.Logf("new server PID: %d", newServerPID)
 }

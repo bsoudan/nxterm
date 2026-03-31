@@ -36,6 +36,7 @@ func TestLiveUpgrade(t *testing.T) {
 		"ssh://127.0.0.1:0",
 	)
 	cmd.Env = env
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	stderrR, stderrW, _ := os.Pipe()
 	cmd.Stderr = stderrW
@@ -43,7 +44,9 @@ func TestLiveUpgrade(t *testing.T) {
 		t.Fatalf("start server: %v", err)
 	}
 	stderrW.Close()
-	defer func() { cmd.Process.Kill(); cmd.Wait() }()
+	// Kill the entire process group so the new server spawned by
+	// HandleUpgrade is also cleaned up.
+	defer func() { syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); cmd.Wait() }()
 
 	// Parse listen addresses from stderr.
 	lines := make(chan string, 32)
@@ -200,10 +203,13 @@ func TestLiveUpgradeSimple(t *testing.T) {
 	cmd := exec.Command("termd", "unix:"+socketPath)
 	cmd.Env = env
 	cmd.Stderr = os.Stderr
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start server: %v", err)
 	}
-	defer func() { cmd.Process.Kill(); cmd.Wait() }()
+	// Kill the entire process group so the new server spawned by
+	// HandleUpgrade is also cleaned up.
+	defer func() { syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); cmd.Wait() }()
 
 	// Wait for socket.
 	deadline := time.Now().Add(5 * time.Second)
@@ -255,7 +261,6 @@ func TestLiveUpgradeSimple(t *testing.T) {
 		t.Fatalf("new server PID %d matches old PID", newPID)
 	}
 	t.Logf("new server PID: %d", newPID)
-	t.Cleanup(func() { syscall.Kill(newPID, syscall.SIGTERM) })
 
 	// Verify the shell is still alive.
 	fe.Write([]byte("echo POST_UPGRADE_OK\r"))
