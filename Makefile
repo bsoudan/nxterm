@@ -1,4 +1,4 @@
-.PHONY: all build-server changelog build-tui build-tui-windows build-termctl build-mousehelper build-upgrade-binaries build-upgrade-test-binaries check-windows test test-e2e test-stress test-stress-long clean
+.PHONY: all build-server changelog build-tui build-tui-windows build-termctl build-mousehelper build-upgrade-binaries build-upgrade-test-binaries check-windows test test-e2e test-upgrade test-stress test-stress-long rpm version clean
 
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/-g[0-9a-f]*//;s/-dirty/*/' || echo "dev")
 LDFLAGS := -X main.version=$(VERSION)
@@ -60,6 +60,9 @@ test: test-e2e
 test-e2e: all build-upgrade-test-binaries
 	PATH="$(CURDIR)/.local/bin:$(PATH)" UPGRADE_BINARIES_DIR="$(CURDIR)/$(UPGRADE_TEST_DIR)" go test -v -timeout 120s ./e2e
 
+test-upgrade: all build-upgrade-test-binaries
+	PATH="$(CURDIR)/.local/bin:$(PATH)" UPGRADE_BINARIES_DIR="$(CURDIR)/$(UPGRADE_TEST_DIR)" go test -v -timeout 120s -run 'TestLiveUpgrade|TestTUIUpgradeE2E|TestUpgradeCheck|TestClientBinaryDownload' ./e2e
+
 # Stress test (quick). Override with env vars:
 #   STRESS_TUI_CLIENTS  — number of termd-tui instances    (default: 5)
 #   STRESS_RAW_CLIENTS  — number of raw protocol clients   (default: 3)
@@ -73,6 +76,12 @@ test-stress-long: all
 		STRESS_TUI_CLIENTS=10 STRESS_RAW_CLIENTS=5 STRESS_DURATION=120s \
 		go test -v -tags stress -run TestStress -timeout 300s ./e2e
 
+rpm: version
+	nix build .#rpm --out-link rpm-result
+
+version:
+	@echo "$(VERSION)" | tr -d '*' > dist/.version
+
 clean:
-	rm -rf .local/bin
+	rm -rf .local/bin dist/.version
 	go clean ./...
