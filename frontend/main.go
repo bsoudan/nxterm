@@ -187,7 +187,7 @@ func runFrontend(_ context.Context, cmd *cli.Command) error {
 		go func() { defer wg.Done(); server.Run(conn, dialFn, p) }()
 	}
 	wg.Add(1)
-	go func() { defer wg.Done(); ui.InputLoop(stdinDup, p, pipeW, model.InitDone()) }()
+	go func() { defer wg.Done(); ui.InputLoop(stdinDup, p, pipeW) }()
 
 	// Start mDNS browsing when the connect overlay is shown.
 	browseCtx, browseCancel := context.WithTimeout(context.Background(), 10*time.Second)

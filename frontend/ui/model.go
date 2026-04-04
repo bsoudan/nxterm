@@ -22,7 +22,6 @@ type Model struct {
 	req      *requestState
 	Tasks    *tui.TaskRunner
 	Detached bool
-	initDone chan struct{}
 }
 
 func NewModel(s *Server, pipeW io.Writer, registry *Registry, ring *termlog.LogRingBuffer, endpoint, version, changelog, sessionName string, connectFn func(string)) Model {
@@ -47,20 +46,11 @@ func NewModel(s *Server, pipeW io.Writer, registry *Registry, ring *termlog.LogR
 		registry: registry,
 		req:      req,
 		Tasks:    tasks,
-		initDone: make(chan struct{}),
 	}
 }
 
 func (m Model) Init() tea.Cmd {
-	close(m.initDone)
 	return tea.Batch(m.stack.Layers()[0].(*MainLayer).Init(), m.Tasks.ListenCmd())
-}
-
-// InitDone returns a channel that is closed when Init completes.
-// InputLoop uses this to know when to stop forwarding input to bubbletea
-// and start sending RawInputMsg instead.
-func (m Model) InitDone() <-chan struct{} {
-	return m.initDone
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {

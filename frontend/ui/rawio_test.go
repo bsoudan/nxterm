@@ -6,6 +6,107 @@ import (
 	"time"
 )
 
+// ── isCapabilityResponse ────────────────────────────────────────────────────
+
+func TestIsCapabilityResponse(t *testing.T) {
+	tests := []struct {
+		name string
+		seq  []byte
+		want bool
+	}{
+		// Capability responses — should be filtered.
+		{"DECRPM mode 2026", []byte("\x1b[?2026;2$y"), true},
+		{"DECRPM mode 2027", []byte("\x1b[?2027;3$y"), true},
+		{"DA1", []byte("\x1b[?65;1;9c"), true},
+		{"DA2", []byte("\x1b[>1;1;0c"), true},
+		{"kitty keyboard query", []byte("\x1b[?1u"), true},
+		{"DCS XTVERSION", []byte("\x1bP>|foot(1.19)\x1b\\"), true},
+		{"OSC bg color", []byte("\x1b]11;rgb:1a1a/1a1a/1a1a\x1b\\"), true},
+		{"OSC bg color BEL", []byte("\x1b]11;rgb:ff/ff/ff\x07"), true},
+
+		// User input — should NOT be filtered.
+		{"plain text", []byte("hello"), false},
+		{"ctrl+b", []byte{0x02}, false},
+		{"arrow up", []byte("\x1b[A"), false},
+		{"arrow with modifier", []byte("\x1b[1;2A"), false},
+		{"function key", []byte("\x1b[15~"), false},
+		{"SGR mouse", []byte("\x1b[<0;10;5M"), false},
+		{"kitty key event", []byte("\x1b[97u"), false},
+		{"kitty key+mod", []byte("\x1b[97;5u"), false},
+		{"lone ESC", []byte{0x1b}, false},
+		{"short seq", []byte("\x1b["), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isCapabilityResponse(tt.seq)
+			if got != tt.want {
+				t.Errorf("isCapabilityResponse(%q) = %v, want %v", tt.seq, got, tt.want)
+			}
+		})
+	}
+}
+
+// ── filterCapabilityResponses ───────────────────────────────────────────────
+
+func TestFilterCapabilityResponses_NoCapabilities(t *testing.T) {
+	var buf bytes.Buffer
+	chunk := []byte("hello\x1b[Aworld")
+	got := filterCapabilityResponses(chunk, &buf)
+	if !bytes.Equal(got, chunk) {
+		t.Fatalf("got %q, want %q", got, chunk)
+	}
+	if buf.Len() > 0 {
+		t.Fatalf("expected no capability output, got %q", buf.Bytes())
+	}
+}
+
+func TestFilterCapabilityResponses_NoEscape(t *testing.T) {
+	var buf bytes.Buffer
+	chunk := []byte("hello world")
+	got := filterCapabilityResponses(chunk, &buf)
+	if !bytes.Equal(got, chunk) {
+		t.Fatalf("got %q, want %q", got, chunk)
+	}
+}
+
+func TestFilterCapabilityResponses_OnlyCapabilities(t *testing.T) {
+	var buf bytes.Buffer
+	chunk := []byte("\x1b[?2026;2$y\x1b[?2027;3$y")
+	got := filterCapabilityResponses(chunk, &buf)
+	if len(got) != 0 {
+		t.Fatalf("expected empty remainder, got %q", got)
+	}
+	if !bytes.Equal(buf.Bytes(), chunk) {
+		t.Fatalf("expected all bytes in capW, got %q", buf.Bytes())
+	}
+}
+
+func TestFilterCapabilityResponses_Mixed(t *testing.T) {
+	var buf bytes.Buffer
+	// User types "ls", then DECRPM arrives, then user types enter.
+	chunk := []byte("ls\x1b[?2026;2$y\r")
+	got := filterCapabilityResponses(chunk, &buf)
+	if !bytes.Equal(got, []byte("ls\r")) {
+		t.Fatalf("remainder = %q, want %q", got, "ls\r")
+	}
+	if !bytes.Equal(buf.Bytes(), []byte("\x1b[?2026;2$y")) {
+		t.Fatalf("capW = %q, want %q", buf.Bytes(), "\x1b[?2026;2$y")
+	}
+}
+
+func TestFilterCapabilityResponses_CapBetweenCSI(t *testing.T) {
+	var buf bytes.Buffer
+	// Arrow up, then DECRPM, then arrow down.
+	chunk := []byte("\x1b[A\x1b[?2027;3$y\x1b[B")
+	got := filterCapabilityResponses(chunk, &buf)
+	if !bytes.Equal(got, []byte("\x1b[A\x1b[B")) {
+		t.Fatalf("remainder = %q, want %q", got, "\x1b[A\x1b[B")
+	}
+	if !bytes.Equal(buf.Bytes(), []byte("\x1b[?2027;3$y")) {
+		t.Fatalf("capW = %q, want %q", buf.Bytes(), "\x1b[?2027;3$y")
+	}
+}
+
 // newTestParser creates an InputParser with a short timeout and channels
 // for feeding input and collecting output. Call close(inputCh) to stop.
 func newTestParser() (inputCh chan []byte, outputCh chan []byte, parser *InputParser) {
