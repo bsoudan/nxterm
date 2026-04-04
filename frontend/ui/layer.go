@@ -33,10 +33,12 @@ type ReplyFunc func(payload any)
 // a reply handler. Used by session and overlay layers.
 type RequestFunc func(msg any, reply ReplyFunc)
 
-// requestState holds the shared req_id counter and pending reply handlers.
+// requestState holds the shared req_id counter, pending reply handlers,
+// and the requestFn that sends protocol messages to the server.
 type requestState struct {
 	nextReqID uint64
 	pending   map[uint64]ReplyFunc
+	requestFn RequestFunc
 }
 
 // needsFocusRouting iterates the layer stack and returns true if any

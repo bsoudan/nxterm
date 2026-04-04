@@ -301,7 +301,7 @@ func (m *MainLayer) handleCmd(msg MainCmd) (tea.Msg, tea.Cmd, bool) {
 
 	case "upgrade":
 		m.tasks.Run(func(h *tui.Handle) {
-			t := &TermdHandle{Handle: h, requestFn: m.requestFn}
+			t := &TermdHandle{Handle: h}
 			// Fresh upgrade check.
 			resp, err := t.Request(protocol.UpgradeCheckRequest{
 				ClientVersion: m.version,

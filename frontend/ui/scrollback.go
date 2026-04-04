@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	te "termd/pkg/te"
 	"termd/frontend/protocol"
 )
@@ -27,55 +28,51 @@ func protocolCellsToTe(cells []protocol.ScreenCell) []te.Cell {
 	return row
 }
 
-// Scrollback manages the scrollback navigation state.
-type Scrollback struct {
-	active bool
+// ScrollbackLayer is a layer pushed onto TerminalLayer's inner stack
+// when scrollback mode is active. It renders the combined scrollback +
+// screen buffer and handles navigation input.
+type ScrollbackLayer struct {
 	offset int                    // lines scrolled back from bottom (0 = live)
 	cells  [][]protocol.ScreenCell // server-side scrollback buffer
+	term   *TerminalLayer         // reference to the terminal for screen cells and dimensions
 }
 
-// Active returns whether scrollback mode is active.
-func (s Scrollback) Active() bool { return s.active }
-
-// Enter activates scrollback mode with an initial offset.
-func (s Scrollback) Enter(offset int) Scrollback {
-	s.active = true
-	s.offset = offset
-	return s
-}
-
-// Exit deactivates scrollback mode and clears data.
-func (s Scrollback) Exit() Scrollback {
-	return Scrollback{}
-}
-
-// SetData stores the scrollback cell data from the server.
-func (s Scrollback) SetData(cells [][]protocol.ScreenCell) Scrollback {
-	s.cells = cells
-	return s
-}
-
-// StatusText returns the tab bar status string.
-func (s Scrollback) StatusText() string {
-	offset := s.offset
-	total := len(s.cells)
-	if offset > total {
-		offset = total
+func newScrollbackLayer(term *TerminalLayer, offset int) *ScrollbackLayer {
+	return &ScrollbackLayer{
+		offset: offset,
+		term:   term,
 	}
-	return fmt.Sprintf("scrollback [%d/%d]", offset, total)
 }
 
-// Update handles keyboard navigation in scrollback mode.
-func (s Scrollback) Update(msg tea.KeyPressMsg, contentHeight int) (Scrollback, bool) {
+func (s *ScrollbackLayer) Activate() tea.Cmd { return nil }
+func (s *ScrollbackLayer) Deactivate()       {}
+
+func (s *ScrollbackLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
+	switch msg := msg.(type) {
+	case tea.KeyPressMsg:
+		return s.handleKey(msg)
+	case tea.MouseMsg:
+		if wheel, ok := msg.(tea.MouseWheelMsg); ok {
+			return s.handleWheel(wheel.Button)
+		}
+		return nil, nil, true // absorb other mouse events
+	case protocol.GetScrollbackResponse:
+		s.cells = msg.Lines
+		return nil, nil, true
+	}
+	return nil, nil, false // pass through (terminal events, etc.)
+}
+
+func (s *ScrollbackLayer) handleKey(msg tea.KeyPressMsg) (tea.Msg, tea.Cmd, bool) {
 	maxOffset := len(s.cells)
-	halfPage := contentHeight / 2
+	halfPage := s.term.contentHeight() / 2
 	if halfPage < 1 {
 		halfPage = 1
 	}
 
 	switch msg.String() {
 	case "q", "esc":
-		return s.Exit(), true
+		return QuitLayerMsg{}, nil, true
 	case "up", "k":
 		if s.offset < maxOffset {
 			s.offset++
@@ -99,29 +96,28 @@ func (s Scrollback) Update(msg tea.KeyPressMsg, contentHeight int) (Scrollback, 
 	case "end", "G":
 		s.offset = 0
 	default:
-		return s.Exit(), true
+		// Any unrecognized key exits scrollback.
+		return QuitLayerMsg{}, nil, true
 	}
-	return s, false
+	return nil, nil, true
 }
 
-// HandleWheel adjusts the offset for scroll wheel events.
-// Returns the updated scrollback and whether it should exit.
-func (s Scrollback) HandleWheel(button tea.MouseButton) (Scrollback, bool) {
+func (s *ScrollbackLayer) handleWheel(button tea.MouseButton) (tea.Msg, tea.Cmd, bool) {
 	switch button {
 	case tea.MouseWheelUp:
 		s.offset += 3
 	case tea.MouseWheelDown:
 		s.offset -= 3
 		if s.offset <= 0 {
-			return s.Exit(), true
+			return QuitLayerMsg{}, nil, true
 		}
 	}
-	return s, false
+	return nil, nil, true
 }
 
-// View renders the combined scrollback + screen buffer.
-func (s Scrollback) View(sb *strings.Builder, screenCells [][]te.Cell, width, height int) {
-	// Clamp offset to available scrollback
+func (s *ScrollbackLayer) View(width, height int, active bool) []*lipgloss.Layer {
+	screenCells := s.term.ScreenCells()
+
 	offset := s.offset
 	if offset > len(s.cells) {
 		offset = len(s.cells)
@@ -133,6 +129,7 @@ func (s Scrollback) View(sb *strings.Builder, screenCells [][]te.Cell, width, he
 		startIdx = 0
 	}
 
+	var sb strings.Builder
 	for i := range height {
 		idx := startIdx + i
 		var row []te.Cell
@@ -144,9 +141,21 @@ func (s Scrollback) View(sb *strings.Builder, screenCells [][]te.Cell, width, he
 				row = screenCells[screenIdx]
 			}
 		}
-		renderCellLine(sb, row, width, i, -1, -1, false, false)
+		renderCellLine(&sb, row, width, i, -1, -1, false, false)
 		if i < height-1 {
 			sb.WriteByte('\n')
 		}
 	}
+	return []*lipgloss.Layer{lipgloss.NewLayer(sb.String())}
+}
+
+func (s *ScrollbackLayer) WantsKeyboardInput() bool { return true }
+
+func (s *ScrollbackLayer) Status() (string, lipgloss.Style) {
+	offset := s.offset
+	total := len(s.cells)
+	if offset > total {
+		offset = total
+	}
+	return fmt.Sprintf("scrollback [%d/%d]", offset, total), statusBold
 }

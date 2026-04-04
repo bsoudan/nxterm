@@ -142,10 +142,12 @@ func (s *SessionLayer) handleMouse(msg tea.MouseMsg) tea.Cmd {
 		return nil
 	}
 
-	// Child doesn't want mouse — scroll wheel enters/navigates scrollback
+	// Child doesn't want mouse — scroll wheel enters/navigates scrollback.
+	// When scrollback is active, mouse events are handled by ScrollbackLayer
+	// via TerminalLayer.Update.
 	if wheel, ok := msg.(tea.MouseWheelMsg); ok {
 		if t.ScrollbackActive() {
-			t.HandleScrollbackWheel(wheel.Button)
+			t.Update(msg)
 			return nil
 		}
 		if wheel.Button == tea.MouseWheelUp {

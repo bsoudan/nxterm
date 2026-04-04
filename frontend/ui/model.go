@@ -36,6 +36,7 @@ func NewModel(s *Server, pipeW io.Writer, registry *Registry, ring *termlog.LogR
 		req.pending[req.nextReqID] = reply
 		currentServer.Send(protocol.TaggedWithReqID(msg, req.nextReqID))
 	}
+	req.requestFn = requestFn
 	main := NewMainLayer(s, pipeW, requestFn, registry, ring, endpoint, version, changelog, hostname, sessionName, connectFn)
 	main.swapServerFn = func(newSrv *Server) { currentServer = newSrv }
 	tasks := tui.NewTaskRunner()
@@ -79,6 +80,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if tui.IsTaskMsg(msg) {
 		cmd := m.Tasks.HandleMsg(msg)
 		return m, tea.Batch(cmd, m.Tasks.ListenCmd())
+	}
+
+	// Handle task Send messages — request/response from task goroutines.
+	// requestFn runs here on the bubbletea goroutine (safe for requestState).
+	if tsm, ok := msg.(tui.TaskSendMsg); ok {
+		m.req.requestFn(tsm.Payload, func(payload any) {
+			m.Tasks.Deliver(tsm.TaskID, payload)
+		})
+		return m, nil
 	}
 
 	// Check task WaitFor filters before layer iteration.

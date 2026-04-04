@@ -21,16 +21,18 @@ func privateModeKey(mode int) int {
 	return mode << 5
 }
 
-// TerminalLayer owns screen state, scrollback, capabilities, and server
-// communication for a single terminal region. Implements the Layer interface.
+// TerminalLayer owns screen state, capabilities, and server communication
+// for a single terminal region. Scrollback is handled by pushing a
+// ScrollbackLayer onto the inner stack.
 type TerminalLayer struct {
 	screen       *te.Screen
 	lines        []string
 	cursorRow    int
 	cursorCol    int
 	pendingClear bool
-	scrollback   Scrollback
 	disconnected bool
+
+	scrollbackLayer *ScrollbackLayer // non-nil when scrollback is active
 
 	server     *Server
 	regionID   string
@@ -82,6 +84,19 @@ func (t *TerminalLayer) contentHeight() int {
 
 // Update implements the Layer interface.
 func (t *TerminalLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
+	// If scrollback is active, delegate input and scrollback data to it.
+	if sl := t.scrollbackLayer; sl != nil {
+		resp, cmd, handled := sl.Update(msg)
+		if _, ok := resp.(QuitLayerMsg); ok {
+			t.scrollbackLayer = nil
+		}
+		if handled {
+			return nil, cmd, true
+		}
+		// Fall through for messages scrollback doesn't handle
+		// (e.g., terminal events, screen updates continue below).
+	}
+
 	switch msg := msg.(type) {
 	case protocol.ScreenUpdate:
 		return nil, t.handleScreenUpdate(msg.Lines, msg.Cells, msg.CursorRow, msg.CursorCol, msg.Modes), true
@@ -89,9 +104,6 @@ func (t *TerminalLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 		return nil, t.handleScreenUpdate(msg.Lines, msg.Cells, msg.CursorRow, msg.CursorCol, nil), true
 	case protocol.TerminalEvents:
 		return nil, t.handleTerminalEvents(msg.Events), true
-	case protocol.GetScrollbackResponse:
-		t.scrollback = t.scrollback.SetData(msg.Lines)
-		return nil, nil, true
 	case protocol.ResizeResponse:
 		return nil, nil, true
 	case tea.WindowSizeMsg:
@@ -174,17 +186,19 @@ func (t *TerminalLayer) handleTerminalEvents(events []protocol.TerminalEvent) te
 	return nil
 }
 
-// View implements the Layer interface. Renders terminal content including
-// scrollback if active. The active param controls cursor visibility
-// (combined with scrollback state). SessionLayer sets disconnected before
-// calling View.
+// View implements the Layer interface. Renders terminal content, or
+// delegates to the scrollback layer if active. The active param controls
+// cursor visibility. SessionLayer sets disconnected before calling View.
 func (t *TerminalLayer) View(width, height int, active bool) []*lipgloss.Layer {
-	showCursor := active && !t.scrollback.Active()
+	// If scrollback is active, render it instead of the live terminal.
+	if t.scrollbackLayer != nil {
+		return t.scrollbackLayer.View(width, height, active)
+	}
+
+	showCursor := active
 
 	var sb strings.Builder
-	if t.scrollback.Active() && t.screen != nil {
-		t.scrollback.View(&sb, t.ScreenCells(), width, height)
-	} else if t.screen != nil {
+	if t.screen != nil {
 		cells := t.screen.LinesCells()
 		for i := range height {
 			var row []te.Cell
@@ -231,48 +245,28 @@ func (t *TerminalLayer) View(width, height int, active bool) []*lipgloss.Layer {
 // Title returns the region name for the tab bar.
 func (t *TerminalLayer) Title() string { return t.regionName }
 
-// Status implements the Layer interface.
+// Status implements the TermdLayer interface.
 func (t *TerminalLayer) Status() (string, lipgloss.Style) {
-	if t.scrollback.Active() {
-		return t.scrollback.StatusText(), statusBold
+	if sl := t.scrollbackLayer; sl != nil {
+		return sl.Status()
 	}
 	return "", lipgloss.Style{}
 }
 
-func (t *TerminalLayer) WantsKeyboardInput() bool { return t.scrollback.Active() }
+func (t *TerminalLayer) WantsKeyboardInput() bool { return t.scrollbackLayer != nil }
 
 // ScrollbackActive returns whether scrollback mode is active.
-func (t *TerminalLayer) ScrollbackActive() bool { return t.scrollback.Active() }
+func (t *TerminalLayer) ScrollbackActive() bool { return t.scrollbackLayer != nil }
 
 // EnterScrollback activates scrollback mode and requests data from the server.
 func (t *TerminalLayer) EnterScrollback(offset int) {
-	t.scrollback = t.scrollback.Enter(offset)
+	t.scrollbackLayer = newScrollbackLayer(t, offset)
 	t.server.Send(protocol.GetScrollbackRequest{RegionID: t.regionID})
 }
 
 // ExitScrollback deactivates scrollback mode.
 func (t *TerminalLayer) ExitScrollback() {
-	t.scrollback = t.scrollback.Exit()
-}
-
-// HandleScrollbackKey processes keyboard input during scrollback mode.
-func (t *TerminalLayer) HandleScrollbackKey(msg tea.KeyPressMsg) {
-	var exited bool
-	t.scrollback, exited = t.scrollback.Update(msg, t.contentHeight())
-	if exited {
-		t.scrollback = t.scrollback.Exit()
-	}
-}
-
-// HandleScrollbackWheel processes scroll wheel during scrollback mode.
-// Returns true if scrollback was exited.
-func (t *TerminalLayer) HandleScrollbackWheel(button tea.MouseButton) bool {
-	var exited bool
-	t.scrollback, exited = t.scrollback.HandleWheel(button)
-	if exited {
-		t.scrollback = t.scrollback.Exit()
-	}
-	return exited
+	t.scrollbackLayer = nil
 }
 
 // SetPendingClear marks that a screen clear should happen on the next screen update.

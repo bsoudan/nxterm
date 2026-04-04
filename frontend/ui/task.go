@@ -12,23 +12,15 @@ import (
 // capability. Task goroutines use this to make protocol roundtrips.
 type TermdHandle struct {
 	*tui.Handle
-	requestFn RequestFunc
 }
 
 // Request sends a protocol request and blocks until the matching response
-// arrives. The requestFn reply callback delivers the response directly to
-// a channel that this method waits on.
+// arrives. The request is sent via Handle.Send which routes it through
+// the bubbletea event loop, ensuring requestFn runs on the bubbletea
+// goroutine. The task goroutine stays blocked until the response is
+// delivered via TaskRunner.Deliver.
 func (h *TermdHandle) Request(req any) (any, error) {
-	replyCh := make(chan any, 1)
-	h.requestFn(req, func(payload any) {
-		replyCh <- payload
-	})
-	select {
-	case resp := <-replyCh:
-		return resp, nil
-	case <-h.Context().Done():
-		return nil, h.Context().Err()
-	}
+	return h.Send(req)
 }
 
 // ── Overlay: a simple tui.Layer for task-driven dialogs ───────────────────

@@ -9,7 +9,8 @@ import (
 )
 
 // Core TaskRunner and Handle tests are in pkg/tui/task_test.go.
-// These tests cover the termd-specific TermdHandle.Request method.
+// These tests cover the termd-specific TermdHandle.Request method
+// which routes through Handle.Send → TaskSendMsg → Deliver.
 
 func TestTermdHandleRequest(t *testing.T) {
 	type testReq struct{ Name string }
@@ -22,20 +23,35 @@ func TestTermdHandleRequest(t *testing.T) {
 	done := make(chan struct{})
 
 	runner.Run(func(h *tui.Handle) {
-		th := &TermdHandle{
-			Handle: h,
-			requestFn: func(msg any, reply ReplyFunc) {
-				if req, ok := msg.(testReq); ok && req.Name == "hello" {
-					reply(testResp{Value: 42})
-				}
-			},
-		}
+		th := &TermdHandle{Handle: h}
 		got, gotErr = th.Request(testReq{Name: "hello"})
 		close(done)
 	})
 
-	// The task sends a WaitFor message, but TermdHandle.Request uses a direct
-	// channel — no bubbletea messages to drive. Just wait for completion.
+	// DriveOne reads the taskSendMsg and calls HandleMsg (which produces
+	// a cmd for TaskSendMsg but doesn't execute it). We need to get the
+	// cmd from HandleMsg to extract the TaskSendMsg.
+	raw := runner.DriveOne()
+	cmd := runner.HandleMsg(raw)
+
+	// HandleMsg returns a cmd that produces TaskSendMsg.
+	if cmd == nil {
+		t.Fatal("expected non-nil cmd for send message")
+	}
+	result := cmd()
+	tsm, ok := result.(tui.TaskSendMsg)
+	if !ok {
+		t.Fatalf("expected TaskSendMsg, got %T", result)
+	}
+
+	// Simulate the app processing the request on the bubbletea goroutine.
+	req, ok := tsm.Payload.(testReq)
+	if !ok || req.Name != "hello" {
+		t.Fatalf("unexpected payload: %+v", tsm.Payload)
+	}
+	// Deliver the response (as the app would after server responds).
+	runner.Deliver(tsm.TaskID, testResp{Value: 42})
+
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
@@ -61,18 +77,15 @@ func TestTermdHandleRequestCancelled(t *testing.T) {
 	done := make(chan struct{})
 
 	id := runner.Run(func(h *tui.Handle) {
-		th := &TermdHandle{
-			Handle: h,
-			requestFn: func(msg any, reply ReplyFunc) {
-				// Never reply — simulate a hung server.
-			},
-		}
+		th := &TermdHandle{Handle: h}
 		_, gotErr = th.Request("waiting forever")
 		close(done)
 	})
 
-	// Give task time to start.
-	time.Sleep(10 * time.Millisecond)
+	// Drive the Send message.
+	runner.DriveOne()
+
+	// Cancel the task instead of delivering a response.
 	runner.Cancel(id)
 
 	select {

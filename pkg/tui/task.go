@@ -33,6 +33,17 @@ func (h *Handle) WaitFor(filter func(msg any) (deliver, handled bool)) (any, err
 	return h.recv()
 }
 
+// Send sends a message to the bubbletea event loop and blocks until
+// the app delivers a response via TaskRunner.Deliver. This ensures
+// the payload is processed on the bubbletea goroutine, avoiding
+// concurrent access to shared state.
+func (h *Handle) Send(msg any) (any, error) {
+	if err := h.send(taskSendMsg{taskID: h.id, payload: msg}); err != nil {
+		return nil, err
+	}
+	return h.recv()
+}
+
 // PushLayer pushes a layer onto the UI stack.
 func (h *Handle) PushLayer(layer Layer) {
 	h.send(taskPushLayerMsg{layer: layer})
@@ -86,14 +97,28 @@ type taskPopLayerMsg struct {
 	layer Layer
 }
 
+type taskSendMsg struct {
+	taskID  uint64
+	payload any
+}
+
 type taskDoneMsg struct {
 	taskID uint64
 }
 
 func (taskWaitForMsg) isTaskMsg()  {}
+func (taskSendMsg) isTaskMsg()     {}
 func (taskPushLayerMsg) isTaskMsg() {}
 func (taskPopLayerMsg) isTaskMsg()  {}
 func (taskDoneMsg) isTaskMsg()     {}
+
+// TaskSendMsg is delivered to the app when a task calls Handle.Send().
+// The app processes Payload on the bubbletea goroutine (safe for shared
+// state access) and calls TaskRunner.Deliver(TaskID, response) when done.
+type TaskSendMsg struct {
+	TaskID  uint64
+	Payload any
+}
 
 // taskState tracks a running task's WaitFor filter.
 type taskState struct {
@@ -204,6 +229,20 @@ func (r *TaskRunner) CheckFilters(msg any) (handled bool) {
 	return false
 }
 
+// Deliver sends a response to a task that is blocked in Handle.Send().
+// Must be called on the bubbletea goroutine.
+func (r *TaskRunner) Deliver(taskID uint64, payload any) {
+	r.mu.Lock()
+	ts, ok := r.tasks[taskID]
+	r.mu.Unlock()
+	if ok {
+		select {
+		case ts.handle.inbox <- payload:
+		case <-ts.handle.ctx.Done():
+		}
+	}
+}
+
 // HandleMsg processes a task message from the outbox channel. Returns
 // a tea.Cmd for the app to execute (e.g. push/pop layer), or nil.
 // The app should call ListenCmd again after handling each message.
@@ -221,6 +260,11 @@ func (r *TaskRunner) HandleMsg(msg tea.Msg) tea.Cmd {
 		}
 		r.mu.Unlock()
 		return nil
+
+	case taskSendMsg:
+		return func() tea.Msg {
+			return TaskSendMsg{TaskID: msg.taskID, Payload: msg.payload}
+		}
 
 	case taskPushLayerMsg:
 		return func() tea.Msg { return PushLayerMsg{Layer: msg.layer} }

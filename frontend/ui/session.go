@@ -369,9 +369,11 @@ func (s *SessionLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 		return nil, cmd, true
 
 	case tea.KeyPressMsg:
+		// When scrollback is active, keys are handled by ScrollbackLayer
+		// via TerminalLayer.Update. Forward to the active terminal.
 		if t := s.activeTerm(); t != nil && t.ScrollbackActive() {
-			t.HandleScrollbackKey(msg)
-			return nil, nil, true
+			_, cmd, _ := t.Update(msg)
+			return nil, cmd, true
 		}
 		return nil, nil, true
 
