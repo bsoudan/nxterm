@@ -9,10 +9,10 @@ import (
 var (
 	overlayBorder = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("6")).
+			BorderForeground(lipgloss.Color("14")).
 			Padding(0, 1)
 
-	overlayHint = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+	overlayHint = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
 
 	helpSelected = lipgloss.NewStyle().Reverse(true)
 )

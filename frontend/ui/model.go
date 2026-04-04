@@ -245,8 +245,13 @@ func (m Model) View() tea.View {
 		}
 	}
 
-	// Composite all layer views via the stack.
-	layers := m.stack.View(width, height)
+	// Composite all layer views. Base layer is active (cursor, no
+	// dimming) unless an overlay has keyboard focus.
+	var layers []*lipgloss.Layer
+	for i, l := range m.stack.Layers() {
+		active := i == 0 && !hasOverlay
+		layers = append(layers, l.View(width, height, active)...)
+	}
 
 	// Status bar (right side of tab bar) as the topmost layer.
 	statusContent, statusWidth := renderStatusBar(statusText, main.version, statusStyle, hasOverlay)
