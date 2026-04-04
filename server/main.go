@@ -72,6 +72,10 @@ GLOBAL OPTIONS:{{template "visibleFlagTemplate" .}}{{end}}{{if .Description}}
 				Usage:   "enable debug logging",
 				Sources: cli.EnvVars("TERMD_DEBUG"),
 			},
+			&cli.StringFlag{
+				Name:  "pprof",
+				Usage: "enable pprof HTTP server (default: localhost:6060, or specify host:port)",
+			},
 			&cli.IntFlag{
 				Name:   "upgrade-fd",
 				Usage:  "internal: FD for live upgrade handoff",
@@ -172,6 +176,14 @@ func runServer(_ context.Context, cmd *cli.Command) error {
 	slog.SetDefault(slog.New(handler))
 
 	transport.InstallStackDump("termd")
+
+	pprofAddr := cmd.String("pprof")
+	if pprofAddr == "" {
+		pprofAddr = cfg.Pprof
+	}
+	if pprofAddr != "" {
+		startPprof(pprofAddr)
+	}
 
 	sshCfg := sshConfig(cmd, cfg)
 

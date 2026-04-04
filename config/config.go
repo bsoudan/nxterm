@@ -49,6 +49,7 @@ type UpgradeConfig struct {
 type ServerConfig struct {
 	Listen    []string        `toml:"listen"`
 	Debug     bool            `toml:"debug"`
+	Pprof     string          `toml:"pprof"`
 	Programs  []ProgramConfig `toml:"programs"`
 	SSH       SSHConfig       `toml:"ssh"`
 	Termctl   TermctlConfig   `toml:"termctl"`
