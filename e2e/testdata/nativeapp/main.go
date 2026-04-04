@@ -1,10 +1,12 @@
 // nativeapp is a test program that uses the termd overlay protocol.
 // It connects to the server socket, registers as an overlay on the
-// current region, and renders a cell grid. Input comes from stdin (PTY).
+// current region, and renders a cell grid. Input arrives via overlay_input
+// messages on the server socket.
 package main
 
 import (
 	"bufio"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -44,6 +46,11 @@ type overlayRender struct {
 	CursorRow uint16         `json:"cursor_row"`
 	CursorCol uint16         `json:"cursor_col"`
 	Modes     map[int]bool   `json:"modes,omitempty"`
+}
+
+type overlayInput struct {
+	Type string `json:"type"`
+	Data string `json:"data"`
 }
 
 type identify struct {
@@ -114,14 +121,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Set raw mode to get individual keystrokes.
-	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "nativeapp: raw mode: %v\n", err)
-		os.Exit(1)
-	}
-	defer term.Restore(int(os.Stdin.Fd()), oldState)
-
 	render()
 
 	// Handle SIGWINCH for resize.
@@ -129,18 +128,32 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGWINCH)
 	go func() {
 		for range sigCh {
+			w, h, err := term.GetSize(int(os.Stdin.Fd()))
+			if err == nil && w > 0 && h > 0 {
+				width = w
+				height = h
+			}
 			render()
 		}
 	}()
 
-	// Read input from stdin (PTY).
-	buf := make([]byte, 256)
-	for {
-		n, err := os.Stdin.Read(buf)
-		if err != nil {
-			break
+	// Read input from the server socket (forwarded from TUI clients).
+	for scanner.Scan() {
+		var env struct{ Type string `json:"type"` }
+		if json.Unmarshal(scanner.Bytes(), &env) != nil {
+			continue
 		}
-		handleInput(buf[:n])
+		if env.Type == "overlay_input" {
+			var inp overlayInput
+			if json.Unmarshal(scanner.Bytes(), &inp) != nil {
+				continue
+			}
+			decoded, err := base64.StdEncoding.DecodeString(inp.Data)
+			if err != nil {
+				continue
+			}
+			handleInput(decoded)
+		}
 	}
 }
 

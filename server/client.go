@@ -466,7 +466,15 @@ func (c *Client) handleUnsubscribe(msg protocol.UnsubscribeRequest, reply func(a
 }
 
 func (c *Client) handleInput(msg protocol.InputMsg) {
-	region := c.server.FindRegion(msg.RegionID)
+	region, overlayClient := c.server.RouteInput(msg.RegionID)
+	if overlayClient != nil {
+		overlayClient.SendMessage(protocol.OverlayInput{
+			Type:     "overlay_input",
+			RegionID: msg.RegionID,
+			Data:     msg.Data,
+		})
+		return
+	}
 	if region == nil {
 		return
 	}

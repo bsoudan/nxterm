@@ -402,6 +402,12 @@ type OverlayClear struct {
 	RegionID string `json:"region_id"`
 }
 
+type OverlayInput struct {
+	Type     string `json:"type,omitempty"`
+	RegionID string `json:"region_id"`
+	Data     string `json:"data"`
+}
+
 // ── Parsing ─────────────────────────────────────────────────────────────────
 
 type envelope struct {
@@ -506,6 +512,9 @@ func parsePayload(typ string, line []byte) (any, error) {
 		return msg, json.Unmarshal(line, &msg)
 	case "overlay_register_response":
 		var msg OverlayRegisterResponse
+		return msg, json.Unmarshal(line, &msg)
+	case "overlay_input":
+		var msg OverlayInput
 		return msg, json.Unmarshal(line, &msg)
 	default:
 		return nil, fmt.Errorf("unknown message type: %s", typ)

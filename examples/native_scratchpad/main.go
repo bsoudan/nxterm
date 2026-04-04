@@ -21,6 +21,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -62,6 +63,11 @@ type overlayRegisterResponse struct {
 	Height  int    `json:"height"`
 	Error   bool   `json:"error"`
 	Message string `json:"message"`
+}
+
+type overlayInput struct {
+	Type string `json:"type"`
+	Data string `json:"data"`
 }
 
 type identify struct {
@@ -124,9 +130,10 @@ func main() {
 	sendJSON(identify{Type: "identify", Process: "native_scratchpad"})
 	sendJSON(overlayRegisterRequest{Type: "overlay_register", RegionID: regionID})
 
-	// Read register response.
 	scanner := bufio.NewScanner(conn)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+
+	// Read register response.
 	for scanner.Scan() {
 		var env struct{ Type string `json:"type"` }
 		if json.Unmarshal(scanner.Bytes(), &env) != nil {
@@ -145,20 +152,10 @@ func main() {
 		}
 	}
 
-	// Set stdin to raw mode so we get individual keystrokes.
-	// The server restores the PTY's termios when the overlay is removed,
-	// so we don't need to worry about cleanup on crash/kill.
-	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "native_scratchpad: raw mode: %v\n", err)
-		os.Exit(1)
-	}
-	defer term.Restore(int(os.Stdin.Fd()), oldState)
-
 	initCanvas()
 	render()
 
-	// Handle resize.
+	// Handle resize via SIGWINCH (the PTY still delivers this).
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGWINCH)
 	go func() {
@@ -173,14 +170,23 @@ func main() {
 		}
 	}()
 
-	// Read input from stdin.
-	buf := make([]byte, 256)
-	for {
-		n, err := os.Stdin.Read(buf)
-		if err != nil {
-			break
+	// Read input from the server socket (forwarded from TUI clients).
+	for scanner.Scan() {
+		var env struct{ Type string `json:"type"` }
+		if json.Unmarshal(scanner.Bytes(), &env) != nil {
+			continue
 		}
-		handleInput(buf[:n])
+		if env.Type == "overlay_input" {
+			var inp overlayInput
+			if json.Unmarshal(scanner.Bytes(), &inp) != nil {
+				continue
+			}
+			decoded, err := base64.StdEncoding.DecodeString(inp.Data)
+			if err != nil {
+				continue
+			}
+			handleInput(decoded)
+		}
 	}
 }
 

@@ -185,6 +185,16 @@ type getOverlayReq struct {
 	resp     chan *overlayState
 }
 
+type inputRouteResult struct {
+	region        Region
+	overlayClient *Client
+}
+
+type inputRouteReq struct {
+	regionID string
+	resp     chan inputRouteResult
+}
+
 // subscribersData is returned by getSubscribersReq, including any active overlay.
 type subscribersData struct {
 	clients []*Client
@@ -587,6 +597,20 @@ func (s *Server) eventLoop() {
 
 			case getOverlayReq:
 				r.resp <- overlays[r.regionID]
+
+			case inputRouteReq:
+				region, ok := regions[r.regionID]
+				if !ok {
+					r.resp <- inputRouteResult{}
+					break
+				}
+				if ov, ok := overlays[r.regionID]; ok {
+					if c, ok := clients[ov.clientID]; ok {
+						r.resp <- inputRouteResult{overlayClient: c}
+						break
+					}
+				}
+				r.resp <- inputRouteResult{region: region}
 
 			// --- Live upgrade support ---
 

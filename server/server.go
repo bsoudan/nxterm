@@ -220,6 +220,18 @@ func (s *Server) FindRegion(regionID string) Region {
 	return <-resp
 }
 
+// RouteInput looks up where input for a region should go. If an overlay is
+// active, the overlay's Client is returned. Otherwise the Region is returned
+// for direct PTY write.
+func (s *Server) RouteInput(regionID string) (Region, *Client) {
+	resp := make(chan inputRouteResult, 1)
+	if !s.send(inputRouteReq{regionID: regionID, resp: resp}) {
+		return nil, nil
+	}
+	result := <-resp
+	return result.region, result.overlayClient
+}
+
 func (s *Server) Broadcast(msg any) {
 	resp := make(chan []*Client, 1)
 	if !s.send(getClientsReq{resp: resp}) {
