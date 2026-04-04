@@ -132,7 +132,7 @@ func RecvUpgrade(fd int, sshCfg transport.SSHListenerConfig, version string) (*S
 }
 
 type restoreRegionReq struct {
-	region  *Region
+	region  Region
 	session string
 	resp    chan struct{}
 }

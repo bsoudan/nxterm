@@ -4,12 +4,12 @@ package main
 // All fields are owned by the server event loop.
 type Session struct {
 	name    string
-	regions map[string]*Region // region ID → *Region
+	regions map[string]Region // region ID → Region
 }
 
 func NewSession(name string) *Session {
 	return &Session{
 		name:    name,
-		regions: make(map[string]*Region),
+		regions: make(map[string]Region),
 	}
 }

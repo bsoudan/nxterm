@@ -87,13 +87,14 @@ func (s *Server) HandleUpgrade(specs []string, sshCfg transport.SSHListenerConfi
 	result := s.drainForUpgrade()
 	slog.Info("upgrade: event loop drained")
 
-	// Dup PTY FDs for handoff. The old readLoops keep running —
-	// they'll get errors when the old process exits.
+	// Dup PTY FDs for handoff. Native regions don't have PTYs.
 	ptyDups := make(map[string]*os.File) // regionID → dup'd PTY file
 	for id, r := range result.regions {
-		ptyDups[id] = r.DetachPTY()
+		if pr, ok := r.(*PTYRegion); ok {
+			ptyDups[id] = pr.DetachPTY()
+		}
 	}
-	slog.Info("upgrade: detached PTY FDs", "regions", len(result.regions))
+	slog.Info("upgrade: detached PTY FDs", "pty_regions", len(ptyDups))
 
 	// Build and send state.
 	state := buildUpgradeState(s, result, specs)
@@ -113,7 +114,7 @@ func (s *Server) HandleUpgrade(specs []string, sshCfg transport.SSHListenerConfi
 	}
 	slog.Info("upgrade: sent state", "bytes", len(stateJSON))
 
-	// Send PTY FDs (using the dup'd copies from StopReadLoop).
+	// Send PTY FDs (using the dup'd copies from DetachPTY).
 	var ptyFDs []int
 	var regionIDs []string
 	for _, rs := range state.Regions {
@@ -183,13 +184,19 @@ func buildUpgradeState(s *Server, result upgradeResult, specs []string) *Upgrade
 		}
 		state.Sessions = append(state.Sessions, ss)
 	}
+	// Only serialize PTY regions — native regions are killed on upgrade.
 	for _, r := range result.regions {
-		r.mu.Lock()
-		histState := r.hscreen.MarshalState()
-		r.mu.Unlock()
+		pr, ok := r.(*PTYRegion)
+		if !ok {
+			slog.Info("upgrade: skipping native region", "region_id", r.ID())
+			continue
+		}
+		pr.mu.Lock()
+		histState := pr.hscreen.MarshalState()
+		pr.mu.Unlock()
 		state.Regions = append(state.Regions, RegionState{
-			ID: r.id, Name: r.name, Cmd: r.cmd, Pid: r.pid,
-			Session: r.session, Width: r.width, Height: r.height,
+			ID: pr.id, Name: pr.name, Cmd: pr.cmd, Pid: pr.pid,
+			Session: pr.session, Width: pr.width, Height: pr.height,
 			Screen: histState,
 		})
 	}
@@ -221,9 +228,13 @@ func (s *Server) resumeAfterFailedUpgrade(result upgradeResult) {
 	slog.Warn("upgrade: rolling back")
 	s.send(resumeUpgradeReq{})
 	for _, r := range result.regions {
-		r.stopRead = make(chan struct{})
-		r.readerDone = make(chan struct{})
-		go r.readLoop()
+		pr, ok := r.(*PTYRegion)
+		if !ok {
+			continue // native regions don't have readLoops to restart
+		}
+		pr.stopRead = make(chan struct{})
+		pr.readerDone = make(chan struct{})
+		go pr.readLoop()
 	}
 	slog.Warn("upgrade: rollback complete, but listeners were closed; restart may be needed")
 }
@@ -233,7 +244,7 @@ type upgradeReq struct{ resp chan upgradeResult }
 type resumeUpgradeReq struct{}
 
 type upgradeResult struct {
-	regions  map[string]*Region
+	regions  map[string]Region
 	sessions map[string]*Session
 	programs map[string]config.ProgramConfig
 }
