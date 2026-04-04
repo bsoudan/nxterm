@@ -60,7 +60,7 @@ func (o *Overlay) View(width, height int, active bool) []*lipgloss.Layer {
 
 	help := ""
 	if o.Help != "" {
-		help = statusFaint.Render("• " + o.Help + " •")
+		help = overlayHint.Render("• " + o.Help + " •")
 	}
 
 	var dialogFull string

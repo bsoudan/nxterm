@@ -165,11 +165,11 @@ var paletteBorder = lipgloss.Border{
 
 var paletteStyle = lipgloss.NewStyle().
 	Border(paletteBorder).
-	BorderForeground(lipgloss.Color("8")).
+	BorderForeground(lipgloss.Color("6")).
 	Padding(0, 1)
 
 // paletteFaint matches the border color for internal separators and placeholder text.
-var paletteFaint = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+var paletteFaint = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
 
 func (p *CommandPaletteLayer) View(width, height int, active bool) []*lipgloss.Layer {
 	overlayW := width * 2 / 3

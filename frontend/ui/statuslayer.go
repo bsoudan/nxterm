@@ -143,7 +143,7 @@ func (s *StatusLayer) View(width, height int, active bool) []*lipgloss.Layer {
 	overlayW := 50
 	dialog := overlayBorder.Width(overlayW).Render(content)
 
-	help := statusFaint.Render("• q/esc: close •")
+	help := overlayHint.Render("• q/esc: close •")
 	dialogLines := strings.Split(dialog, "\n")
 	helpPad := (overlayW + overlayBorder.GetHorizontalBorderSize() - lipgloss.Width(help)) / 2
 	if helpPad < 0 {

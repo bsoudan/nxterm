@@ -94,7 +94,7 @@ func (l *SessionNameLayer) View(width, height int, active bool) []*lipgloss.Laye
 	overlayW := max(len(label)+20, 38)
 	dialog := overlayBorder.Width(overlayW).Render(display)
 
-	help := statusFaint.Render("• enter: create • esc: cancel •")
+	help := overlayHint.Render("• enter: create • esc: cancel •")
 	dialogLines := strings.Split(dialog, "\n")
 	helpPad := (overlayW + overlayBorder.GetHorizontalBorderSize() - lipgloss.Width(help)) / 2
 	if helpPad < 0 {

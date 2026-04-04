@@ -127,7 +127,7 @@ func (l *ScrollableLayer) View(width, height int, active bool) []*lipgloss.Layer
 		dialogLines = append(dialogLines, lastLine)
 	}
 
-	help := statusFaint.Render("• q/esc: close • ↑↓/pgup/pgdn: scroll • ←→: pan • home: top •")
+	help := overlayHint.Render("• q/esc: close • ↑↓/pgup/pgdn: scroll • ←→: pan • home: top •")
 	helpPad := (overlayW + overlayBorder.GetHorizontalBorderSize() - lipgloss.Width(help)) / 2
 	if helpPad < 0 {
 		helpPad = 0

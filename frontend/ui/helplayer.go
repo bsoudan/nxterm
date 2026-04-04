@@ -149,7 +149,7 @@ func (h *HelpLayer) View(width, height int, active bool) []*lipgloss.Layer {
 
 	dialog := overlayBorder.Width(overlayW).Render(content)
 
-	help := statusFaint.Render("• ↑↓/enter: select • q/esc: close •")
+	help := overlayHint.Render("• ↑↓/enter: select • q/esc: close •")
 	dialogLines := lipgloss.JoinVertical(lipgloss.Left, dialog, help)
 
 	dialogH := lipgloss.Height(dialogLines)
