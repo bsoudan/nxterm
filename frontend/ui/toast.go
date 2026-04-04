@@ -42,6 +42,8 @@ func (t *ToastLayer) View(width, height int, active bool) []*lipgloss.Layer {
 	return []*lipgloss.Layer{lipgloss.NewLayer(content).X(x).Y(2).Z(3)}
 }
 
+func (t *ToastLayer) WantsKeyboardInput() bool { return false }
+
 func (t *ToastLayer) Status() (string, lipgloss.Style) {
 	return "", lipgloss.Style{}
 }

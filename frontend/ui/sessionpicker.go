@@ -113,6 +113,8 @@ func (p *SessionPickerLayer) View(width, height int, active bool) []*lipgloss.La
 	return []*lipgloss.Layer{lipgloss.NewLayer(dialog).X(x).Y(y).Z(1)}
 }
 
+func (p *SessionPickerLayer) WantsKeyboardInput() bool { return true }
+
 func (p *SessionPickerLayer) Status() (string, lipgloss.Style) {
 	return "switch session", lipgloss.Style{}
 }

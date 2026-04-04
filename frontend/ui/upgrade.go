@@ -55,7 +55,7 @@ func cleanupDownload(dl *Download, server *Server) {
 }
 
 // upgradeTask runs the interactive upgrade flow as a synchronous task.
-func upgradeTask(t *Handle, server *Server,
+func upgradeTask(t *TermdHandle, server *Server,
 	serverAvail bool, serverVer string,
 	clientAvail bool, clientVer string, version string) {
 
@@ -103,7 +103,7 @@ func upgradeTask(t *Handle, server *Server,
 			return
 		}
 		if sr.Error {
-			ShowError(overlay, t, sr.Message)
+			ShowError(overlay, t.Handle, sr.Message)
 			return
 		}
 
@@ -136,7 +136,7 @@ func upgradeTask(t *Handle, server *Server,
 	// Download client binary.
 	dl, err := setupDownload(server)
 	if err != nil {
-		ShowError(overlay, t, err.Error())
+		ShowError(overlay, t.Handle, err.Error())
 		return
 	}
 	defer cleanupDownload(dl, server)
@@ -157,7 +157,7 @@ func upgradeTask(t *Handle, server *Server,
 		return
 	}
 	if cbr.Error {
-		ShowError(overlay, t, cbr.Message)
+		ShowError(overlay, t.Handle, cbr.Message)
 		return
 	}
 	server.SetDownload(nil)
@@ -191,18 +191,18 @@ func setupDownload(server *Server) (*Download, error) {
 	return dl, nil
 }
 
-func applyClientUpgrade(overlay *Overlay, t *Handle, dl *Download, expectedHash string, expectedSize int64) {
+func applyClientUpgrade(overlay *Overlay, t *TermdHandle, dl *Download, expectedHash string, expectedSize int64) {
 	overlay.Lines = []string{"  Applying update..."}
 	overlay.StatusText = "applying client update..."
 
 	downloaded := dl.written.Load()
 	gotHash := fmt.Sprintf("%x", dl.hasher.Sum(nil))
 	if gotHash != expectedHash {
-		ShowError(overlay, t, fmt.Sprintf("sha256 mismatch: got %s, want %s", gotHash[:16]+"...", expectedHash[:16]+"..."))
+		ShowError(overlay, t.Handle, fmt.Sprintf("sha256 mismatch: got %s, want %s", gotHash[:16]+"...", expectedHash[:16]+"..."))
 		return
 	}
 	if downloaded != expectedSize {
-		ShowError(overlay, t, fmt.Sprintf("size mismatch: got %d, want %d", downloaded, expectedSize))
+		ShowError(overlay, t.Handle, fmt.Sprintf("size mismatch: got %d, want %d", downloaded, expectedSize))
 		return
 	}
 
@@ -211,14 +211,14 @@ func applyClientUpgrade(overlay *Overlay, t *Handle, dl *Download, expectedHash 
 	dl.file = nil // prevent cleanup from removing it
 
 	if err := os.Chmod(tmpPath, 0755); err != nil {
-		ShowError(overlay, t, fmt.Sprintf("chmod: %v", err))
+		ShowError(overlay, t.Handle, fmt.Sprintf("chmod: %v", err))
 		os.Remove(tmpPath)
 		return
 	}
 
 	exePath, err := os.Executable()
 	if err != nil {
-		ShowError(overlay, t, fmt.Sprintf("os.Executable: %v", err))
+		ShowError(overlay, t.Handle, fmt.Sprintf("os.Executable: %v", err))
 		os.Remove(tmpPath)
 		return
 	}
@@ -233,13 +233,13 @@ func applyClientUpgrade(overlay *Overlay, t *Handle, dl *Download, expectedHash 
 	}
 
 	if err := replaceAndExec(tmpPath, targetPath); err != nil {
-		ShowError(overlay, t, fmt.Sprintf("replace: %v", err))
+		ShowError(overlay, t.Handle, fmt.Sprintf("replace: %v", err))
 		os.Remove(tmpPath)
 		return
 	}
 
 	// replaceAndExec should not return, but just in case:
-	ShowError(overlay, t, "exec returned unexpectedly")
+	ShowError(overlay, t.Handle, "exec returned unexpectedly")
 }
 
 func formatBytes(n int64) string {

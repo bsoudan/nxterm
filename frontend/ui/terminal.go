@@ -239,6 +239,8 @@ func (t *TerminalLayer) Status() (string, lipgloss.Style) {
 	return "", lipgloss.Style{}
 }
 
+func (t *TerminalLayer) WantsKeyboardInput() bool { return t.scrollback.Active() }
+
 // ScrollbackActive returns whether scrollback mode is active.
 func (t *TerminalLayer) ScrollbackActive() bool { return t.scrollback.Active() }
 

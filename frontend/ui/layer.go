@@ -1,34 +1,27 @@
 package ui
 
 import (
-	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"termd/pkg/tui"
 )
 
-// Layer is the interface for all layers in the UI stack.
-// Layers are pointers with mutable state — Update mutates in place.
-// The bool return signals whether the message was handled (stop propagating)
-// or should continue to the next layer.
-//
-// View returns a slice of *lipgloss.Layer for compositing. Layers that
-// have no visual output (command, hint) return nil. Model flattens all
-// slices and feeds them to a single lipgloss.NewCompositor call.
-//
-// Activate/Deactivate manage lifecycle when a layer becomes or stops
-// being the active target (e.g., session switching).
-type Layer interface {
-	Activate() tea.Cmd
-	Deactivate()
-	Update(tea.Msg) (response tea.Msg, cmd tea.Cmd, handled bool)
-	View(width, height int, active bool) []*lipgloss.Layer
+// TermdLayer extends tui.Layer with termd-specific capabilities.
+// All termd layers implement this interface.
+type TermdLayer interface {
+	tui.Layer
+
+	// WantsKeyboardInput returns true if this layer needs keyboard
+	// input routed through bubbletea's key parser rather than
+	// forwarded raw to the server.
+	WantsKeyboardInput() bool
+
+	// Status returns text and style for the status bar.
 	Status() (text string, style lipgloss.Style)
 }
 
-// QuitLayerMsg is returned by a layer's Update to request removal from the stack.
-type QuitLayerMsg struct{}
-
-// PushLayerMsg is sent as a tea.Msg to push a new layer onto the stack.
-type PushLayerMsg struct{ Layer Layer }
+// Aliases for tui types used throughout the ui package.
+type QuitLayerMsg = tui.QuitLayerMsg
+type PushLayerMsg = tui.PushLayerMsg
 
 // DetachMsg is returned by session to signal the app should set Detached and quit.
 type DetachMsg struct{}
@@ -44,4 +37,15 @@ type RequestFunc func(msg any, reply ReplyFunc)
 type requestState struct {
 	nextReqID uint64
 	pending   map[uint64]ReplyFunc
+}
+
+// needsFocusRouting iterates the layer stack and returns true if any
+// TermdLayer reports WantsKeyboardInput().
+func needsFocusRouting(stack *tui.Stack) bool {
+	for _, l := range stack.Layers() {
+		if tl, ok := l.(TermdLayer); ok && tl.WantsKeyboardInput() {
+			return true
+		}
+	}
+	return false
 }

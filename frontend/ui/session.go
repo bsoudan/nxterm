@@ -506,6 +506,8 @@ var (
 	statusBold    = lipgloss.NewStyle().Bold(true)
 )
 
+func (s *SessionLayer) WantsKeyboardInput() bool { return false }
+
 func (s *SessionLayer) Status() (string, lipgloss.Style) {
 	if t := s.activeTerm(); t != nil && t.ScrollbackActive() {
 		return t.Status()

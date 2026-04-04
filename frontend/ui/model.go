@@ -4,23 +4,23 @@ import (
 	"bytes"
 	"io"
 	"os"
-	"slices"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	termlog "termd/frontend/log"
 	"termd/frontend/protocol"
+	"termd/pkg/tui"
 )
 
 // Model is the top-level bubbletea model. It owns the layer stack and
 // dispatches messages top-down. Protocol message unwrapping, req_id
 // matching, raw input routing, and overlay compositing happen here.
 type Model struct {
-	layers   []Layer
+	stack    *tui.Stack
 	registry *Registry
 	req      *requestState
-	Tasks    *TaskRunner
+	Tasks    *tui.TaskRunner
 	Detached bool
 	initDone chan struct{}
 }
@@ -38,10 +38,11 @@ func NewModel(s *Server, pipeW io.Writer, registry *Registry, ring *termlog.LogR
 	}
 	main := NewMainLayer(s, pipeW, requestFn, registry, ring, endpoint, version, changelog, hostname, sessionName, connectFn)
 	main.swapServerFn = func(newSrv *Server) { currentServer = newSrv }
-	tasks := NewTaskRunner(requestFn)
+	tasks := tui.NewTaskRunner()
 	main.tasks = tasks
+	stack := tui.NewStack(main)
 	return Model{
-		layers:   []Layer{main},
+		stack:    stack,
 		registry: registry,
 		req:      req,
 		Tasks:    tasks,
@@ -51,7 +52,7 @@ func NewModel(s *Server, pipeW io.Writer, registry *Registry, ring *termlog.LogR
 
 func (m Model) Init() tea.Cmd {
 	close(m.initDone)
-	return tea.Batch(m.layers[0].(*MainLayer).Init(), m.Tasks.ListenCmd())
+	return tea.Batch(m.stack.Layers()[0].(*MainLayer).Init(), m.Tasks.ListenCmd())
 }
 
 // InitDone returns a channel that is closed when Init completes.
@@ -75,8 +76,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// Route task messages from task goroutines.
-	if tmsg, ok := msg.(taskMsg); ok {
-		cmd := m.Tasks.HandleMsg(tmsg)
+	if tui.IsTaskMsg(msg) {
+		cmd := m.Tasks.HandleMsg(msg)
 		return m, tea.Batch(cmd, m.Tasks.ListenCmd())
 	}
 
@@ -85,18 +86,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil // message consumed by a task
 	}
 
-	if push, ok := msg.(PushLayerMsg); ok {
-		m.layers = append(m.layers, push.Layer)
-		return m, nil
-	}
-
-	if pop, ok := msg.(popLayerMsg); ok {
-		for i, l := range m.layers {
-			if l == pop.layer {
-				m.layers = slices.Delete(m.layers, i, i+1)
-				break
-			}
-		}
+	// DetachMsg signals the app should record detach state.
+	if _, ok := msg.(DetachMsg); ok {
+		m.Detached = true
 		return m, nil
 	}
 
@@ -107,8 +99,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	//  - Prefix key detection pushes CommandLayer before delivering the
 	//    remaining bytes, ensuring proper sequencing.
 	if raw, ok := msg.(RawInputMsg); ok {
-		main := m.layers[0].(*MainLayer)
-		if m.hasFocusLayer(main) {
+		main := m.stack.Layers()[0].(*MainLayer)
+		if needsFocusRouting(m.stack) {
 			return m.handleFocusInput(raw, main.pipeW)
 		}
 		if idx := bytes.IndexByte([]byte(raw), m.registry.PrefixKey); idx >= 0 {
@@ -118,37 +110,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// MainLayer forwards to active session for mouse routing and server forwarding.
 	}
 
-	var cmds []tea.Cmd
-	for i := len(m.layers) - 1; i >= 0; i-- {
-		resp, cmd, handled := m.layers[i].Update(msg)
-		if cmd != nil {
-			cmds = append(cmds, cmd)
-		}
-		if _, ok := resp.(QuitLayerMsg); ok {
-			m.layers = slices.Delete(m.layers, i, i+1)
-		}
-		if _, ok := resp.(DetachMsg); ok {
-			m.Detached = true
-		}
-		if handled {
-			break
-		}
-	}
-	return m, tea.Batch(cmds...)
-}
-
-// hasFocusLayer returns true if any overlay or scrollback mode is active,
-// meaning raw input should be routed through pipeW for key event parsing
-// rather than forwarded to the server.
-func (m Model) hasFocusLayer(main *MainLayer) bool {
-	for i := 1; i < len(m.layers); i++ {
-		switch m.layers[i].(type) {
-		case *CommandLayer, *ScrollableLayer, *StatusLayer, *HelpLayer, *ProgramPickerLayer, *SessionPickerLayer, *SessionNameLayer, *CommandPaletteLayer, *Overlay:
-			return true
-		}
-	}
-	t := main.ActiveTerm()
-	return t != nil && t.ScrollbackActive()
+	// Dispatch through the layer stack.
+	cmd := m.stack.Update(msg)
+	return m, cmd
 }
 
 // handleFocusInput routes raw input through pipeW one sequence at a time.
@@ -187,7 +151,7 @@ func (m Model) handlePrefixDetected(raw RawInputMsg, idx int, main *MainLayer) (
 		main.sendRawToServer(raw[:idx])
 	}
 
-	pushCmd := func() tea.Msg { return PushLayerMsg{Layer: &CommandLayer{registry: m.registry}} }
+	pushCmd := func() tea.Msg { return tui.PushLayerMsg{Layer: &CommandLayer{registry: m.registry}} }
 	rest := raw[idx+1:]
 	if len(rest) > 0 {
 		restCopy := make([]byte, len(rest))
@@ -199,7 +163,7 @@ func (m Model) handlePrefixDetected(raw RawInputMsg, idx int, main *MainLayer) (
 }
 
 func (m Model) View() tea.View {
-	main := m.layers[0].(*MainLayer)
+	main := m.stack.Layers()[0].(*MainLayer)
 
 	width, height := main.termWidth, main.termHeight
 	if width <= 0 {
@@ -215,29 +179,25 @@ func (m Model) View() tea.View {
 	statusText := ""
 	statusStyle := lipgloss.Style{}
 	hasOverlay := false
-	for i := 0; i < len(m.layers); i++ {
-		t, s := m.layers[i].Status()
-		if t != "" {
-			statusText = t
-			if i > 0 {
-				statusStyle = s.Bold(true).Foreground(lipgloss.Color("6"))
-			} else {
-				statusStyle = s
+	for i, l := range m.stack.Layers() {
+		if tl, ok := l.(TermdLayer); ok {
+			t, s := tl.Status()
+			if t != "" {
+				statusText = t
+				if i > 0 {
+					statusStyle = s.Bold(true).Foreground(lipgloss.Color("6"))
+				} else {
+					statusStyle = s
+				}
 			}
-		}
-		switch m.layers[i].(type) {
-		case *ScrollableLayer, *StatusLayer, *HelpLayer, *ProgramPickerLayer, *SessionPickerLayer, *SessionNameLayer, *CommandPaletteLayer, *ConnectLayer, *Overlay:
-			hasOverlay = true
+			if i > 0 && tl.WantsKeyboardInput() {
+				hasOverlay = true
+			}
 		}
 	}
 
-	// Collect all View layers. Each layer returns a slice; flatten them.
-	// The first layer (main) is active when no overlay is above it.
-	var layers []*lipgloss.Layer
-	layers = append(layers, main.View(width, height, !hasOverlay)...)
-	for i := 1; i < len(m.layers); i++ {
-		layers = append(layers, m.layers[i].View(width, height, false)...)
-	}
+	// Composite all layer views via the stack.
+	layers := m.stack.View(width, height)
 
 	// Status bar (right side of tab bar) as the topmost layer.
 	statusContent, statusWidth := renderStatusBar(statusText, main.version, statusStyle, hasOverlay)

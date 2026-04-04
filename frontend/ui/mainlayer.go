@@ -13,6 +13,7 @@ import (
 	"charm.land/lipgloss/v2"
 	termlog "termd/frontend/log"
 	"termd/frontend/protocol"
+	"termd/pkg/tui"
 )
 
 // MainLayer sits at index 0 in the layer stack and manages multiple
@@ -43,7 +44,7 @@ type MainLayer struct {
 	upgradeClientAvail  bool
 	upgradeClientVer    string
 
-	tasks *TaskRunner
+	tasks *tui.TaskRunner
 
 	termWidth  int
 	termHeight int
@@ -139,7 +140,8 @@ func (m *MainLayer) quit() (tea.Msg, tea.Cmd) {
 func (m *MainLayer) detach() (tea.Msg, tea.Cmd) {
 	m.Deactivate()
 	m.server.Send(protocol.Disconnect{})
-	return DetachMsg{}, tea.Quit
+	detachCmd := func() tea.Msg { return DetachMsg{} }
+	return nil, tea.Batch(detachCmd, tea.Quit)
 }
 
 func (m *MainLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
@@ -267,7 +269,7 @@ func (m *MainLayer) forwardToActiveSession(msg tea.Msg) (tea.Msg, tea.Cmd, bool)
 }
 
 func (m *MainLayer) handleCmd(msg MainCmd) (tea.Msg, tea.Cmd, bool) {
-	push := func(layer Layer) (tea.Msg, tea.Cmd, bool) {
+	push := func(layer tui.Layer) (tea.Msg, tea.Cmd, bool) {
 		return nil, func() tea.Msg { return PushLayerMsg{Layer: layer} }, true
 	}
 	switch msg.Name {
@@ -298,7 +300,8 @@ func (m *MainLayer) handleCmd(msg MainCmd) (tea.Msg, tea.Cmd, bool) {
 		return resp, cmd, true
 
 	case "upgrade":
-		m.tasks.Run(func(t *Handle) {
+		m.tasks.Run(func(h *tui.Handle) {
+			t := &TermdHandle{Handle: h, requestFn: m.requestFn}
 			// Fresh upgrade check.
 			resp, err := t.Request(protocol.UpgradeCheckRequest{
 				ClientVersion: m.version,
@@ -534,6 +537,13 @@ func (m *MainLayer) Status() (string, lipgloss.Style) {
 		text += " | update available (ctrl+b u)"
 	}
 	return text, style
+}
+
+func (m *MainLayer) WantsKeyboardInput() bool {
+	if t := m.ActiveTerm(); t != nil && t.ScrollbackActive() {
+		return true
+	}
+	return false
 }
 
 // UpgradeAvailable reports whether any upgrade is available.

@@ -27,6 +27,7 @@ func (c *CommandLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 func (c *CommandLayer) Activate() tea.Cmd                            { return nil }
 func (c *CommandLayer) Deactivate()                                   {}
 func (c *CommandLayer) View(width, height int, active bool) []*lipgloss.Layer { return nil }
+func (c *CommandLayer) WantsKeyboardInput() bool                      { return true }
 func (c *CommandLayer) Status() (string, lipgloss.Style)              { return "?", lipgloss.Style{} }
 
 // HintLayer is a temporary layer pushed after startup to show
@@ -83,6 +84,8 @@ func (h *HintLayer) View(width, height int, active bool) []*lipgloss.Layer {
 var versionStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 
 var logoStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4"))
+
+func (h *HintLayer) WantsKeyboardInput() bool { return false }
 
 func (h *HintLayer) Status() (string, lipgloss.Style) {
 	prefix := "ctrl+b"
