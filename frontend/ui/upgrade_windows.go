@@ -7,47 +7,9 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
-	"time"
-	"unsafe"
 )
 
-var procWriteConsoleInput = syscall.NewLazyDLL("kernel32.dll").NewProc("WriteConsoleInputW")
-
-// unblockConsoleRead injects a dummy console input event to unblock any
-// goroutine stuck in ReadConsole. On Windows, closing a console handle
-// does not reliably cancel a pending read — the read may hang until
-// input arrives. Injecting an event ensures the read returns so the
-// goroutine can observe the closed handle on the next iteration.
-func unblockConsoleRead() {
-	h := os.Stdin.Fd()
-
-	// inputRecord matches the Windows INPUT_RECORD structure layout.
-	// We inject a KEY_EVENT with a NUL character — harmless if it
-	// reaches the input pipeline, and sufficient to unblock ReadConsole.
-	type inputRecord struct {
-		eventType         uint16
-		_                 uint16 // padding (union alignment)
-		bKeyDown          int32
-		wRepeatCount      uint16
-		wVirtualKeyCode   uint16
-		wVirtualScanCode  uint16
-		unicodeChar       uint16
-		dwControlKeyState uint32
-	}
-
-	rec := inputRecord{
-		eventType:    0x0001, // KEY_EVENT
-		bKeyDown:     1,
-		wRepeatCount: 1,
-	}
-	var written uint32
-	procWriteConsoleInput.Call(
-		h,
-		uintptr(unsafe.Pointer(&rec)),
-		1,
-		uintptr(unsafe.Pointer(&written)),
-	)
-}
+var procFreeConsole = syscall.NewLazyDLL("kernel32.dll").NewProc("FreeConsole")
 
 // replaceAndExec replaces the running binary and starts the new one.
 // Windows doesn't allow overwriting a running executable, but it does
@@ -68,19 +30,6 @@ func replaceAndExec(tmpPath, targetPath string) error {
 	}
 
 	slog.Info("client upgrade: starting new process", "binary", targetPath)
-
-	// Shut down our input pipeline BEFORE starting the new process.
-	// On Windows, console reads are serialized per input buffer. If
-	// our ReadConsole goroutine is still pending, the new process's
-	// reads will block and the TUI freezes. Injecting a dummy event
-	// unblocks the pending read, then closing the handle ensures the
-	// goroutine exits on the next iteration.
-	unblockConsoleRead()
-	if PreUpgradeCleanup != nil {
-		PreUpgradeCleanup()
-	}
-	time.Sleep(100 * time.Millisecond) // let goroutine exit
-
 	argv := os.Args[1:]
 	cmd := exec.Command(targetPath, argv...)
 	cmd.Stdin = os.Stdin
@@ -90,9 +39,19 @@ func replaceAndExec(tmpPath, targetPath string) error {
 		return fmt.Errorf("start new process: %w", err)
 	}
 
-	// Close os.Stdin — the child already has its own handle from
-	// CreateProcess, so this only affects the old process.
-	os.Stdin.Close()
+	// Detach from the console. The child already has its own console
+	// handles from CreateProcess. FreeConsole causes all pending
+	// ReadConsole/WriteConsole calls in THIS process to fail
+	// immediately, which unblocks the stdin reader, the renderer,
+	// and any goroutine backed up behind them. This is far more
+	// reliable than closing individual handles (which doesn't cancel
+	// pending reads on Windows) or closing Go channels (which can't
+	// be processed when the event loop is backed up behind a lock).
+	procFreeConsole.Call()
+
+	if PreUpgradeCleanup != nil {
+		PreUpgradeCleanup()
+	}
 
 	// Wait for the new process instead of exiting immediately.
 	// If we os.Exit(0) here, the parent shell (PowerShell/cmd) sees
