@@ -134,6 +134,20 @@ func (s *StatusLayer) View(width, height int, active bool) []*lipgloss.Layer {
 		lines = append(lines, fmt.Sprintf("  Listeners: %s", s.status.SocketPath))
 		lines = append(lines, fmt.Sprintf("  Clients:   %d", s.status.NumClients))
 		lines = append(lines, fmt.Sprintf("  Regions:   %d", s.status.NumRegions))
+
+		for _, r := range s.status.Regions {
+			lines = append(lines, "")
+			kind := "pty"
+			if r.Native {
+				kind = "native"
+			}
+			lines = append(lines, fmt.Sprintf("region %s:", r.Name))
+			lines = append(lines, fmt.Sprintf("  Cmd:        %s", r.Cmd))
+			lines = append(lines, fmt.Sprintf("  PID:        %d", r.Pid))
+			lines = append(lines, fmt.Sprintf("  Size:       %dx%d", r.Width, r.Height))
+			lines = append(lines, fmt.Sprintf("  Scrollback: %d lines", r.ScrollbackLen))
+			lines = append(lines, fmt.Sprintf("  Type:       %s", kind))
+		}
 	} else {
 		lines = append(lines, "  loading...")
 	}

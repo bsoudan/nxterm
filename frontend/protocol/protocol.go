@@ -180,11 +180,15 @@ type RegionDestroyed struct {
 }
 
 type RegionInfo struct {
-	RegionID string `json:"region_id"`
-	Name     string `json:"name"`
-	Cmd      string `json:"cmd"`
-	Pid      int    `json:"pid"`
-	Session  string `json:"session"`
+	RegionID       string `json:"region_id"`
+	Name           string `json:"name"`
+	Cmd            string `json:"cmd"`
+	Pid            int    `json:"pid"`
+	Session        string `json:"session"`
+	Width          int    `json:"width,omitempty"`
+	Height         int    `json:"height,omitempty"`
+	ScrollbackLen  int    `json:"scrollback_len,omitempty"`
+	Native         bool   `json:"native,omitempty"`
 }
 
 type ListRegionsResponse struct {
@@ -195,17 +199,18 @@ type ListRegionsResponse struct {
 }
 
 type StatusResponse struct {
-	Type          string `json:"type"`
-	Hostname      string `json:"hostname"`
-	Version       string `json:"version"`
-	Pid           int    `json:"pid"`
-	UptimeSeconds int64  `json:"uptime_seconds"`
-	SocketPath    string `json:"socket_path"`
-	NumClients    int    `json:"num_clients"`
-	NumRegions    int    `json:"num_regions"`
-	NumSessions   int    `json:"num_sessions"`
-	Error         bool   `json:"error"`
-	Message       string `json:"message"`
+	Type          string       `json:"type"`
+	Hostname      string       `json:"hostname"`
+	Version       string       `json:"version"`
+	Pid           int          `json:"pid"`
+	UptimeSeconds int64        `json:"uptime_seconds"`
+	SocketPath    string       `json:"socket_path"`
+	NumClients    int          `json:"num_clients"`
+	NumRegions    int          `json:"num_regions"`
+	NumSessions   int          `json:"num_sessions"`
+	Regions       []RegionInfo `json:"regions,omitempty"`
+	Error         bool         `json:"error"`
+	Message       string       `json:"message"`
 }
 
 type GetScreenResponse struct {
@@ -254,6 +259,8 @@ type GetScrollbackResponse struct {
 	Type     string         `json:"type"`
 	RegionID string         `json:"region_id"`
 	Lines    [][]ScreenCell `json:"lines"`
+	Total    int            `json:"total"`
+	Done     bool           `json:"done"`
 	Error    bool           `json:"error"`
 	Message  string         `json:"message"`
 }

@@ -20,7 +20,7 @@ type removeClientReq struct {
 }
 
 type spawnRegionReq struct {
-	region      *Region
+	region      Region
 	sessionName string
 	resp        chan struct{}
 }
@@ -31,14 +31,14 @@ type destroyRegionReq struct {
 }
 
 type destroyResult struct {
-	region      *Region
+	region      Region
 	subscribers []*Client
 	found       bool
 }
 
 type findRegionReq struct {
 	regionID string
-	resp     chan *Region
+	resp     chan Region
 }
 
 type getClientsReq struct {
@@ -47,7 +47,7 @@ type getClientsReq struct {
 
 type killRegionReq struct {
 	regionID string
-	resp     chan *Region
+	resp     chan Region
 }
 
 type killClientReq struct {
@@ -114,7 +114,7 @@ type getSessionInfosReq struct {
 }
 
 type subscribeResult struct {
-	region   *Region
+	region   Region
 	snapshot Snapshot
 }
 
@@ -140,7 +140,7 @@ type getClientSessionReq struct {
 
 type shutdownResult struct {
 	clients []*Client
-	regions []*Region
+	regions []Region
 }
 
 // ── Event loop ───────────────────────────────────────────────────────────────
@@ -185,14 +185,14 @@ func (s *Server) eventLoop() {
 				slog.Debug("client disconnected", "id", r.clientID)
 
 			case spawnRegionReq:
-				regions[r.region.id] = r.region
+				regions[r.region.ID()] = r.region
 				sess := sessions[r.sessionName]
 				if sess == nil {
 					sess = NewSession(r.sessionName)
 					sessions[r.sessionName] = sess
 				}
-				sess.regions[r.region.id] = r.region
-				r.region.session = r.sessionName
+				sess.regions[r.region.ID()] = r.region
+				r.region.SetSession(r.sessionName)
 				r.resp <- struct{}{}
 
 			case destroyRegionReq:
@@ -202,11 +202,11 @@ func (s *Server) eventLoop() {
 					break
 				}
 				delete(regions, r.regionID)
-				if sess := sessions[region.session]; sess != nil {
+				if sess := sessions[region.Session()]; sess != nil {
 					delete(sess.regions, r.regionID)
 					if len(sess.regions) == 0 {
-						delete(sessions, region.session)
-						slog.Info("removed empty session", "session", region.session)
+						delete(sessions, region.Session())
+						slog.Info("removed empty session", "session", region.Session())
 					}
 				}
 				var subscribers []*Client
@@ -269,10 +269,10 @@ func (s *Server) eventLoop() {
 					infos := make([]protocol.RegionInfo, 0, len(sess.regions))
 					for _, reg := range sess.regions {
 						infos = append(infos, protocol.RegionInfo{
-							RegionID: reg.id,
-							Name:     reg.name,
-							Cmd:      reg.cmd,
-							Pid:      reg.pid,
+							RegionID: reg.ID(),
+							Name:     reg.Name(),
+							Cmd:      reg.Cmd(),
+							Pid:      reg.Pid(),
 							Session:  sess.name,
 						})
 					}
@@ -331,11 +331,15 @@ func (s *Server) eventLoop() {
 					infos := make([]protocol.RegionInfo, 0, len(sess.regions))
 					for _, reg := range sess.regions {
 						infos = append(infos, protocol.RegionInfo{
-							RegionID: reg.id,
-							Name:     reg.name,
-							Cmd:      reg.cmd,
-							Pid:      reg.pid,
-							Session:  sess.name,
+							RegionID:      reg.ID(),
+							Name:          reg.Name(),
+							Cmd:           reg.Cmd(),
+							Pid:           reg.Pid(),
+							Session:       sess.name,
+							Width:         reg.Width(),
+							Height:        reg.Height(),
+							ScrollbackLen: reg.ScrollbackLen(),
+							Native:        reg.IsNative(),
 						})
 					}
 					r.resp <- infos
@@ -344,11 +348,15 @@ func (s *Server) eventLoop() {
 				infos := make([]protocol.RegionInfo, 0, len(regions))
 				for _, reg := range regions {
 					infos = append(infos, protocol.RegionInfo{
-						RegionID: reg.id,
-						Name:     reg.name,
-						Cmd:      reg.cmd,
-						Pid:      reg.pid,
-						Session:  reg.session,
+						RegionID:      reg.ID(),
+						Name:          reg.Name(),
+						Cmd:           reg.Cmd(),
+						Pid:           reg.Pid(),
+						Session:       reg.Session(),
+						Width:         reg.Width(),
+						Height:        reg.Height(),
+						ScrollbackLen: reg.ScrollbackLen(),
+						Native:        reg.IsNative(),
 					})
 				}
 				r.resp <- infos
@@ -453,14 +461,14 @@ func (s *Server) eventLoop() {
 				// No-op; handled by the pause select in upgradeReq above.
 
 			case restoreRegionReq:
-				regions[r.region.id] = r.region
+				regions[r.region.ID()] = r.region
 				sess, ok := sessions[r.session]
 				if !ok {
-					sess = &Session{name: r.session, regions: make(map[string]*Region)}
+					sess = &Session{name: r.session, regions: make(map[string]Region)}
 					sessions[r.session] = sess
 				}
-				sess.regions[r.region.id] = r.region
-				r.region.session = r.session
+				sess.regions[r.region.ID()] = r.region
+				r.region.SetSession(r.session)
 				go s.watchRegion(r.region)
 				r.resp <- struct{}{}
 			}
@@ -470,7 +478,7 @@ func (s *Server) eventLoop() {
 			for _, c := range clients {
 				clientList = append(clientList, c)
 			}
-			regionList := make([]*Region, 0, len(regions))
+			regionList := make([]Region, 0, len(regions))
 			for _, r := range regions {
 				regionList = append(regionList, r)
 			}

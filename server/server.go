@@ -30,7 +30,7 @@ type Server struct {
 
 	// init* fields transfer ownership of maps to the event loop goroutine.
 	// They are set in NewServer and consumed (nilled) by eventLoop on startup.
-	initRegions  map[string]*Region
+	initRegions  map[string]Region
 	initClients  map[uint32]*Client
 	initSessions map[string]*Session
 	initPrograms map[string]config.ProgramConfig
@@ -66,7 +66,7 @@ func NewServer(listeners []net.Listener, version string, cfg config.ServerConfig
 		requests:     make(chan any, 256),
 		done:         make(chan struct{}),
 		shutdownResp: make(chan shutdownResult, 1),
-		initRegions:  make(map[string]*Region),
+		initRegions:  make(map[string]Region),
 		initClients:  make(map[uint32]*Client),
 		initSessions: make(map[string]*Session),
 		initPrograms: programs,
@@ -162,7 +162,7 @@ func (s *Server) acceptClient(conn net.Conn) {
 	go client.ReadLoop()
 }
 
-func (s *Server) SpawnRegion(sessionName, cmd string, args []string, env map[string]string) (*Region, error) {
+func (s *Server) SpawnRegion(sessionName, cmd string, args []string, env map[string]string) (Region, error) {
 	region, err := NewRegion(cmd, args, env, 80, 24)
 	if err != nil {
 		return nil, err
@@ -175,19 +175,19 @@ func (s *Server) SpawnRegion(sessionName, cmd string, args []string, env map[str
 	}
 	<-resp
 
-	slog.Info("spawned region", "region_id", region.id, "cmd", cmd, "session", sessionName)
+	slog.Info("spawned region", "region_id", region.ID(), "cmd", cmd, "session", sessionName)
 
 	go s.watchRegion(region)
 	return region, nil
 }
 
-func (s *Server) watchRegion(region *Region) {
-	for range region.notify {
+func (s *Server) watchRegion(region Region) {
+	for range region.Notify() {
 		s.sendTerminalEvents(region)
 	}
-	<-region.readerDone
+	<-region.ReaderDone()
 	s.sendTerminalEvents(region)
-	s.destroyRegion(region.id)
+	s.destroyRegion(region.ID())
 }
 
 func (s *Server) destroyRegion(regionID string) {
@@ -208,12 +208,12 @@ func (s *Server) destroyRegion(regionID string) {
 		})
 	}
 
-	slog.Info("destroyed region", "region_id", regionID, "session", result.region.session)
+	slog.Info("destroyed region", "region_id", regionID, "session", result.region.Session())
 	result.region.Close()
 }
 
-func (s *Server) FindRegion(regionID string) *Region {
-	resp := make(chan *Region, 1)
+func (s *Server) FindRegion(regionID string) Region {
+	resp := make(chan Region, 1)
 	if !s.send(findRegionReq{regionID: regionID, resp: resp}) {
 		return nil
 	}
@@ -231,7 +231,7 @@ func (s *Server) Broadcast(msg any) {
 }
 
 func (s *Server) KillRegion(regionID string) bool {
-	resp := make(chan *Region, 1)
+	resp := make(chan Region, 1)
 	if !s.send(killRegionReq{regionID: regionID, resp: resp}) {
 		return false
 	}
@@ -260,7 +260,7 @@ func (s *Server) removeClient(id uint32) {
 	s.send(removeClientReq{clientID: id})
 }
 
-func (s *Server) sendTerminalEvents(region *Region) {
+func (s *Server) sendTerminalEvents(region Region) {
 	events, needsSnapshot := region.FlushEvents()
 
 	if !needsSnapshot && len(events) == 0 {
@@ -268,7 +268,7 @@ func (s *Server) sendTerminalEvents(region *Region) {
 	}
 
 	resp := make(chan []*Client, 1)
-	if !s.send(getSubscribersReq{regionID: region.id, resp: resp}) {
+	if !s.send(getSubscribersReq{regionID: region.ID(), resp: resp}) {
 		return
 	}
 	subscribers := <-resp
@@ -281,7 +281,7 @@ func (s *Server) sendTerminalEvents(region *Region) {
 		snap := region.Snapshot()
 		snapMsg := protocol.ScreenUpdate{
 			Type:      "screen_update",
-			RegionID:  region.id,
+			RegionID:  region.ID(),
 			CursorRow: snap.CursorRow,
 			CursorCol: snap.CursorCol,
 			Lines:     snap.Lines,
@@ -296,7 +296,7 @@ func (s *Server) sendTerminalEvents(region *Region) {
 
 	msg := protocol.TerminalEvents{
 		Type:     "terminal_events",
-		RegionID: region.id,
+		RegionID: region.ID(),
 		Events:   events,
 	}
 
@@ -312,6 +312,8 @@ func (s *Server) getStatus() protocol.StatusResponse {
 	}
 	counts := <-resp
 
+	regions := s.getRegionInfos("")
+
 	hostname, _ := os.Hostname()
 	return protocol.StatusResponse{
 		Type:          "status_response",
@@ -323,6 +325,7 @@ func (s *Server) getStatus() protocol.StatusResponse {
 		NumClients:    counts.numClients,
 		NumRegions:    counts.numRegions,
 		NumSessions:   counts.numSessions,
+		Regions:       regions,
 		Error:         false,
 		Message:       "",
 	}
@@ -337,7 +340,7 @@ func (s *Server) listenerAddrs() string {
 }
 
 // SpawnProgram looks up a program by name and spawns it into the given session.
-func (s *Server) SpawnProgram(sessionName, programName string) (*Region, error) {
+func (s *Server) SpawnProgram(sessionName, programName string) (Region, error) {
 	resp := make(chan *config.ProgramConfig, 1)
 	if !s.send(lookupProgramReq{name: programName, resp: resp}) {
 		return nil, fmt.Errorf("server shutting down")
@@ -375,10 +378,10 @@ func (s *Server) findOrCreateSession(name string) (*Session, []protocol.RegionIn
 			return nil, nil, err
 		}
 		infos = append(infos, protocol.RegionInfo{
-			RegionID: region.id,
-			Name:     region.name,
-			Cmd:      region.cmd,
-			Pid:      region.pid,
+			RegionID: region.ID(),
+			Name:     region.Name(),
+			Cmd:      region.Cmd(),
+			Pid:      region.Pid(),
 			Session:  name,
 		})
 	}
@@ -434,7 +437,7 @@ func (s *Server) getSessionInfos() []protocol.SessionInfo {
 	return <-resp
 }
 
-func (s *Server) Subscribe(clientID uint32, regionID string) (*Region, Snapshot) {
+func (s *Server) Subscribe(clientID uint32, regionID string) (Region, Snapshot) {
 	resp := make(chan *subscribeResult, 1)
 	if !s.send(subscribeReq{clientID: clientID, regionID: regionID, resp: resp}) {
 		return nil, Snapshot{}

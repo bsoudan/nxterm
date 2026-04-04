@@ -33,7 +33,9 @@ func protocolCellsToTe(cells []protocol.ScreenCell) []te.Cell {
 // screen buffer and handles navigation input.
 type ScrollbackLayer struct {
 	offset int                    // lines scrolled back from bottom (0 = live)
-	cells  [][]protocol.ScreenCell // server-side scrollback buffer
+	cells  [][]protocol.ScreenCell // server-side scrollback buffer (accumulated chunks)
+	total  int                    // total scrollback lines reported by server
+	loaded bool                   // true once all chunks have arrived
 	term   *TerminalLayer         // reference to the terminal for screen cells and dimensions
 }
 
@@ -57,14 +59,16 @@ func (s *ScrollbackLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 		}
 		return nil, nil, true // absorb other mouse events
 	case protocol.GetScrollbackResponse:
-		s.cells = msg.Lines
+		s.cells = append(s.cells, msg.Lines...)
+		s.total = msg.Total
+		s.loaded = msg.Done
 		return nil, nil, true
 	}
 	return nil, nil, false // pass through (terminal events, etc.)
 }
 
 func (s *ScrollbackLayer) handleKey(msg tea.KeyPressMsg) (tea.Msg, tea.Cmd, bool) {
-	maxOffset := len(s.cells)
+	maxOffset := s.total
 	halfPage := s.term.contentHeight() / 2
 	if halfPage < 1 {
 		halfPage = 1
@@ -150,11 +154,15 @@ func (s *ScrollbackLayer) View(width, height int, active bool) []*lipgloss.Layer
 	screenCells := s.term.ScreenCells()
 
 	offset := s.offset
-	if offset > len(s.cells) {
-		offset = len(s.cells)
+	if offset > s.total {
+		offset = s.total
 	}
 
-	totalLines := len(s.cells) + len(screenCells)
+	// Full content layout: loaded scrollback | gap | screen.
+	// Gap rows are not-yet-loaded scrollback lines.
+	loadedEnd := len(s.cells)
+	gapEnd := s.total
+	totalLines := s.total + len(screenCells)
 	startIdx := totalLines - height - offset
 	if startIdx < 0 {
 		startIdx = 0
@@ -164,31 +172,50 @@ func (s *ScrollbackLayer) View(width, height int, active bool) []*lipgloss.Layer
 	var sb strings.Builder
 	for i := range height {
 		idx := startIdx + i
-		var row []te.Cell
-		if idx < len(s.cells) {
-			row = protocolCellsToTe(s.cells[idx])
+		if idx < loadedEnd {
+			row := protocolCellsToTe(s.cells[idx])
+			renderCellLine(&sb, row, width, i, -1, -1, false, false)
+		} else if idx < gapEnd {
+			// Not-yet-loaded: alternating x marks with row/column spacing.
+			for col := range width {
+				if idx%2 == 0 && col%2 == 0 {
+					sb.WriteByte('x')
+				} else {
+					sb.WriteByte(' ')
+				}
+			}
 		} else {
-			screenIdx := idx - len(s.cells)
+			screenIdx := idx - gapEnd
+			var row []te.Cell
 			if screenIdx >= 0 && screenIdx < len(screenCells) {
 				row = screenCells[screenIdx]
 			}
+			renderCellLine(&sb, row, width, i, -1, -1, false, false)
 		}
-		renderCellLine(&sb, row, width, i, -1, -1, false, false)
 		if i < height-1 {
 			sb.WriteByte('\n')
 		}
 	}
 
-	// Don't render the scrollbar until scrollback data has loaded.
-	if s.cells == nil {
+	// Don't render the scrollbar until the first chunk arrives.
+	if s.total == 0 && len(s.cells) == 0 {
 		return []*lipgloss.Layer{lipgloss.NewLayer(sb.String())}
 	}
 
+	// Use server-reported total for scrollbar so it reflects the full
+	// extent even while chunks are still streaming.
+	scrollbarTotal := s.total + len(screenCells)
+
 	// Scrollbar layer — single column overlaid on the right edge.
-	thumbStart, thumbLen := scrollbarGeometry(height, totalLines, offset)
+	// Track uses microdots for loaded content and spaces for the gap
+	// where chunks haven't arrived yet.
+	thumbStart, thumbLen := scrollbarGeometry(height, scrollbarTotal, offset)
 	thumbEnd := thumbStart + thumbLen
-	atTop := offset >= len(s.cells)
+	atTop := offset >= s.total
 	atBottom := offset <= 0
+
+	// Map scrollbar rows to content regions for track styling.
+	// Reuses loadedEnd/gapEnd from above.
 
 	var bar strings.Builder
 	for i := range height {
@@ -201,7 +228,13 @@ func (s *ScrollbackLayer) View(width, height int, active bool) []*lipgloss.Layer
 				bar.WriteString(scrollbarThumbStyle.Render(scrollbarThumb))
 			}
 		} else {
-			bar.WriteString(scrollbarTrackStyle.Render(scrollbarTrack))
+			// Map scrollbar row to content position.
+			contentPos := i * scrollbarTotal / height
+			if contentPos < loadedEnd || contentPos >= gapEnd {
+				bar.WriteString(scrollbarTrackStyle.Render(scrollbarTrack))
+			} else {
+				bar.WriteByte(' ')
+			}
 		}
 		if i < height-1 {
 			bar.WriteByte('\n')
@@ -217,11 +250,11 @@ func (s *ScrollbackLayer) View(width, height int, active bool) []*lipgloss.Layer
 func (s *ScrollbackLayer) WantsKeyboardInput() *KeyboardFilter { return allKeysFilter }
 
 func (s *ScrollbackLayer) Status() (string, lipgloss.Style) {
-	if s.cells == nil {
+	if s.total == 0 && len(s.cells) == 0 {
 		return "scrollback [...]", statusBold
 	}
+	total := s.total
 	offset := s.offset
-	total := len(s.cells)
 	if offset > total {
 		offset = total
 	}

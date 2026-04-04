@@ -19,6 +19,31 @@ import (
 	"termd/frontend/protocol"
 )
 
+// Region is the interface that all region types implement.
+type Region interface {
+	ID() string
+	Name() string
+	Cmd() string
+	Pid() int
+	Session() string
+	SetSession(string)
+	Width() int
+	Height() int
+
+	Snapshot() Snapshot
+	FlushEvents() ([]protocol.TerminalEvent, bool)
+	GetScrollback() [][]protocol.ScreenCell
+	WriteInput([]byte)
+	Resize(width, height uint16) error
+	Kill()
+	Close()
+
+	ScrollbackLen() int
+	Notify() <-chan struct{}
+	ReaderDone() <-chan struct{}
+	IsNative() bool
+}
+
 type Snapshot struct {
 	Lines     []string
 	CursorRow uint16
@@ -30,7 +55,8 @@ type Snapshot struct {
 // scrollbackSize is the maximum number of lines kept in the scrollback buffer.
 const scrollbackSize = 10000
 
-type Region struct {
+// PTYRegion wraps a PTY + child process + VT parser.
+type PTYRegion struct {
 	id      string
 	name    string
 	cmd     string
@@ -53,29 +79,106 @@ type Region struct {
 	stopRead   chan struct{} // closed to stop readLoop for live upgrade
 }
 
-func NewRegion(cmdStr string, args []string, env map[string]string, width, height int) (*Region, error) {
+func (r *PTYRegion) ID() string          { return r.id }
+func (r *PTYRegion) Name() string        { return r.name }
+func (r *PTYRegion) Cmd() string         { return r.cmd }
+func (r *PTYRegion) Pid() int            { return r.pid }
+func (r *PTYRegion) Session() string     { return r.session }
+func (r *PTYRegion) SetSession(s string) { r.session = s }
+func (r *PTYRegion) Width() int          { return r.width }
+func (r *PTYRegion) Height() int         { return r.height }
+func (r *PTYRegion) IsNative() bool      { return false }
+
+func (r *PTYRegion) ScrollbackLen() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.hscreen.Scrollback()
+}
+
+func (r *PTYRegion) Notify() <-chan struct{}     { return r.notify }
+func (r *PTYRegion) ReaderDone() <-chan struct{} { return r.readerDone }
+
+// negotiateResult is sent by the goroutines racing on fd 3 vs PTY.
+type negotiateResult struct {
+	native   bool   // true if native handshake arrived on fd 3
+	ptyData  []byte // initial PTY output (if PTY fired first)
+	pipeEOF  bool   // true if fd 3 closed with no data
+}
+
+func NewRegion(cmdStr string, args []string, env map[string]string, width, height int) (Region, error) {
 	id := generateUUID()
 	name := extractName(cmdStr)
 
+	// Create negotiation pipe: child gets write end as fd 3.
+	pipeR, pipeW, err := os.Pipe()
+	if err != nil {
+		return nil, fmt.Errorf("negotiation pipe: %w", err)
+	}
+
 	cmdObj := exec.Command(cmdStr, args...)
-	cmdObj.Env = append(os.Environ(), "TERM=xterm-256color", "PS1=termd$ ")
+	cmdObj.Env = append(os.Environ(), "TERM=xterm-256color", "PS1=termd$ ", "TERMD_FD=3")
 	for k, v := range env {
 		cmdObj.Env = append(cmdObj.Env, k+"="+v)
 	}
+	cmdObj.ExtraFiles = []*os.File{pipeW} // fd 3 in child
 
 	ptmx, err := pty.StartWithSize(cmdObj, &pty.Winsize{
 		Rows: uint16(height),
 		Cols: uint16(width),
 	})
 	if err != nil {
+		pipeR.Close()
+		pipeW.Close()
 		return nil, err
 	}
+	pipeW.Close() // server doesn't write to the negotiation pipe
 
+	slog.Debug("spawned child", "pid", cmdObj.Process.Pid, "cmd", cmdStr)
+
+	// Race: read fd 3 vs PTY master. First one to produce data wins.
+	ch := make(chan negotiateResult, 2)
+
+	go func() {
+		buf := make([]byte, 256)
+		n, err := pipeR.Read(buf)
+		if err != nil || n == 0 {
+			ch <- negotiateResult{pipeEOF: true}
+			return
+		}
+		// Check for native handshake.
+		line := strings.TrimSpace(string(buf[:n]))
+		if strings.Contains(line, `"native"`) {
+			ch <- negotiateResult{native: true}
+		} else {
+			ch <- negotiateResult{pipeEOF: true}
+		}
+	}()
+
+	go func() {
+		buf := make([]byte, 4096)
+		n, err := ptmx.Read(buf)
+		if err != nil {
+			// PTY read error — let the pipe goroutine decide.
+			ch <- negotiateResult{pipeEOF: true}
+			return
+		}
+		ch <- negotiateResult{ptyData: append([]byte(nil), buf[:n]...)}
+	}()
+
+	result := <-ch
+	pipeR.Close()
+
+	if result.native {
+		slog.Info("native region negotiated", "region_id", id, "cmd", cmdStr)
+		return newNativeRegion(id, name, cmdStr, cmdObj, ptmx, width, height), nil
+	}
+
+	// Regular PTY region.
 	hscreen := te.NewHistoryScreen(width, height, scrollbackSize)
 	proxy := NewEventProxy(hscreen)
 	stream := te.NewStream(proxy, false)
 
-	r := &Region{
+	r := &PTYRegion{
 		id:      id,
 		name:    name,
 		cmd:     cmdStr,
@@ -93,7 +196,16 @@ func NewRegion(cmdStr string, args []string, env map[string]string, width, heigh
 		stopRead:   make(chan struct{}),
 	}
 
-	slog.Debug("spawned child", "pid", r.pid, "cmd", cmdStr)
+	// If we got initial PTY data from the race, feed it now.
+	if len(result.ptyData) > 0 {
+		r.mu.Lock()
+		r.stream.FeedBytes(result.ptyData)
+		r.mu.Unlock()
+		select {
+		case r.notify <- struct{}{}:
+		default:
+		}
+	}
 
 	go r.readLoop()
 	go r.waitLoop()
@@ -106,7 +218,7 @@ func NewRegion(cmdStr string, args []string, env map[string]string, width, heigh
 // that could span a read boundary.
 const maxCarry = 256
 
-func (r *Region) readLoop() {
+func (r *PTYRegion) readLoop() {
 	defer close(r.readerDone)
 	buf := make([]byte, 4096)
 	var carry [maxCarry]byte
@@ -187,7 +299,7 @@ func sequenceSafe(carry, chunk, carryBuf []byte) (safe []byte, carryN int) {
 	return buf[:safeEnd], copy(carryBuf, remaining)
 }
 
-func (r *Region) waitLoop() {
+func (r *PTYRegion) waitLoop() {
 	if r.cmdObj != nil {
 		r.cmdObj.Wait()
 	} else {
@@ -198,13 +310,13 @@ func (r *Region) waitLoop() {
 	close(r.notify)
 }
 
-func (r *Region) WriteInput(data []byte) {
+func (r *PTYRegion) WriteInput(data []byte) {
 	if _, err := r.ptmx.Write(data); err != nil {
 		slog.Debug("write input error", "region_id", r.id, "err", err)
 	}
 }
 
-func (r *Region) Resize(width, height uint16) error {
+func (r *PTYRegion) Resize(width, height uint16) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -223,7 +335,7 @@ func (r *Region) Resize(width, height uint16) error {
 	return nil
 }
 
-func (r *Region) Snapshot() Snapshot {
+func (r *PTYRegion) Snapshot() Snapshot {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -316,7 +428,7 @@ func colorToSpec(c te.Color) string {
 }
 
 // GetScrollback returns the scrollback history as cell data.
-func (r *Region) GetScrollback() [][]protocol.ScreenCell {
+func (r *PTYRegion) GetScrollback() [][]protocol.ScreenCell {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -351,13 +463,13 @@ func (r *Region) GetScrollback() [][]protocol.ScreenCell {
 // completed (mode 2026), needsSnapshot is true — the caller should send a
 // screen_update snapshot, then send any trailing events that came after the
 // sync ended.
-func (r *Region) FlushEvents() (events []protocol.TerminalEvent, needsSnapshot bool) {
+func (r *PTYRegion) FlushEvents() (events []protocol.TerminalEvent, needsSnapshot bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.proxy.Flush()
 }
 
-func (r *Region) Kill() {
+func (r *PTYRegion) Kill() {
 	if r.cmdObj != nil {
 		r.cmdObj.Process.Signal(syscall.SIGKILL)
 	} else if r.pid > 0 {
@@ -365,18 +477,15 @@ func (r *Region) Kill() {
 	}
 }
 
-func (r *Region) Close() {
+func (r *PTYRegion) Close() {
 	r.ptmx.Close()
 }
 
-// StopReadLoop stops the readLoop goroutine and returns a dup'd PTY FD
-// for handoff. The original FD is closed (unblocking readLoop's Read).
-// The caller should use the returned file for the new process.
 // DetachPTY dups the PTY master FD for handoff to a new process.
 // The old readLoop keeps running on the original FD — it will get
 // an error when the old process exits and the FD is closed.
 // The caller gets a fresh FD that survives the old process exit.
-func (r *Region) DetachPTY() *os.File {
+func (r *PTYRegion) DetachPTY() *os.File {
 	newFD, err := syscall.Dup(int(r.ptmx.Fd()))
 	if err != nil {
 		slog.Error("DetachPTY: dup failed", "region_id", r.id, "err", err)
@@ -385,10 +494,10 @@ func (r *Region) DetachPTY() *os.File {
 	return os.NewFile(uintptr(newFD), r.ptmx.Name())
 }
 
-// RestoreRegion reconstructs a Region from serialized state and a PTY FD.
+// RestoreRegion reconstructs a PTYRegion from serialized state and a PTY FD.
 // Used by the new process during live upgrade. The child process is already
 // running (inherited from the old process); cmdObj is nil.
-func RestoreRegion(id, name, cmd, session string, pid, width, height int, ptmxFile *os.File, histState *te.HistoryState) *Region {
+func RestoreRegion(id, name, cmd, session string, pid, width, height int, ptmxFile *os.File, histState *te.HistoryState) Region {
 	hscreen := te.NewHistoryScreen(width, height, scrollbackSize)
 	hscreen.UnmarshalState(histState)
 	hscreen.Screen.WriteProcessInput = func(data string) {
@@ -398,7 +507,7 @@ func RestoreRegion(id, name, cmd, session string, pid, width, height int, ptmxFi
 	proxy := NewEventProxy(hscreen)
 	stream := te.NewStream(proxy, false)
 
-	r := &Region{
+	r := &PTYRegion{
 		id:      id,
 		name:    name,
 		cmd:     cmd,

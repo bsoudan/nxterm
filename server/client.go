@@ -347,16 +347,16 @@ func (c *Client) handleSpawn(msg protocol.SpawnRequest, reply func(any)) {
 
 	reply(protocol.SpawnResponse{
 		Type:     "spawn_response",
-		RegionID: region.id,
-		Name:     region.name,
+		RegionID: region.ID(),
+		Name:     region.Name(),
 		Error:    false,
 		Message:  "",
 	})
 
 	c.server.Broadcast(protocol.RegionCreated{
 		Type:     "region_created",
-		RegionID: region.id,
-		Name:     region.name,
+		RegionID: region.ID(),
+		Name:     region.Name(),
 		Session:  sessionName,
 	})
 }
@@ -385,7 +385,7 @@ func (c *Client) handleSubscribe(msg protocol.SubscribeRequest, reply func(any))
 
 	c.SendMessage(protocol.ScreenUpdate{
 		Type:      "screen_update",
-		RegionID:  region.id,
+		RegionID:  region.ID(),
 		CursorRow: snap.CursorRow,
 		CursorCol: snap.CursorCol,
 		Lines:     snap.Lines,
@@ -395,12 +395,12 @@ func (c *Client) handleSubscribe(msg protocol.SubscribeRequest, reply func(any))
 
 	reply(protocol.SubscribeResponse{
 		Type:     "subscribe_response",
-		RegionID: region.id,
+		RegionID: region.ID(),
 		Error:    false,
 		Message:  "",
 	})
 
-	slog.Debug("client subscribed", "client_id", c.id, "region_id", region.id)
+	slog.Debug("client subscribed", "client_id", c.id, "region_id", region.ID())
 }
 
 func (c *Client) handleUnsubscribe(msg protocol.UnsubscribeRequest, reply func(any)) {
@@ -449,7 +449,7 @@ func (c *Client) handleResize(msg protocol.ResizeRequest, reply func(any)) {
 
 	reply(protocol.ResizeResponse{
 		Type:     "resize_response",
-		RegionID: region.id,
+		RegionID: region.ID(),
 		Error:    false,
 		Message:  "",
 	})
@@ -469,6 +469,9 @@ func (c *Client) handleStatus(reply func(any)) {
 	reply(c.server.getStatus())
 }
 
+// scrollbackChunkSize is the max lines per scrollback response chunk.
+const scrollbackChunkSize = 1000
+
 func (c *Client) handleGetScrollback(msg protocol.GetScrollbackRequest, reply func(any)) {
 	region := c.server.FindRegion(msg.RegionID)
 	if region == nil {
@@ -482,10 +485,26 @@ func (c *Client) handleGetScrollback(msg protocol.GetScrollbackRequest, reply fu
 	}
 
 	lines := region.GetScrollback()
+	total := len(lines)
+	regionID := region.ID()
+
+	for len(lines) > scrollbackChunkSize {
+		chunk := lines[:scrollbackChunkSize]
+		lines = lines[scrollbackChunkSize:]
+		reply(protocol.GetScrollbackResponse{
+			Type:     "get_scrollback_response",
+			RegionID: regionID,
+			Lines:    chunk,
+			Total:    total,
+		})
+	}
+
 	reply(protocol.GetScrollbackResponse{
 		Type:     "get_scrollback_response",
-		RegionID: region.id,
+		RegionID: regionID,
 		Lines:    lines,
+		Total:    total,
+		Done:     true,
 	})
 }
 
@@ -505,7 +524,7 @@ func (c *Client) handleGetScreen(msg protocol.GetScreenRequest, reply func(any))
 	snap := region.Snapshot()
 	reply(protocol.GetScreenResponse{
 		Type:      "get_screen_response",
-		RegionID:  region.id,
+		RegionID:  region.ID(),
 		CursorRow: snap.CursorRow,
 		CursorCol: snap.CursorCol,
 		Lines:     snap.Lines,
