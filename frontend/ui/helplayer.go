@@ -123,7 +123,7 @@ func (h *HelpLayer) handleKey(msg tea.KeyPressMsg) (tea.Msg, tea.Cmd, bool) {
 func (h *HelpLayer) Activate() tea.Cmd { return nil }
 func (h *HelpLayer) Deactivate()       {}
 
-func (h *HelpLayer) View(width, height int, active bool) []*lipgloss.Layer {
+func (h *HelpLayer) View(width, height int, rs *RenderState) []*lipgloss.Layer {
 	// Size the table to fit within the terminal.
 	maxH := height - 6 // room for border + help text
 	if maxH < 5 {
@@ -166,4 +166,4 @@ func (h *HelpLayer) View(width, height int, active bool) []*lipgloss.Layer {
 }
 
 func (h *HelpLayer) WantsKeyboardInput() *KeyboardFilter { return allKeysFilter }
-func (h *HelpLayer) Status() (string, lipgloss.Style) { return "help", lipgloss.Style{} }
+func (h *HelpLayer) Status(rs *RenderState) (string, lipgloss.Style) { return "help", lipgloss.Style{} }

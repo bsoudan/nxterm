@@ -60,7 +60,7 @@ func (s *StatusLayer) Activate() tea.Cmd { return nil }
 func (s *StatusLayer) Deactivate()       {}
 
 // View returns a positioned dialog layer for compositing.
-func (s *StatusLayer) View(width, height int, active bool) []*lipgloss.Layer {
+func (s *StatusLayer) View(width, height int, rs *RenderState) []*lipgloss.Layer {
 	var lines []string
 
 	header := "nxterm:"
@@ -180,4 +180,4 @@ func (s *StatusLayer) View(width, height int, active bool) []*lipgloss.Layer {
 }
 
 func (s *StatusLayer) WantsKeyboardInput() *KeyboardFilter { return allKeysFilter }
-func (s *StatusLayer) Status() (string, lipgloss.Style) { return "status", lipgloss.Style{} }
+func (s *StatusLayer) Status(rs *RenderState) (string, lipgloss.Style) { return "status", lipgloss.Style{} }

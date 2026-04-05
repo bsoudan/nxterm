@@ -17,10 +17,10 @@ import (
 // dispatches messages top-down. Protocol message unwrapping, req_id
 // matching, raw input routing, and overlay compositing happen here.
 type Model struct {
-	stack    *tui.Stack
+	stack    *tui.Stack[RenderState]
 	registry *Registry
 	req      *requestState
-	Tasks    *tui.TaskRunner
+	Tasks    *tui.TaskRunner[RenderState]
 	Detached bool
 }
 
@@ -38,9 +38,9 @@ func NewModel(s *Server, pipeW io.Writer, registry *Registry, ring *termlog.LogR
 	req.requestFn = requestFn
 	main := NewMainLayer(s, pipeW, requestFn, registry, ring, endpoint, version, changelog, hostname, sessionName, connectFn)
 	main.swapServerFn = func(newSrv *Server) { currentServer = newSrv }
-	tasks := tui.NewTaskRunner()
+	tasks := tui.NewTaskRunner[RenderState]()
 	main.tasks = tasks
-	stack := tui.NewStack(main)
+	stack := tui.NewStack[RenderState](main)
 	return Model{
 		stack:    stack,
 		registry: registry,
@@ -222,19 +222,14 @@ func (m Model) View() tea.View {
 		height = 24
 	}
 
-	// Collect topmost Status and detect overlay presence.
-	// Status is collected bottom-up; topmost non-empty text wins.
-	// Model applies bold to status from layers above main.
+	// Pass 1: collect status and build render state.
+	// Each layer's Status() may set flags on the render state.
 	statusText := ""
 	statusStyle := lipgloss.Style{}
-	hasOverlay := false
-	hasHint := false
+	rs := RenderState{}
 	for i, l := range m.stack.Layers() {
-		if _, ok := l.(*HintLayer); ok {
-			hasHint = true
-		}
 		if tl, ok := l.(TermdLayer); ok {
-			t, s := tl.Status()
+			t, s := tl.Status(&rs)
 			if t != "" {
 				statusText = t
 				if i > 0 {
@@ -244,21 +239,17 @@ func (m Model) View() tea.View {
 				}
 			}
 			if i > 0 && tl.WantsKeyboardInput() != nil {
-				hasOverlay = true
+				rs.HasOverlay = true
 			}
 		}
 	}
+	rs.Active = !rs.HasOverlay
 
-	// Composite all layer views. Base layer is active (cursor, no
-	// dimming) unless an overlay has keyboard focus.
-	var layers []*lipgloss.Layer
-	for i, l := range m.stack.Layers() {
-		active := i == 0 && !hasOverlay
-		layers = append(layers, l.View(width, height, active)...)
-	}
+	// Pass 2: composite all layer views with the render state.
+	layers := m.stack.View(width, height, &rs)
 
 	// Status bar (right side of tab bar) as the topmost layer.
-	statusContent, statusWidth := renderStatusBar(statusText, main.version, statusStyle, hasHint)
+	statusContent, statusWidth := renderStatusBar(statusText, main.version, statusStyle, rs.HasHint)
 	statusX := max(width-statusWidth, 0)
 	layers = append(layers, lipgloss.NewLayer(statusContent).X(statusX).Z(2))
 

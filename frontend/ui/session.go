@@ -430,7 +430,7 @@ func (s *SessionLayer) handleCmd(msg SessionCmd) (tea.Msg, tea.Cmd, bool) {
 // View implements the Layer interface. Returns the tab bar and terminal
 // content as separate layers for compositing. Model composites the
 // right side of the tab bar (status + branding) as an additional layer.
-func (s *SessionLayer) View(width, height int, active bool) []*lipgloss.Layer {
+func (s *SessionLayer) View(width, height int, rs *RenderState) []*lipgloss.Layer {
 	if s.err != "" {
 		return []*lipgloss.Layer{lipgloss.NewLayer("error: " + s.err + "\n")}
 	}
@@ -443,7 +443,7 @@ func (s *SessionLayer) View(width, height int, active bool) []*lipgloss.Layer {
 	contentHeight := max(height-1, 1)
 	if term := s.activeTerm(); term != nil {
 		term.disconnected = (s.connStatus == "reconnecting")
-		termLayers := term.View(width, contentHeight, active)
+		termLayers := term.View(width, contentHeight, rs)
 		for i := range termLayers {
 			termLayers[i] = termLayers[i].Y(1)
 		}
@@ -503,16 +503,17 @@ func (s *SessionLayer) renderTabBar(width int) string {
 // Status implements the Layer interface. Returns scrollback mode or session name.
 // Reconnecting status is handled by MainLayer.
 var (
-	statusFaint   = lipgloss.NewStyle().Faint(true)
-	statusBoldRed = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1"))
-	statusBold    = lipgloss.NewStyle().Bold(true)
+	statusFaint      = lipgloss.NewStyle().Faint(true)
+	statusBoldRed    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1"))
+	statusBold       = lipgloss.NewStyle().Bold(true)
+	commandModeStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.BrightCyan)
 )
 
 func (s *SessionLayer) WantsKeyboardInput() *KeyboardFilter { return nil }
 
-func (s *SessionLayer) Status() (string, lipgloss.Style) {
+func (s *SessionLayer) Status(rs *RenderState) (string, lipgloss.Style) {
 	if t := s.activeTerm(); t != nil && t.ScrollbackActive() {
-		return t.Status()
+		return t.Status(rs)
 	}
 	name := s.endpoint
 	if s.sessionName != "" {

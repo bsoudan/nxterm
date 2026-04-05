@@ -16,13 +16,13 @@ func TestTermdHandleRequest(t *testing.T) {
 	type testReq struct{ Name string }
 	type testResp struct{ Value int }
 
-	runner := tui.NewTaskRunner()
+	runner := tui.NewTaskRunner[RenderState]()
 
 	var got any
 	var gotErr error
 	done := make(chan struct{})
 
-	runner.Run(func(h *tui.Handle) {
+	runner.Run(func(h *tui.Handle[RenderState]) {
 		th := &TermdHandle{Handle: h}
 		got, gotErr = th.Request(testReq{Name: "hello"})
 		close(done)
@@ -71,12 +71,12 @@ func TestTermdHandleRequest(t *testing.T) {
 }
 
 func TestTermdHandleRequestCancelled(t *testing.T) {
-	runner := tui.NewTaskRunner()
+	runner := tui.NewTaskRunner[RenderState]()
 
 	var gotErr error
 	done := make(chan struct{})
 
-	id := runner.Run(func(h *tui.Handle) {
+	id := runner.Run(func(h *tui.Handle[RenderState]) {
 		th := &TermdHandle{Handle: h}
 		_, gotErr = th.Request("waiting forever")
 		close(done)

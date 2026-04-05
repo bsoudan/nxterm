@@ -35,7 +35,7 @@ var toastStyle = lipgloss.NewStyle().
 	BorderForeground(lipgloss.Color("8")).
 	Padding(0, 1)
 
-func (t *ToastLayer) View(width, height int, active bool) []*lipgloss.Layer {
+func (t *ToastLayer) View(width, height int, rs *RenderState) []*lipgloss.Layer {
 	content := toastStyle.Render(t.text)
 	contentWidth := lipgloss.Width(content)
 	x := max(width-contentWidth-1, 0)
@@ -44,7 +44,7 @@ func (t *ToastLayer) View(width, height int, active bool) []*lipgloss.Layer {
 
 func (t *ToastLayer) WantsKeyboardInput() *KeyboardFilter { return nil }
 
-func (t *ToastLayer) Status() (string, lipgloss.Style) {
+func (t *ToastLayer) Status(rs *RenderState) (string, lipgloss.Style) {
 	return "", lipgloss.Style{}
 }
 

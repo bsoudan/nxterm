@@ -7,16 +7,19 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
+// testRS is a minimal render state for testing.
+type testRS struct{}
+
 // testLayer is a minimal Layer implementation for testing.
 type testLayer struct {
 	name        string
 	activated   bool
 	deactivated bool
-	handleAll   bool // if true, Update returns handled=true for all messages
+	handleAll   bool   // if true, Update returns handled=true for all messages
 	quitOnMsg   string // if non-empty, return QuitLayerMsg when this string is received
 	viewText    string
 	lastMsg     tea.Msg
-	lastActive  bool
+	lastRS      *testRS
 }
 
 func (l *testLayer) Activate() tea.Cmd {
@@ -36,8 +39,8 @@ func (l *testLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 	return nil, nil, l.handleAll
 }
 
-func (l *testLayer) View(width, height int, active bool) []*lipgloss.Layer {
-	l.lastActive = active
+func (l *testLayer) View(width, height int, rs *testRS) []*lipgloss.Layer {
+	l.lastRS = rs
 	if l.viewText == "" {
 		return nil
 	}
@@ -49,7 +52,7 @@ type testMsg string
 
 func TestNewStack(t *testing.T) {
 	base := &testLayer{name: "base"}
-	s := NewStack(base)
+	s := NewStack[testRS](base)
 
 	if s.Len() != 1 {
 		t.Fatalf("expected 1 layer, got %d", s.Len())
@@ -62,7 +65,7 @@ func TestNewStack(t *testing.T) {
 func TestPushActivates(t *testing.T) {
 	base := &testLayer{name: "base"}
 	overlay := &testLayer{name: "overlay"}
-	s := NewStack(base)
+	s := NewStack[testRS](base)
 
 	s.Push(overlay)
 
@@ -77,7 +80,7 @@ func TestPushActivates(t *testing.T) {
 func TestPopDeactivates(t *testing.T) {
 	base := &testLayer{name: "base"}
 	overlay := &testLayer{name: "overlay"}
-	s := NewStack(base)
+	s := NewStack[testRS](base)
 	s.Push(overlay)
 
 	s.Pop(overlay)
@@ -92,7 +95,7 @@ func TestPopDeactivates(t *testing.T) {
 
 func TestPopBaseIsNoop(t *testing.T) {
 	base := &testLayer{name: "base"}
-	s := NewStack(base)
+	s := NewStack[testRS](base)
 
 	s.Pop(base) // should not panic or remove
 
@@ -107,7 +110,7 @@ func TestPopBaseIsNoop(t *testing.T) {
 func TestPopUnknownIsNoop(t *testing.T) {
 	base := &testLayer{name: "base"}
 	unknown := &testLayer{name: "unknown"}
-	s := NewStack(base)
+	s := NewStack[testRS](base)
 
 	s.Pop(unknown) // should not panic
 
@@ -119,7 +122,7 @@ func TestPopUnknownIsNoop(t *testing.T) {
 func TestUpdateTopDown(t *testing.T) {
 	base := &testLayer{name: "base"}
 	top := &testLayer{name: "top", handleAll: true}
-	s := NewStack(base)
+	s := NewStack[testRS](base)
 	s.Push(top)
 
 	msg := testMsg("hello")
@@ -136,7 +139,7 @@ func TestUpdateTopDown(t *testing.T) {
 func TestUpdatePropagatesWhenNotHandled(t *testing.T) {
 	base := &testLayer{name: "base"}
 	top := &testLayer{name: "top", handleAll: false}
-	s := NewStack(base)
+	s := NewStack[testRS](base)
 	s.Push(top)
 
 	msg := testMsg("hello")
@@ -153,7 +156,7 @@ func TestUpdatePropagatesWhenNotHandled(t *testing.T) {
 func TestUpdateQuitLayerMsg(t *testing.T) {
 	base := &testLayer{name: "base"}
 	overlay := &testLayer{name: "overlay", quitOnMsg: "quit"}
-	s := NewStack(base)
+	s := NewStack[testRS](base)
 	s.Push(overlay)
 
 	s.Update(testMsg("quit"))
@@ -168,7 +171,7 @@ func TestUpdateQuitLayerMsg(t *testing.T) {
 
 func TestUpdateQuitBaseIgnored(t *testing.T) {
 	base := &testLayer{name: "base", quitOnMsg: "quit"}
-	s := NewStack(base)
+	s := NewStack[testRS](base)
 
 	s.Update(testMsg("quit"))
 
@@ -179,10 +182,10 @@ func TestUpdateQuitBaseIgnored(t *testing.T) {
 
 func TestUpdatePushLayerMsg(t *testing.T) {
 	base := &testLayer{name: "base"}
-	s := NewStack(base)
+	s := NewStack[testRS](base)
 	overlay := &testLayer{name: "overlay"}
 
-	s.Update(PushLayerMsg{Layer: overlay})
+	s.Update(PushLayerMsg[testRS]{Layer: overlay})
 
 	if s.Len() != 2 {
 		t.Fatalf("expected 2 layers, got %d", s.Len())
@@ -192,34 +195,30 @@ func TestUpdatePushLayerMsg(t *testing.T) {
 	}
 }
 
-func TestViewActiveFlag(t *testing.T) {
+func TestViewPassesRenderState(t *testing.T) {
 	base := &testLayer{name: "base", viewText: "base"}
-	s := NewStack(base)
-
-	s.View(80, 24)
-	if !base.lastActive {
-		t.Fatal("base should be active when alone")
-	}
-
 	overlay := &testLayer{name: "overlay", viewText: "overlay"}
+	s := NewStack[testRS](base)
 	s.Push(overlay)
 
-	s.View(80, 24)
-	if base.lastActive {
-		t.Fatal("base should not be active when overlay is present")
+	rs := &testRS{}
+	s.View(80, 24, rs)
+
+	if base.lastRS != rs {
+		t.Fatal("base should receive the render state")
 	}
-	if overlay.lastActive {
-		t.Fatal("non-base layers should not be active")
+	if overlay.lastRS != rs {
+		t.Fatal("overlay should receive the render state")
 	}
 }
 
 func TestViewComposites(t *testing.T) {
 	base := &testLayer{name: "base", viewText: "base-content"}
 	overlay := &testLayer{name: "overlay", viewText: "overlay-content"}
-	s := NewStack(base)
+	s := NewStack[testRS](base)
 	s.Push(overlay)
 
-	layers := s.View(80, 24)
+	layers := s.View(80, 24, &testRS{})
 
 	if len(layers) != 2 {
 		t.Fatalf("expected 2 composited layers, got %d", len(layers))
@@ -229,10 +228,10 @@ func TestViewComposites(t *testing.T) {
 func TestViewSkipsNilLayers(t *testing.T) {
 	base := &testLayer{name: "base", viewText: "base-content"}
 	empty := &testLayer{name: "empty"} // viewText empty → returns nil
-	s := NewStack(base)
+	s := NewStack[testRS](base)
 	s.Push(empty)
 
-	layers := s.View(80, 24)
+	layers := s.View(80, 24, &testRS{})
 
 	if len(layers) != 1 {
 		t.Fatalf("expected 1 composited layer (nil skipped), got %d", len(layers))
@@ -243,7 +242,7 @@ func TestPopMiddleLayer(t *testing.T) {
 	base := &testLayer{name: "base"}
 	mid := &testLayer{name: "mid"}
 	top := &testLayer{name: "top"}
-	s := NewStack(base)
+	s := NewStack[testRS](base)
 	s.Push(mid)
 	s.Push(top)
 
@@ -264,7 +263,7 @@ func TestUpdateMultipleLayersPropagation(t *testing.T) {
 	base := &testLayer{name: "base"}
 	mid := &testLayer{name: "mid", handleAll: true}
 	top := &testLayer{name: "top", handleAll: false}
-	s := NewStack(base)
+	s := NewStack[testRS](base)
 	s.Push(mid)
 	s.Push(top)
 

@@ -226,7 +226,7 @@ func (c *ConnectLayer) suggestions() []suggestion {
 	return items
 }
 
-func (c *ConnectLayer) View(width, height int, active bool) []*lipgloss.Layer {
+func (c *ConnectLayer) View(width, height int, rs *RenderState) []*lipgloss.Layer {
 	overlayW := width * 2 / 3
 	if overlayW < 40 {
 		overlayW = min(width, 40)
@@ -350,6 +350,6 @@ func relativeTime(t time.Time) string {
 
 func (c *ConnectLayer) WantsKeyboardInput() *KeyboardFilter { return nil }
 
-func (c *ConnectLayer) Status() (string, lipgloss.Style) {
+func (c *ConnectLayer) Status(rs *RenderState) (string, lipgloss.Style) {
 	return "connect to server", lipgloss.Style{}
 }

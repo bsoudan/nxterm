@@ -73,7 +73,7 @@ func (l *ScrollableLayer) Activate() tea.Cmd { return nil }
 func (l *ScrollableLayer) Deactivate()       {}
 
 // View returns a positioned dialog layer for compositing.
-func (l *ScrollableLayer) View(width, height int, active bool) []*lipgloss.Layer {
+func (l *ScrollableLayer) View(width, height int, rs *RenderState) []*lipgloss.Layer {
 	// For logviewer, refresh content from logRing on each render.
 	if l.logRing != nil {
 		atBottom := l.vp.AtBottom()
@@ -149,4 +149,4 @@ func (l *ScrollableLayer) View(width, height int, active bool) []*lipgloss.Layer
 }
 
 func (l *ScrollableLayer) WantsKeyboardInput() *KeyboardFilter { return allKeysFilter }
-func (l *ScrollableLayer) Status() (string, lipgloss.Style) { return l.label, lipgloss.Style{} }
+func (l *ScrollableLayer) Status(rs *RenderState) (string, lipgloss.Style) { return l.label, lipgloss.Style{} }

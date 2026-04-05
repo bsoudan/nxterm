@@ -165,7 +165,7 @@ var paletteStyle = lipgloss.NewStyle().
 // paletteFaint matches the border color for internal separators and placeholder text.
 var paletteFaint = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
 
-func (p *CommandPaletteLayer) View(width, height int, active bool) []*lipgloss.Layer {
+func (p *CommandPaletteLayer) View(width, height int, rs *RenderState) []*lipgloss.Layer {
 	overlayW := width * 2 / 3
 	if overlayW < 40 {
 		overlayW = min(width, 40)
@@ -310,6 +310,6 @@ func (p *CommandPaletteLayer) buildContent(overlayW, height int) string {
 
 func (p *CommandPaletteLayer) WantsKeyboardInput() *KeyboardFilter { return allKeysFilter }
 
-func (p *CommandPaletteLayer) Status() (string, lipgloss.Style) {
+func (p *CommandPaletteLayer) Status(rs *RenderState) (string, lipgloss.Style) {
 	return "run command", lipgloss.Style{}
 }

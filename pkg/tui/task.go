@@ -10,7 +10,7 @@ import (
 
 // Handle is the synchronous interface given to a task goroutine.
 // Methods block until the bubbletea event loop processes the request.
-type Handle struct {
+type Handle[RS any] struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	outbox chan<- taskMsg
@@ -19,14 +19,14 @@ type Handle struct {
 }
 
 // Context returns the task's context, cancelled when the task is stopped.
-func (h *Handle) Context() context.Context { return h.ctx }
+func (h *Handle[RS]) Context() context.Context { return h.ctx }
 
 // WaitFor blocks until filter returns deliver=true for an incoming message.
 // The filter runs on the bubbletea goroutine for each message:
 //   - deliver=true, handled=true:  task gets the message, layers don't
 //   - deliver=true, handled=false: task gets it, layers also see it
 //   - deliver=false, handled=false: not relevant, skip
-func (h *Handle) WaitFor(filter func(msg any) (deliver, handled bool)) (any, error) {
+func (h *Handle[RS]) WaitFor(filter func(msg any) (deliver, handled bool)) (any, error) {
 	if err := h.send(taskWaitForMsg{taskID: h.id, filter: filter}); err != nil {
 		return nil, err
 	}
@@ -37,7 +37,7 @@ func (h *Handle) WaitFor(filter func(msg any) (deliver, handled bool)) (any, err
 // the app delivers a response via TaskRunner.Deliver. This ensures
 // the payload is processed on the bubbletea goroutine, avoiding
 // concurrent access to shared state.
-func (h *Handle) Send(msg any) (any, error) {
+func (h *Handle[RS]) Send(msg any) (any, error) {
 	if err := h.send(taskSendMsg{taskID: h.id, payload: msg}); err != nil {
 		return nil, err
 	}
@@ -45,16 +45,16 @@ func (h *Handle) Send(msg any) (any, error) {
 }
 
 // PushLayer pushes a layer onto the UI stack.
-func (h *Handle) PushLayer(layer Layer) {
-	h.send(taskPushLayerMsg{layer: layer})
+func (h *Handle[RS]) PushLayer(layer Layer[RS]) {
+	h.send(taskPushLayerMsg[RS]{layer: layer})
 }
 
 // PopLayer removes a layer from the UI stack.
-func (h *Handle) PopLayer(layer Layer) {
-	h.send(taskPopLayerMsg{layer: layer})
+func (h *Handle[RS]) PopLayer(layer Layer[RS]) {
+	h.send(taskPopLayerMsg[RS]{layer: layer})
 }
 
-func (h *Handle) send(msg taskMsg) error {
+func (h *Handle[RS]) send(msg taskMsg) error {
 	select {
 	case h.outbox <- msg:
 		return nil
@@ -63,7 +63,7 @@ func (h *Handle) send(msg taskMsg) error {
 	}
 }
 
-func (h *Handle) recv() (any, error) {
+func (h *Handle[RS]) recv() (any, error) {
 	select {
 	case v := <-h.inbox:
 		return v, nil
@@ -89,12 +89,12 @@ type taskWaitForMsg struct {
 	filter func(any) (deliver, handled bool)
 }
 
-type taskPushLayerMsg struct {
-	layer Layer
+type taskPushLayerMsg[RS any] struct {
+	layer Layer[RS]
 }
 
-type taskPopLayerMsg struct {
-	layer Layer
+type taskPopLayerMsg[RS any] struct {
+	layer Layer[RS]
 }
 
 type taskSendMsg struct {
@@ -106,11 +106,11 @@ type taskDoneMsg struct {
 	taskID uint64
 }
 
-func (taskWaitForMsg) isTaskMsg()  {}
-func (taskSendMsg) isTaskMsg()     {}
-func (taskPushLayerMsg) isTaskMsg() {}
-func (taskPopLayerMsg) isTaskMsg()  {}
-func (taskDoneMsg) isTaskMsg()     {}
+func (taskWaitForMsg) isTaskMsg()       {}
+func (taskSendMsg) isTaskMsg()          {}
+func (taskPushLayerMsg[RS]) isTaskMsg() {}
+func (taskPopLayerMsg[RS]) isTaskMsg()  {}
+func (taskDoneMsg) isTaskMsg()          {}
 
 // TaskSendMsg is delivered to the app when a task calls Handle.Send().
 // The app processes Payload on the bubbletea goroutine (safe for shared
@@ -121,35 +121,35 @@ type TaskSendMsg struct {
 }
 
 // taskState tracks a running task's WaitFor filter.
-type taskState struct {
-	handle *Handle
+type taskState[RS any] struct {
+	handle *Handle[RS]
 	filter func(any) (deliver, handled bool)
 }
 
 // TaskRunner manages running tasks and bridges them to bubbletea.
-type TaskRunner struct {
+type TaskRunner[RS any] struct {
 	fromTasks chan taskMsg
 	nextID    uint64
 	mu        sync.Mutex // protects tasks map
-	tasks     map[uint64]*taskState
+	tasks     map[uint64]*taskState[RS]
 }
 
 // NewTaskRunner creates a TaskRunner.
-func NewTaskRunner() *TaskRunner {
-	return &TaskRunner{
+func NewTaskRunner[RS any]() *TaskRunner[RS] {
+	return &TaskRunner[RS]{
 		fromTasks: make(chan taskMsg),
-		tasks:     make(map[uint64]*taskState),
+		tasks:     make(map[uint64]*taskState[RS]),
 	}
 }
 
 // Run spawns a task goroutine. The function fn receives a Handle for
 // synchronous communication with the bubbletea event loop.
-func (r *TaskRunner) Run(fn func(*Handle)) uint64 {
+func (r *TaskRunner[RS]) Run(fn func(*Handle[RS])) uint64 {
 	r.nextID++
 	id := r.nextID
 
 	ctx, cancel := context.WithCancel(context.Background())
-	h := &Handle{
+	h := &Handle[RS]{
 		ctx:    ctx,
 		cancel: cancel,
 		outbox: r.fromTasks,
@@ -158,7 +158,7 @@ func (r *TaskRunner) Run(fn func(*Handle)) uint64 {
 	}
 
 	r.mu.Lock()
-	r.tasks[id] = &taskState{handle: h}
+	r.tasks[id] = &taskState[RS]{handle: h}
 	r.mu.Unlock()
 
 	go func() {
@@ -180,7 +180,7 @@ func (r *TaskRunner) Run(fn func(*Handle)) uint64 {
 }
 
 // Cancel cancels a task by ID.
-func (r *TaskRunner) Cancel(id uint64) {
+func (r *TaskRunner[RS]) Cancel(id uint64) {
 	r.mu.Lock()
 	ts, ok := r.tasks[id]
 	r.mu.Unlock()
@@ -191,7 +191,7 @@ func (r *TaskRunner) Cancel(id uint64) {
 
 // ListenCmd returns a tea.Cmd that blocks on the task channel.
 // The app should call this from Init and after each task message delivery.
-func (r *TaskRunner) ListenCmd() tea.Cmd {
+func (r *TaskRunner[RS]) ListenCmd() tea.Cmd {
 	ch := r.fromTasks
 	return func() tea.Msg {
 		msg, ok := <-ch
@@ -206,7 +206,7 @@ func (r *TaskRunner) ListenCmd() tea.Cmd {
 // matches (deliver=true), the message is sent to the task's inbox and
 // the filter is cleared. Returns handled=true if the message should
 // not be passed to layers.
-func (r *TaskRunner) CheckFilters(msg any) (handled bool) {
+func (r *TaskRunner[RS]) CheckFilters(msg any) (handled bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -231,7 +231,7 @@ func (r *TaskRunner) CheckFilters(msg any) (handled bool) {
 
 // Deliver sends a response to a task that is blocked in Handle.Send().
 // Must be called on the bubbletea goroutine.
-func (r *TaskRunner) Deliver(taskID uint64, payload any) {
+func (r *TaskRunner[RS]) Deliver(taskID uint64, payload any) {
 	r.mu.Lock()
 	ts, ok := r.tasks[taskID]
 	r.mu.Unlock()
@@ -246,7 +246,7 @@ func (r *TaskRunner) Deliver(taskID uint64, payload any) {
 // HandleMsg processes a task message from the outbox channel. Returns
 // a tea.Cmd for the app to execute (e.g. push/pop layer), or nil.
 // The app should call ListenCmd again after handling each message.
-func (r *TaskRunner) HandleMsg(msg tea.Msg) tea.Cmd {
+func (r *TaskRunner[RS]) HandleMsg(msg tea.Msg) tea.Cmd {
 	tmsg, ok := msg.(taskMsg)
 	if !ok {
 		return nil
@@ -266,12 +266,12 @@ func (r *TaskRunner) HandleMsg(msg tea.Msg) tea.Cmd {
 			return TaskSendMsg{TaskID: msg.taskID, Payload: msg.payload}
 		}
 
-	case taskPushLayerMsg:
-		return func() tea.Msg { return PushLayerMsg{Layer: msg.layer} }
+	case taskPushLayerMsg[RS]:
+		return func() tea.Msg { return PushLayerMsg[RS]{Layer: msg.layer} }
 
-	case taskPopLayerMsg:
+	case taskPopLayerMsg[RS]:
 		layer := msg.layer
-		return func() tea.Msg { return popLayerMsg{layer: layer} }
+		return func() tea.Msg { return popLayerMsg[RS]{layer: layer} }
 
 	case taskDoneMsg:
 		r.mu.Lock()
@@ -284,7 +284,7 @@ func (r *TaskRunner) HandleMsg(msg tea.Msg) tea.Cmd {
 
 // DriveOne reads one message from the outbox and processes it.
 // For testing only — simulates what the app's Update does.
-func (r *TaskRunner) DriveOne() tea.Msg {
+func (r *TaskRunner[RS]) DriveOne() tea.Msg {
 	msg := <-r.fromTasks
 	r.HandleMsg(msg)
 	return msg

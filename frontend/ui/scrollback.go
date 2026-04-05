@@ -151,7 +151,7 @@ func scrollbarGeometry(height, totalLines, offset int) (thumbStart, thumbLen int
 	return thumbStart, thumbLen
 }
 
-func (s *ScrollbackLayer) View(width, height int, active bool) []*lipgloss.Layer {
+func (s *ScrollbackLayer) View(width, height int, rs *RenderState) []*lipgloss.Layer {
 	screenCells := s.term.ScreenCells()
 
 	offset := s.offset
@@ -175,7 +175,7 @@ func (s *ScrollbackLayer) View(width, height int, active bool) []*lipgloss.Layer
 		idx := startIdx + i
 		if idx < loadedEnd {
 			row := protocolCellsToTe(s.cells[idx])
-			renderCellLine(&sb, row, width, i, -1, -1, false, false)
+			renderCellLine(&sb, row, width, i, -1, -1, false, false, false)
 		} else if idx < gapEnd {
 			// Not-yet-loaded: alternating x marks with row/column spacing.
 			for col := range width {
@@ -191,7 +191,7 @@ func (s *ScrollbackLayer) View(width, height int, active bool) []*lipgloss.Layer
 			if screenIdx >= 0 && screenIdx < len(screenCells) {
 				row = screenCells[screenIdx]
 			}
-			renderCellLine(&sb, row, width, i, -1, -1, false, false)
+			renderCellLine(&sb, row, width, i, -1, -1, false, false, false)
 		}
 		if i < height-1 {
 			sb.WriteByte('\n')
@@ -250,7 +250,7 @@ func (s *ScrollbackLayer) View(width, height int, active bool) []*lipgloss.Layer
 
 func (s *ScrollbackLayer) WantsKeyboardInput() *KeyboardFilter { return allKeysFilter }
 
-func (s *ScrollbackLayer) Status() (string, lipgloss.Style) {
+func (s *ScrollbackLayer) Status(rs *RenderState) (string, lipgloss.Style) {
 	if s.total == 0 && len(s.cells) == 0 {
 		return "scrollback [...]", scrollbackStatusStyle
 	}

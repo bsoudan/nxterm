@@ -29,7 +29,7 @@ var logoLines = [4]string{
 func (h *HintLayer) Activate() tea.Cmd { return nil }
 func (h *HintLayer) Deactivate()       {}
 
-func (h *HintLayer) View(width, height int, active bool) []*lipgloss.Layer {
+func (h *HintLayer) View(width, height int, rs *RenderState) []*lipgloss.Layer {
 	inner := logoStyle.Render(logoLines[0]) + "\n" +
 		logoStyle.Render(logoLines[1]) + "\n" +
 		logoStyle.Render(logoLines[2]) + "\n" +
@@ -54,7 +54,8 @@ var logoBorder = lipgloss.NewStyle().
 
 func (h *HintLayer) WantsKeyboardInput() *KeyboardFilter { return nil }
 
-func (h *HintLayer) Status() (string, lipgloss.Style) {
+func (h *HintLayer) Status(rs *RenderState) (string, lipgloss.Style) {
+	rs.HasHint = true
 	prefix := "ctrl+b"
 	if h.registry != nil {
 		prefix = h.registry.PrefixStr

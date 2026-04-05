@@ -11,7 +11,8 @@ import (
 
 // Layer is a compositable UI component in the layer stack.
 // Layers are pointers with mutable state — Update mutates in place.
-type Layer interface {
+// RS is an application-defined render state passed through during View.
+type Layer[RS any] interface {
 	// Activate is called when the layer is pushed onto the stack.
 	// Returns an initial command.
 	Activate() tea.Cmd
@@ -25,9 +26,9 @@ type Layer interface {
 	//   - handled: if true, stop propagating to lower layers
 	Update(tea.Msg) (response tea.Msg, cmd tea.Cmd, handled bool)
 
-	// View renders the layer for compositing. active is true when no
-	// layers are above this one in the stack.
-	View(width, height int, active bool) []*lipgloss.Layer
+	// View renders the layer for compositing. The render state carries
+	// application-level context (active state, mode flags, etc.).
+	View(width, height int, rs *RS) []*lipgloss.Layer
 }
 
 // QuitLayerMsg is returned by a layer's Update to request its removal
@@ -35,32 +36,32 @@ type Layer interface {
 type QuitLayerMsg struct{}
 
 // PushLayerMsg is sent as a tea.Msg to push a new layer onto the stack.
-type PushLayerMsg struct{ Layer Layer }
+type PushLayerMsg[RS any] struct{ Layer Layer[RS] }
 
 // popLayerMsg is sent internally to remove a specific layer from the stack.
-type popLayerMsg struct{ layer Layer }
+type popLayerMsg[RS any] struct{ layer Layer[RS] }
 
 // Stack manages an ordered stack of layers with top-down message dispatch.
 // The first layer (index 0) is the base layer and cannot be removed.
-type Stack struct {
-	layers []Layer
+type Stack[RS any] struct {
+	layers []Layer[RS]
 }
 
 // NewStack creates a stack with the given base layer.
-func NewStack(base Layer) *Stack {
-	return &Stack{layers: []Layer{base}}
+func NewStack[RS any](base Layer[RS]) *Stack[RS] {
+	return &Stack[RS]{layers: []Layer[RS]{base}}
 }
 
 // Push adds a layer to the top of the stack, calls Activate, and
 // returns the activation command.
-func (s *Stack) Push(l Layer) tea.Cmd {
+func (s *Stack[RS]) Push(l Layer[RS]) tea.Cmd {
 	s.layers = append(s.layers, l)
 	return l.Activate()
 }
 
 // Pop removes a specific layer from the stack and calls Deactivate.
 // The base layer (index 0) cannot be removed.
-func (s *Stack) Pop(l Layer) {
+func (s *Stack[RS]) Pop(l Layer[RS]) {
 	for i := 1; i < len(s.layers); i++ {
 		if s.layers[i] == l {
 			s.layers[i].Deactivate()
@@ -74,11 +75,11 @@ func (s *Stack) Pop(l Layer) {
 // The topmost layer receives the message first. If a layer returns
 // handled=true, propagation stops. PushLayerMsg and QuitLayerMsg
 // are handled internally.
-func (s *Stack) Update(msg tea.Msg) tea.Cmd {
-	if push, ok := msg.(PushLayerMsg); ok {
+func (s *Stack[RS]) Update(msg tea.Msg) tea.Cmd {
+	if push, ok := msg.(PushLayerMsg[RS]); ok {
 		return s.Push(push.Layer)
 	}
-	if pop, ok := msg.(popLayerMsg); ok {
+	if pop, ok := msg.(popLayerMsg[RS]); ok {
 		s.Pop(pop.layer)
 		return nil
 	}
@@ -100,25 +101,24 @@ func (s *Stack) Update(msg tea.Msg) tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-// View composites all layers. The base layer receives active=true only
-// when it is the sole layer on the stack. All other layers receive
-// active=false.
-func (s *Stack) View(width, height int) []*lipgloss.Layer {
+// View composites all layers, passing the render state through to each.
+// The stack makes no policy decisions — active state, mode flags, etc.
+// are the caller's responsibility via the render state.
+func (s *Stack[RS]) View(width, height int, rs *RS) []*lipgloss.Layer {
 	var layers []*lipgloss.Layer
-	for i, l := range s.layers {
-		active := i == 0 && len(s.layers) == 1
-		layers = append(layers, l.View(width, height, active)...)
+	for _, l := range s.layers {
+		layers = append(layers, l.View(width, height, rs)...)
 	}
 	return layers
 }
 
 // Layers returns the current layer stack for introspection.
 // The caller must not modify the returned slice.
-func (s *Stack) Layers() []Layer {
+func (s *Stack[RS]) Layers() []Layer[RS] {
 	return s.layers
 }
 
 // Len returns the number of layers on the stack.
-func (s *Stack) Len() int {
+func (s *Stack[RS]) Len() int {
 	return len(s.layers)
 }

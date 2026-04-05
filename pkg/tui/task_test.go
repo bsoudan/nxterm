@@ -14,16 +14,16 @@ type taskTestLayer struct {
 	name string
 }
 
-func (l *taskTestLayer) Activate() tea.Cmd                                    { return nil }
-func (l *taskTestLayer) Deactivate()                                          {}
-func (l *taskTestLayer) Update(tea.Msg) (tea.Msg, tea.Cmd, bool)             { return nil, nil, false }
-func (l *taskTestLayer) View(int, int, bool) []*lipgloss.Layer { return nil }
+func (l *taskTestLayer) Activate() tea.Cmd                                { return nil }
+func (l *taskTestLayer) Deactivate()                                      {}
+func (l *taskTestLayer) Update(tea.Msg) (tea.Msg, tea.Cmd, bool)         { return nil, nil, false }
+func (l *taskTestLayer) View(int, int, *testRS) []*lipgloss.Layer { return nil }
 
 func TestWaitForDelivers(t *testing.T) {
-	r := NewTaskRunner()
+	r := NewTaskRunner[testRS]()
 	var got any
 
-	r.Run(func(h *Handle) {
+	r.Run(func(h *Handle[testRS]) {
 		msg, err := h.WaitFor(func(msg any) (bool, bool) {
 			_, ok := msg.(testMsg)
 			return ok, true
@@ -53,9 +53,9 @@ func TestWaitForDelivers(t *testing.T) {
 }
 
 func TestWaitForHandledFalse(t *testing.T) {
-	r := NewTaskRunner()
+	r := NewTaskRunner[testRS]()
 
-	r.Run(func(h *Handle) {
+	r.Run(func(h *Handle[testRS]) {
 		h.WaitFor(func(msg any) (bool, bool) {
 			_, ok := msg.(testMsg)
 			return ok, false // deliver but don't consume
@@ -71,9 +71,9 @@ func TestWaitForHandledFalse(t *testing.T) {
 }
 
 func TestWaitForFilterSkips(t *testing.T) {
-	r := NewTaskRunner()
+	r := NewTaskRunner[testRS]()
 
-	r.Run(func(h *Handle) {
+	r.Run(func(h *Handle[testRS]) {
 		h.WaitFor(func(msg any) (bool, bool) {
 			s, ok := msg.(testMsg)
 			return ok && string(s) == "target", true
@@ -96,15 +96,15 @@ func TestWaitForFilterSkips(t *testing.T) {
 }
 
 func TestPushLayerProducesMsg(t *testing.T) {
-	r := NewTaskRunner()
+	r := NewTaskRunner[testRS]()
 	layer := &taskTestLayer{name: "overlay"}
 
-	r.Run(func(h *Handle) {
+	r.Run(func(h *Handle[testRS]) {
 		h.PushLayer(layer)
 	})
 
 	msg := r.DriveOne()
-	if _, ok := msg.(taskPushLayerMsg); !ok {
+	if _, ok := msg.(taskPushLayerMsg[testRS]); !ok {
 		t.Fatalf("expected taskPushLayerMsg, got %T", msg)
 	}
 
@@ -114,7 +114,7 @@ func TestPushLayerProducesMsg(t *testing.T) {
 		t.Fatal("expected non-nil cmd")
 	}
 	result := cmd()
-	push, ok := result.(PushLayerMsg)
+	push, ok := result.(PushLayerMsg[testRS])
 	if !ok {
 		t.Fatalf("expected PushLayerMsg, got %T", result)
 	}
@@ -124,10 +124,10 @@ func TestPushLayerProducesMsg(t *testing.T) {
 }
 
 func TestPopLayerProducesMsg(t *testing.T) {
-	r := NewTaskRunner()
+	r := NewTaskRunner[testRS]()
 	layer := &taskTestLayer{name: "overlay"}
 
-	r.Run(func(h *Handle) {
+	r.Run(func(h *Handle[testRS]) {
 		h.PopLayer(layer)
 	})
 
@@ -137,7 +137,7 @@ func TestPopLayerProducesMsg(t *testing.T) {
 		t.Fatal("expected non-nil cmd")
 	}
 	result := cmd()
-	pop, ok := result.(popLayerMsg)
+	pop, ok := result.(popLayerMsg[testRS])
 	if !ok {
 		t.Fatalf("expected popLayerMsg, got %T", result)
 	}
@@ -147,10 +147,10 @@ func TestPopLayerProducesMsg(t *testing.T) {
 }
 
 func TestCancelStopsTask(t *testing.T) {
-	r := NewTaskRunner()
+	r := NewTaskRunner[testRS]()
 	var waitErr error
 
-	id := r.Run(func(h *Handle) {
+	id := r.Run(func(h *Handle[testRS]) {
 		_, waitErr = h.WaitFor(func(msg any) (bool, bool) {
 			return true, true
 		})
@@ -169,11 +169,11 @@ func TestCancelStopsTask(t *testing.T) {
 }
 
 func TestConcurrentTasks(t *testing.T) {
-	r := NewTaskRunner()
+	r := NewTaskRunner[testRS]()
 	var mu sync.Mutex
 	results := make(map[string]any)
 
-	r.Run(func(h *Handle) {
+	r.Run(func(h *Handle[testRS]) {
 		msg, _ := h.WaitFor(func(msg any) (bool, bool) {
 			s, ok := msg.(testMsg)
 			return ok && string(s) == "for-task-1", true
@@ -183,7 +183,7 @@ func TestConcurrentTasks(t *testing.T) {
 		mu.Unlock()
 	})
 
-	r.Run(func(h *Handle) {
+	r.Run(func(h *Handle[testRS]) {
 		msg, _ := h.WaitFor(func(msg any) (bool, bool) {
 			s, ok := msg.(testMsg)
 			return ok && string(s) == "for-task-2", true
@@ -213,9 +213,9 @@ func TestConcurrentTasks(t *testing.T) {
 }
 
 func TestTaskPanicRecovery(t *testing.T) {
-	r := NewTaskRunner()
+	r := NewTaskRunner[testRS]()
 
-	r.Run(func(h *Handle) {
+	r.Run(func(h *Handle[testRS]) {
 		panic("boom")
 	})
 
@@ -228,9 +228,9 @@ func TestTaskPanicRecovery(t *testing.T) {
 }
 
 func TestTaskDoneCleanup(t *testing.T) {
-	r := NewTaskRunner()
+	r := NewTaskRunner[testRS]()
 
-	r.Run(func(h *Handle) {
+	r.Run(func(h *Handle[testRS]) {
 		// Task completes immediately.
 	})
 

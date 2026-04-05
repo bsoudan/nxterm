@@ -68,7 +68,7 @@ func (l *SessionNameLayer) handleKey(msg tea.KeyPressMsg) (tea.Msg, tea.Cmd, boo
 	}
 }
 
-func (l *SessionNameLayer) View(width, height int, active bool) []*lipgloss.Layer {
+func (l *SessionNameLayer) View(width, height int, rs *RenderState) []*lipgloss.Layer {
 	label := "Session name: "
 	inputStr := string(l.input)
 
@@ -118,6 +118,6 @@ func (l *SessionNameLayer) View(width, height int, active bool) []*lipgloss.Laye
 
 func (l *SessionNameLayer) WantsKeyboardInput() *KeyboardFilter { return allKeysFilter }
 
-func (l *SessionNameLayer) Status() (string, lipgloss.Style) {
+func (l *SessionNameLayer) Status(rs *RenderState) (string, lipgloss.Style) {
 	return "new session", lipgloss.Style{}
 }

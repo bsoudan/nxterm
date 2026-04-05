@@ -11,7 +11,7 @@ import (
 // TermdHandle wraps a tui.Handle with nxtermd-specific request/response
 // capability. Task goroutines use this to make protocol roundtrips.
 type TermdHandle struct {
-	*tui.Handle
+	*tui.Handle[RenderState]
 }
 
 // Request sends a protocol request and blocks until the matching response
@@ -45,7 +45,7 @@ func (o *Overlay) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 	return nil, nil, false
 }
 
-func (o *Overlay) View(width, height int, active bool) []*lipgloss.Layer {
+func (o *Overlay) View(width, height int, rs *RenderState) []*lipgloss.Layer {
 	var lines []string
 	if o.Title != "" {
 		lines = append(lines, o.Title)
@@ -91,7 +91,7 @@ func (o *Overlay) View(width, height int, active bool) []*lipgloss.Layer {
 
 func (o *Overlay) WantsKeyboardInput() *KeyboardFilter { return allKeysFilter }
 
-func (o *Overlay) Status() (string, lipgloss.Style) {
+func (o *Overlay) Status(rs *RenderState) (string, lipgloss.Style) {
 	if o.StatusText != "" {
 		return o.StatusText, statusBold
 	}
@@ -108,7 +108,7 @@ func IsKeyPress(msg any) (deliver, handled bool) {
 }
 
 // ShowError sets the overlay to an error state and waits for dismiss.
-func ShowError(overlay *Overlay, h *tui.Handle, errMsg string) {
+func ShowError(overlay *Overlay, h *tui.Handle[RenderState], errMsg string) {
 	overlay.Lines = []string{"  Error: " + errMsg, "", "  Press any key to close."}
 	overlay.Help = "any key: close"
 	overlay.StatusText = "error: " + errMsg

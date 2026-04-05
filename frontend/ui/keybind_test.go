@@ -118,7 +118,7 @@ func TestCommandPaletteView(t *testing.T) {
 	// Test at multiple terminal widths to stress the layout.
 	for _, tw := range []int{80, 60, 40} {
 		p := NewCommandPaletteLayer(r)
-		layers := p.View(tw, 24, false)
+		layers := p.View(tw, 24, &RenderState{})
 		if len(layers) == 0 {
 			t.Fatalf("palette returned no layers at width=%d", tw)
 		}
@@ -145,30 +145,30 @@ func TestCommandPaletteLineWidths(t *testing.T) {
 		}
 	}
 
-	// Should have a separator line of microdots.
+	// Should have a separator line of horizontal rules.
 	foundSep := false
 	for _, line := range lines {
 		stripped := stripAnsi(line)
-		if len(stripped) > 0 && allDots(stripped) {
+		if len(stripped) > 0 && allHRules(stripped) {
 			foundSep = true
 			break
 		}
 	}
 	if !foundSep {
-		t.Error("no microdot separator line found between input and suggestions")
+		t.Error("no horizontal rule separator line found between input and suggestions")
 	}
 
-	// Should have at least one suggestion line with a microdot column separator.
+	// Should have at least one suggestion line with a bullet column separator.
 	foundSuggestion := false
 	for _, line := range lines {
 		stripped := stripAnsi(line)
-		if strings.Contains(stripped, " · ") && !allDots(stripped) {
+		if strings.Contains(stripped, " • ") && !allHRules(stripped) {
 			foundSuggestion = true
 			break
 		}
 	}
 	if !foundSuggestion {
-		t.Error("no suggestion line with ' · ' column separator found")
+		t.Error("no suggestion line with ' • ' column separator found")
 	}
 
 	// Test at narrow width too.
@@ -240,9 +240,9 @@ func displayWidth(s string) int {
 	return len([]rune(stripAnsi(s)))
 }
 
-func allDots(s string) bool {
+func allHRules(s string) bool {
 	for _, r := range s {
-		if r != '·' {
+		if r != '─' {
 			return false
 		}
 	}
@@ -620,7 +620,7 @@ func TestHelpLayerView(t *testing.T) {
 	h := NewHelpLayer(r)
 
 	// Verify the table renders visible content.
-	h.View(80, 40, false) // trigger SetHeight with enough room
+	h.View(80, 40, &RenderState{}) // trigger SetHeight with enough room
 	content := h.table.View()
 	if strings.TrimSpace(content) == "" {
 		t.Fatal("help table rendered empty content")

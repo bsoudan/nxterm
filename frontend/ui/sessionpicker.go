@@ -67,7 +67,7 @@ func (p *SessionPickerLayer) handleKey(msg tea.KeyPressMsg) (tea.Msg, tea.Cmd, b
 	}
 }
 
-func (p *SessionPickerLayer) View(width, height int, active bool) []*lipgloss.Layer {
+func (p *SessionPickerLayer) View(width, height int, rs *RenderState) []*lipgloss.Layer {
 	var lines []string
 	for i, s := range p.sessions {
 		indicator := "  "
@@ -115,6 +115,6 @@ func (p *SessionPickerLayer) View(width, height int, active bool) []*lipgloss.La
 
 func (p *SessionPickerLayer) WantsKeyboardInput() *KeyboardFilter { return allKeysFilter }
 
-func (p *SessionPickerLayer) Status() (string, lipgloss.Style) {
+func (p *SessionPickerLayer) Status(rs *RenderState) (string, lipgloss.Style) {
 	return "switch session", lipgloss.Style{}
 }

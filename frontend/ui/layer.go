@@ -18,20 +18,21 @@ var allKeysFilter = &KeyboardFilter{All: true}
 // TermdLayer extends tui.Layer with nxtermd-specific capabilities.
 // All nxtermd layers implement this interface.
 type TermdLayer interface {
-	tui.Layer
+	tui.Layer[RenderState]
 
 	// WantsKeyboardInput returns a filter describing which keys this
 	// layer wants routed through bubbletea's key parser. Returns nil
 	// if the layer doesn't need any keyboard input.
 	WantsKeyboardInput() *KeyboardFilter
 
-	// Status returns text and style for the status bar.
-	Status() (text string, style lipgloss.Style)
+	// Status returns text and style for the status bar. Layers may
+	// also set fields on the render state to contribute shared flags.
+	Status(rs *RenderState) (text string, style lipgloss.Style)
 }
 
 // Aliases for tui types used throughout the ui package.
 type QuitLayerMsg = tui.QuitLayerMsg
-type PushLayerMsg = tui.PushLayerMsg
+type PushLayerMsg = tui.PushLayerMsg[RenderState]
 
 // DetachMsg is returned by session to signal the app should set Detached and quit.
 type DetachMsg struct{}
@@ -53,7 +54,7 @@ type requestState struct {
 
 // needsFocusRouting iterates the layer stack and returns true if any
 // TermdLayer wants all keyboard input routed through bubbletea.
-func needsFocusRouting(stack *tui.Stack) bool {
+func needsFocusRouting(stack *tui.Stack[RenderState]) bool {
 	for _, l := range stack.Layers() {
 		if tl, ok := l.(TermdLayer); ok {
 			if f := tl.WantsKeyboardInput(); f != nil && f.All {
@@ -66,7 +67,7 @@ func needsFocusRouting(stack *tui.Stack) bool {
 
 // collectKeyFilters gathers specific raw byte sequences that layers
 // want intercepted from raw input and delivered through bubbletea.
-func collectKeyFilters(stack *tui.Stack) [][]byte {
+func collectKeyFilters(stack *tui.Stack[RenderState]) [][]byte {
 	var keys [][]byte
 	for _, l := range stack.Layers() {
 		if tl, ok := l.(TermdLayer); ok {

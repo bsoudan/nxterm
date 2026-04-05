@@ -190,14 +190,14 @@ func (t *TerminalLayer) handleTerminalEvents(events []protocol.TerminalEvent) te
 // View implements the Layer interface. Renders terminal content, or
 // delegates to the scrollback layer if active. The active param controls
 // cursor visibility. SessionLayer sets disconnected before calling View.
-func (t *TerminalLayer) View(width, height int, active bool) []*lipgloss.Layer {
+func (t *TerminalLayer) View(width, height int, rs *RenderState) []*lipgloss.Layer {
 	// If scrollback is active, render it instead of the live terminal.
 	if t.scrollbackLayer != nil {
-		return t.scrollbackLayer.View(width, height, active)
+		return t.scrollbackLayer.View(width, height, rs)
 	}
 
-	showCursor := active
-	dim := !active
+	showCursor := rs.Active
+	dim := !rs.Active
 
 	var sb strings.Builder
 	if dim {
@@ -213,7 +213,7 @@ func (t *TerminalLayer) View(width, height int, active bool) []*lipgloss.Layer {
 			if dim {
 				renderCellLineDim(&sb, row, width)
 			} else {
-				renderCellLine(&sb, row, width, i, t.cursorRow, t.cursorCol, showCursor, t.disconnected)
+				renderCellLine(&sb, row, width, i, t.cursorRow, t.cursorCol, showCursor, t.disconnected, rs.CommandMode)
 			}
 			if i < height-1 {
 				sb.WriteByte('\n')
@@ -236,9 +236,15 @@ func (t *TerminalLayer) View(width, height int, active bool) []*lipgloss.Layer {
 					ch = runes[col]
 				}
 				if showCursor && i == t.cursorRow && col == t.cursorCol {
-					sb.WriteString(ansi.SGR(ansi.AttrReverse))
-					sb.WriteRune(ch)
-					sb.WriteString(ansi.SGR(ansi.AttrNoReverse))
+					if rs.CommandMode {
+						sb.WriteString(ansi.SGR(ansi.AttrBold, ansi.AttrReverse, ansi.AttrBrightCyanForegroundColor))
+						sb.WriteByte('?')
+						sb.WriteString(ansi.ResetStyle)
+					} else {
+						sb.WriteString(ansi.SGR(ansi.AttrReverse))
+						sb.WriteRune(ch)
+						sb.WriteString(ansi.SGR(ansi.AttrNoReverse))
+					}
 				} else {
 					sb.WriteRune(ch)
 				}
@@ -258,9 +264,9 @@ func (t *TerminalLayer) View(width, height int, active bool) []*lipgloss.Layer {
 func (t *TerminalLayer) Title() string { return t.regionName }
 
 // Status implements the TermdLayer interface.
-func (t *TerminalLayer) Status() (string, lipgloss.Style) {
+func (t *TerminalLayer) Status(rs *RenderState) (string, lipgloss.Style) {
 	if sl := t.scrollbackLayer; sl != nil {
-		return sl.Status()
+		return sl.Status(rs)
 	}
 	return "", lipgloss.Style{}
 }
@@ -381,7 +387,7 @@ func (t *TerminalLayer) MouseModes() string {
 
 // ── Cell rendering ──────────────────────────────────────────────────────────
 
-func renderCellLine(sb *strings.Builder, row []te.Cell, width, rowIdx, cursorRow, cursorCol int, showCursor bool, disconnected bool) {
+func renderCellLine(sb *strings.Builder, row []te.Cell, width, rowIdx, cursorRow, cursorCol int, showCursor bool, disconnected bool, commandMode bool) {
 	var cur te.Attr // tracks current SGR state (zero = default)
 	col := 0
 	for col < width {
@@ -402,6 +408,13 @@ func renderCellLine(sb *strings.Builder, row []te.Cell, width, rowIdx, cursorRow
 					Fg:      te.Color{Mode: te.ColorANSI16, Name: "red"},
 				}
 				cell.Data = "X"
+			} else if commandMode {
+				target = te.Attr{
+					Bold:    true,
+					Reverse: true,
+					Fg:      te.Color{Mode: te.ColorANSI16, Name: "brightcyan"},
+				}
+				cell.Data = "?"
 			} else {
 				target.Reverse = !target.Reverse
 			}

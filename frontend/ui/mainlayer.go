@@ -45,7 +45,7 @@ type MainLayer struct {
 	upgradeClientAvail  bool
 	upgradeClientVer    string
 
-	tasks *tui.TaskRunner
+	tasks *tui.TaskRunner[RenderState]
 
 	termWidth  int
 	termHeight int
@@ -383,7 +383,7 @@ func (m *MainLayer) forwardToActiveSession(msg tea.Msg) (tea.Msg, tea.Cmd, bool)
 }
 
 func (m *MainLayer) handleCmd(msg MainCmd) (tea.Msg, tea.Cmd, bool) {
-	push := func(layer tui.Layer) (tea.Msg, tea.Cmd, bool) {
+	push := func(layer tui.Layer[RenderState]) (tea.Msg, tea.Cmd, bool) {
 		return nil, func() tea.Msg { return PushLayerMsg{Layer: layer} }, true
 	}
 	switch msg.Name {
@@ -414,7 +414,7 @@ func (m *MainLayer) handleCmd(msg MainCmd) (tea.Msg, tea.Cmd, bool) {
 		return resp, cmd, true
 
 	case "upgrade":
-		m.tasks.Run(func(h *tui.Handle) {
+		m.tasks.Run(func(h *tui.Handle[RenderState]) {
 			t := &TermdHandle{Handle: h}
 			// Fresh upgrade check.
 			resp, err := t.Request(protocol.UpgradeCheckRequest{
@@ -575,13 +575,13 @@ func (m *MainLayer) openSessionPicker() tea.Cmd {
 }
 
 // View delegates to the active session, or renders the no-session pattern.
-func (m *MainLayer) View(width, height int, active bool) []*lipgloss.Layer {
+func (m *MainLayer) View(width, height int, rs *RenderState) []*lipgloss.Layer {
 	if m.err != "" {
 		return []*lipgloss.Layer{lipgloss.NewLayer("error: " + m.err + "\n")}
 	}
 	s := m.activeSessionLayer()
 	if s != nil {
-		return s.View(width, height, active)
+		return s.View(width, height, rs)
 	}
 	return m.viewNoSession(width, height)
 }
@@ -631,12 +631,13 @@ func (m *MainLayer) viewNoSession(width, height int) []*lipgloss.Layer {
 
 // Status returns the active session's status, overlaid with reconnecting
 // info when the connection is down.
-func (m *MainLayer) Status() (string, lipgloss.Style) {
+func (m *MainLayer) Status(rs *RenderState) (string, lipgloss.Style) {
+	rs.CommandMode = m.commandMode
 	if m.commandMode {
 		if len(m.commandBuffer) > 0 {
-			return "? " + strings.Join(m.commandBuffer, " "), lipgloss.Style{}
+			return "? " + strings.Join(m.commandBuffer, " "), commandModeStyle
 		}
-		return "?", lipgloss.Style{}
+		return "?", commandModeStyle
 	}
 
 	if m.connStatus == "reconnecting" {
@@ -651,7 +652,7 @@ func (m *MainLayer) Status() (string, lipgloss.Style) {
 	if s == nil {
 		text, style = "no session", statusFaint
 	} else {
-		text, style = s.Status()
+		text, style = s.Status(rs)
 	}
 
 	if m.upgradeServerAvail || m.upgradeClientAvail {
