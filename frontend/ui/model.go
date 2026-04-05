@@ -228,7 +228,11 @@ func (m Model) View() tea.View {
 	statusText := ""
 	statusStyle := lipgloss.Style{}
 	hasOverlay := false
+	hasHint := false
 	for i, l := range m.stack.Layers() {
+		if _, ok := l.(*HintLayer); ok {
+			hasHint = true
+		}
 		if tl, ok := l.(TermdLayer); ok {
 			t, s := tl.Status()
 			if t != "" {
@@ -254,7 +258,7 @@ func (m Model) View() tea.View {
 	}
 
 	// Status bar (right side of tab bar) as the topmost layer.
-	statusContent, statusWidth := renderStatusBar(statusText, main.version, statusStyle, hasOverlay)
+	statusContent, statusWidth := renderStatusBar(statusText, main.version, statusStyle, hasHint)
 	statusX := max(width-statusWidth, 0)
 	layers = append(layers, lipgloss.NewLayer(statusContent).X(statusX).Z(2))
 

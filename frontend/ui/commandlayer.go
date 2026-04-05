@@ -1,8 +1,6 @@
 package ui
 
 import (
-	"strings"
-
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 )
@@ -12,7 +10,6 @@ import (
 // upper right corner. It pops itself on hideHintMsg.
 type HintLayer struct {
 	registry *Registry
-	version  string
 }
 
 func (h *HintLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
@@ -22,45 +19,38 @@ func (h *HintLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 	return nil, nil, false
 }
 
-var logoLines = [3]string{
-	"▀█▀ █▀▀ █▀▀▄ █▀▄▀█ █▀▄",
-	" █  █▀▀ █▀▀▘ █ ▀ █ █ █",
-	" ▀  ▀▀▀ ▀  ▀ ▀   ▀ ▀▀ ",
+var logoLines = [4]string{
+	"             ██                       ",
+	"████▄ ██ ██ ▀██▀▀ ▄█▀█▄ ████▄ ███▄███▄",
+	"██ ██  ███   ██   ██▄█▀ ██ ▀▀ ██ ██ ██",
+	"██ ██ ██ ██  ██   ▀█▄▄▄ ██    ██ ██ ██",
 }
-
-const logoWidth = 24 // display width of each logo line
 
 func (h *HintLayer) Activate() tea.Cmd { return nil }
 func (h *HintLayer) Deactivate()       {}
 
 func (h *HintLayer) View(width, height int, active bool) []*lipgloss.Layer {
-	pad := " "
-	blank := pad + strings.Repeat(" ", logoWidth) + pad
-	logo := blank + "\n" +
-		pad + logoStyle.Render(logoLines[0]) + pad + "\n" +
-		pad + logoStyle.Render(logoLines[1]) + pad + "\n" +
-		pad + logoStyle.Render(logoLines[2]) + pad + "\n"
-	if h.version != "" {
-		ver := versionStyle.Render(h.version)
-		verPad := (logoWidth + 2 - lipgloss.Width(ver)) / 2
-		if verPad < 1 {
-			verPad = 1
-		}
-		logo += strings.Repeat(" ", verPad) + ver + "\n"
-	}
-	logo += blank
+	inner := logoStyle.Render(logoLines[0]) + "\n" +
+		logoStyle.Render(logoLines[1]) + "\n" +
+		logoStyle.Render(logoLines[2]) + "\n" +
+		logoStyle.Render(logoLines[3])
+	logo := logoBorder.Render(inner)
 
-	x := width - logoWidth - 3
+	boxW := lipgloss.Width(logo)
+	x := width - boxW - 2
 	if x < 0 {
 		x = 0
 	}
 
-	return []*lipgloss.Layer{lipgloss.NewLayer(logo).X(x).Y(2).Z(1)}
+	return overlayLayers(logo, x, 2, 1)
 }
 
-var versionStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-
 var logoStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4"))
+
+var logoBorder = lipgloss.NewStyle().
+	Border(lipgloss.RoundedBorder()).
+	BorderForeground(lipgloss.Color("14")).
+	Padding(0, 1)
 
 func (h *HintLayer) WantsKeyboardInput() *KeyboardFilter { return nil }
 

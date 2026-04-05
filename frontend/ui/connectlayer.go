@@ -253,7 +253,7 @@ func (c *ConnectLayer) buildContent(w, height int) string {
 		prompt = statusBold.Render(text)
 	}
 
-	separator := paletteFaint.Render(strings.Repeat("·", w))
+	separator := paletteFaint.Render(strings.Repeat("─", w))
 
 	var lines []string
 	items := c.suggestions()

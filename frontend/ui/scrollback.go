@@ -128,8 +128,9 @@ const (
 )
 
 var (
-	scrollbarTrackStyle = lipgloss.NewStyle().Faint(true)
-	scrollbarThumbStyle = lipgloss.NewStyle().Bold(true)
+	scrollbarTrackStyle    = lipgloss.NewStyle().Faint(true)
+	scrollbarThumbStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.BrightCyan)
+	scrollbackStatusStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.BrightCyan)
 )
 
 // scrollbarGeometry computes the thumb position and size for a scrollbar.
@@ -251,12 +252,12 @@ func (s *ScrollbackLayer) WantsKeyboardInput() *KeyboardFilter { return allKeysF
 
 func (s *ScrollbackLayer) Status() (string, lipgloss.Style) {
 	if s.total == 0 && len(s.cells) == 0 {
-		return "scrollback [...]", statusBold
+		return "scrollback [...]", scrollbackStatusStyle
 	}
 	total := s.total
 	offset := s.offset
 	if offset > total {
 		offset = total
 	}
-	return fmt.Sprintf("scrollback [%d/%d]", offset, total), statusBold
+	return fmt.Sprintf("scrollback [%d/%d]", offset, total), scrollbackStatusStyle
 }

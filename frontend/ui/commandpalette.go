@@ -157,19 +157,13 @@ func fuzzyScore(query, candidate string) (int, bool) {
 	return score, true
 }
 
-// paletteBorder uses microdots for all border characters.
-var paletteBorder = lipgloss.Border{
-	Top: "·", Bottom: "·", Left: "·", Right: "·",
-	TopLeft: "·", TopRight: "·", BottomLeft: "·", BottomRight: "·",
-}
-
 var paletteStyle = lipgloss.NewStyle().
-	Border(paletteBorder).
-	BorderForeground(lipgloss.Color("6")).
+	Border(lipgloss.RoundedBorder()).
+	BorderForeground(lipgloss.Color("14")).
 	Padding(0, 1)
 
 // paletteFaint matches the border color for internal separators and placeholder text.
-var paletteFaint = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+var paletteFaint = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
 
 func (p *CommandPaletteLayer) View(width, height int, active bool) []*lipgloss.Layer {
 	overlayW := width * 2 / 3
@@ -210,8 +204,8 @@ func (p *CommandPaletteLayer) buildContent(overlayW, height int) string {
 		prompt = statusBold.Render("> ") + paletteFaint.Render("type a command...")
 	}
 
-	// Separator line of microdots, exactly overlayW wide.
-	separator := paletteFaint.Render(strings.Repeat("·", overlayW))
+	// Separator line matching the border's horizontal line character.
+	separator := paletteFaint.Render(strings.Repeat("─", overlayW))
 
 	// Suggestion panel.
 	maxVisible := min(len(p.matches), height-4)
@@ -234,7 +228,7 @@ func (p *CommandPaletteLayer) buildContent(overlayW, height int) string {
 
 	// Layout: name " · " desc [" · " key]
 	// All lines must be exactly overlayW display cells.
-	const sep = " · "
+	const sep = " • "
 	sepW := utf8.RuneCountInString(sep)
 	fixedW := maxName + sepW
 	if maxKey > 0 {
@@ -256,7 +250,7 @@ func (p *CommandPaletteLayer) buildContent(overlayW, height int) string {
 		}
 	}
 
-	faintSep := " " + paletteFaint.Render("·") + " "
+	faintSep := " " + paletteFaint.Render("•") + " "
 
 	var suggestions []string
 	for i := range maxVisible {
