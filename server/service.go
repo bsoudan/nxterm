@@ -57,7 +57,7 @@ NotifyAccess=all
 ExecStart=%s
 ExecReload=/bin/kill -USR2 $MAINPID
 Restart=on-failure
-Environment=NXNXTERMD_VERSION=%s
+Environment=NXTERMD_VERSION=%s
 Environment=PATH=%s
 
 [Install]
@@ -209,7 +209,7 @@ func cmdRestart(ctx context.Context, cmd *cli.Command) error {
 	args = append(args, prevArgs...)
 	execLine := strings.Join(args, " ")
 
-	unit := fmt.Sprintf("[Unit]\nDescription=nxtermd %s\n\n[Service]\nType=notify\nNotifyAccess=all\nExecStart=%s\nExecReload=/bin/kill -USR2 $MAINPID\nRestart=on-failure\nEnvironment=NXNXTERMD_VERSION=%s\nEnvironment=PATH=%s\n\n[Install]\nWantedBy=default.target\n",
+	unit := fmt.Sprintf("[Unit]\nDescription=nxtermd %s\n\n[Service]\nType=notify\nNotifyAccess=all\nExecStart=%s\nExecReload=/bin/kill -USR2 $MAINPID\nRestart=on-failure\nEnvironment=NXTERMD_VERSION=%s\nEnvironment=PATH=%s\n\n[Install]\nWantedBy=default.target\n",
 		version, execLine, version, os.Getenv("PATH"))
 
 	if err := os.WriteFile(unitPath, []byte(unit), 0644); err != nil {
