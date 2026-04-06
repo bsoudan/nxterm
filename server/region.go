@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -11,7 +12,9 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 	"unicode/utf8"
+	"unsafe"
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/creack/pty"
@@ -82,9 +85,66 @@ type PTYRegion struct {
 
 	notify     chan struct{}
 	readerDone chan struct{}
-	stopRead   chan struct{} // closed to stop readLoop for live upgrade
 
 	savedTermios *unix.Termios // saved before overlay, restored after
+}
+
+// withPTYFd runs fn with the PTY master's raw file descriptor without
+// going through *os.File.Fd(). The latter would set the file back to
+// blocking mode and remove it from Go's runtime poller, breaking
+// SetReadDeadline. SyscallConn().Control keeps the poller registration
+// intact.
+func (r *PTYRegion) withPTYFd(fn func(fd int) error) error {
+	rc, err := r.ptmx.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var inner error
+	if err := rc.Control(func(fd uintptr) {
+		inner = fn(int(fd))
+	}); err != nil {
+		return err
+	}
+	return inner
+}
+
+// setNonblockPollable puts a *os.File in non-blocking mode without
+// disturbing Go's runtime poller registration. SetReadDeadline only
+// works on files that the runtime knows are pollable, so we have to
+// twiddle O_NONBLOCK via SyscallConn rather than Fd().
+func setNonblockPollable(f *os.File) error {
+	rc, err := f.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var inner error
+	if err := rc.Control(func(fd uintptr) {
+		inner = unix.SetNonblock(int(fd), true)
+	}); err != nil {
+		return err
+	}
+	return inner
+}
+
+// setWinsize is a SyscallConn-friendly equivalent of pty.Setsize.
+// It avoids calling f.Fd() so the runtime poller registration stays
+// intact for SetReadDeadline.
+func setWinsize(f *os.File, rows, cols uint16) error {
+	rc, err := f.SyscallConn()
+	if err != nil {
+		return err
+	}
+	ws := pty.Winsize{Rows: rows, Cols: cols}
+	var inner error
+	if err := rc.Control(func(fd uintptr) {
+		_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, fd, syscall.TIOCSWINSZ, uintptr(unsafe.Pointer(&ws)))
+		if errno != 0 {
+			inner = errno
+		}
+	}); err != nil {
+		return err
+	}
+	return inner
 }
 
 func (r *PTYRegion) ID() string          { return r.id }
@@ -108,12 +168,17 @@ func (r *PTYRegion) ReaderDone() <-chan struct{} { return r.readerDone }
 
 // SaveTermios saves the PTY's current terminal attributes.
 func (r *PTYRegion) SaveTermios() {
-	t, err := unix.IoctlGetTermios(int(r.ptmx.Fd()), unix.TCGETS)
+	err := r.withPTYFd(func(fd int) error {
+		t, err := unix.IoctlGetTermios(fd, unix.TCGETS)
+		if err != nil {
+			return err
+		}
+		r.savedTermios = t
+		return nil
+	})
 	if err != nil {
 		slog.Debug("SaveTermios failed", "region_id", r.id, "err", err)
-		return
 	}
-	r.savedTermios = t
 }
 
 // RestoreTermios restores previously saved terminal attributes.
@@ -121,7 +186,10 @@ func (r *PTYRegion) RestoreTermios() {
 	if r.savedTermios == nil {
 		return
 	}
-	if err := unix.IoctlSetTermios(int(r.ptmx.Fd()), unix.TCSETS, r.savedTermios); err != nil {
+	err := r.withPTYFd(func(fd int) error {
+		return unix.IoctlSetTermios(fd, unix.TCSETS, r.savedTermios)
+	})
+	if err != nil {
 		slog.Debug("RestoreTermios failed", "region_id", r.id, "err", err)
 	}
 	r.savedTermios = nil
@@ -140,12 +208,22 @@ func NewRegion(cmdStr string, args []string, env map[string]string, width, heigh
 		cmdObj.Env = append(cmdObj.Env, k+"="+v)
 	}
 
-	ptmx, err := pty.StartWithSize(cmdObj, &pty.Winsize{
-		Rows: uint16(height),
-		Cols: uint16(width),
-	})
+	// Use pty.Start (no size) instead of StartWithSize, then set the
+	// winsize ourselves via SyscallConn — pty.Setsize calls f.Fd() which
+	// would unregister the file from Go's runtime poller and break
+	// SetReadDeadline, which we rely on to stop the readLoop cleanly
+	// during a live upgrade.
+	ptmx, err := pty.Start(cmdObj)
 	if err != nil {
 		return nil, err
+	}
+	if err := setNonblockPollable(ptmx); err != nil {
+		ptmx.Close()
+		return nil, fmt.Errorf("set ptmx nonblock: %w", err)
+	}
+	if err := setWinsize(ptmx, uint16(height), uint16(width)); err != nil {
+		ptmx.Close()
+		return nil, fmt.Errorf("set ptmx winsize: %w", err)
 	}
 
 	hscreen := te.NewHistoryScreen(width, height, scrollbackSize)
@@ -176,7 +254,6 @@ func NewRegion(cmdStr string, args []string, env map[string]string, width, heigh
 		stream:  stream,
 		notify:     make(chan struct{}, 1),
 		readerDone: make(chan struct{}),
-		stopRead:   make(chan struct{}),
 	}
 
 	slog.Debug("spawned child", "pid", r.pid, "cmd", cmdStr)
@@ -214,15 +291,47 @@ func (r *PTYRegion) readLoop() {
 			}
 		}
 		if err != nil {
-			// If stopRead is closed, this is a controlled stop for upgrade.
-			select {
-			case <-r.stopRead:
-			default:
+			// os.ErrDeadlineExceeded is a controlled stop from
+			// StopReadLoop during a live upgrade — don't log it.
+			if !errors.Is(err, os.ErrDeadlineExceeded) {
 				slog.Debug("readLoop exiting", "region_id", r.id, "err", err)
 			}
-			break
+			return
 		}
 	}
+}
+
+// StopReadLoop interrupts the readLoop and waits for it to exit. Used
+// before taking a screen snapshot during a live upgrade so the snapshot
+// is consistent: with the readLoop stopped, no further bytes can mutate
+// the screen state. After this returns, bytes that arrive on the PTY
+// queue in the kernel buffer until the new process starts reading.
+func (r *PTYRegion) StopReadLoop() error {
+	// Set the deadline to a time in the past — this immediately
+	// interrupts any in-flight Read on the pollable, non-blocking
+	// PTY file descriptor with os.ErrDeadlineExceeded.
+	if err := r.ptmx.SetReadDeadline(time.Unix(1, 0)); err != nil {
+		return fmt.Errorf("set read deadline: %w", err)
+	}
+	select {
+	case <-r.readerDone:
+		return nil
+	case <-time.After(2 * time.Second):
+		return fmt.Errorf("readLoop did not exit within 2s")
+	}
+}
+
+// ResumeReadLoop clears the read deadline and restarts the readLoop
+// after a failed upgrade rollback. The caller must have observed
+// readerDone before invoking this. The new readerDone channel is
+// installed atomically before launching the goroutine.
+func (r *PTYRegion) ResumeReadLoop() error {
+	if err := r.ptmx.SetReadDeadline(time.Time{}); err != nil {
+		return fmt.Errorf("clear read deadline: %w", err)
+	}
+	r.readerDone = make(chan struct{})
+	go r.readLoop()
+	return nil
 }
 
 // sequenceSafe prepends any carried-over bytes from a previous read to chunk,
@@ -294,10 +403,7 @@ func (r *PTYRegion) Resize(width, height uint16) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if err := pty.Setsize(r.ptmx, &pty.Winsize{
-		Rows: height,
-		Cols: width,
-	}); err != nil {
+	if err := setWinsize(r.ptmx, height, width); err != nil {
 		return err
 	}
 
@@ -458,12 +564,20 @@ func (r *PTYRegion) Close() {
 	r.ptmx.Close()
 }
 
-// DetachPTY dups the PTY master FD for handoff to a new process.
-// The old readLoop keeps running on the original FD — it will get
-// an error when the old process exits and the FD is closed.
-// The caller gets a fresh FD that survives the old process exit.
+// DetachPTY dups the PTY master FD for handoff to a new process. The
+// caller must call StopReadLoop first; the dup'd FD goes to the new
+// process, while r.ptmx is left in place for r.Close() to clean up.
+//
+// The dup'd FD inherits O_NONBLOCK because dup shares the underlying
+// open file description, so the receiving process's os.NewFile will
+// detect it as kindNonBlock and register it with the runtime poller.
 func (r *PTYRegion) DetachPTY() *os.File {
-	newFD, err := syscall.Dup(int(r.ptmx.Fd()))
+	var newFD int
+	err := r.withPTYFd(func(fd int) error {
+		var derr error
+		newFD, derr = syscall.Dup(fd)
+		return derr
+	})
 	if err != nil {
 		slog.Error("DetachPTY: dup failed", "region_id", r.id, "err", err)
 		return nil
@@ -499,7 +613,6 @@ func RestoreRegion(id, name, cmd, session string, pid, width, height int, ptmxFi
 		stream:  stream,
 		notify:     make(chan struct{}, 1),
 		readerDone: make(chan struct{}),
-		stopRead:   make(chan struct{}),
 	}
 
 	go r.readLoop()

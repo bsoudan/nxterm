@@ -87,6 +87,20 @@ func (s *Server) HandleUpgrade(specs []string, sshCfg transport.SSHListenerConfi
 	result := s.drainForUpgrade()
 	slog.Info("upgrade: event loop drained")
 
+	// Stop all PTY readLoops before snapshotting screen state. With the
+	// readLoops stopped, no more bytes can mutate hscreen, so the
+	// snapshot is guaranteed consistent. Bytes that arrive on the PTY
+	// after this point queue in the kernel buffer and will be picked up
+	// by the new process's readLoop after handoff — nothing is lost.
+	for id, r := range result.regions {
+		if pr, ok := r.(*PTYRegion); ok {
+			if err := pr.StopReadLoop(); err != nil {
+				slog.Warn("upgrade: failed to stop readLoop", "region_id", id, "err", err)
+			}
+		}
+	}
+	slog.Info("upgrade: stopped PTY readLoops", "pty_regions", len(result.regions))
+
 	// Dup PTY FDs for handoff. Native regions don't have PTYs.
 	ptyDups := make(map[string]*os.File) // regionID → dup'd PTY file
 	for id, r := range result.regions {
@@ -232,9 +246,9 @@ func (s *Server) resumeAfterFailedUpgrade(result upgradeResult) {
 		if !ok {
 			continue // native regions don't have readLoops to restart
 		}
-		pr.stopRead = make(chan struct{})
-		pr.readerDone = make(chan struct{})
-		go pr.readLoop()
+		if err := pr.ResumeReadLoop(); err != nil {
+			slog.Error("upgrade: rollback failed to restart readLoop", "region_id", pr.id, "err", err)
+		}
 	}
 	slog.Warn("upgrade: rollback complete, but listeners were closed; restart may be needed")
 }

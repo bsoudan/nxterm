@@ -268,6 +268,107 @@ func TestLiveUpgradeSimple(t *testing.T) {
 	t.Log("shell survived upgrade")
 }
 
+// TestLiveUpgradeNoDataLoss verifies that PTY output flowing during a
+// live upgrade is not lost. It runs a shell loop that prints an
+// incrementing counter as fast as possible, triggers SIGUSR2 mid-stream,
+// stops the loop, then walks the on-screen output and asserts the
+// counter values are strictly contiguous (no gaps from a stale snapshot
+// missing bytes that the old readLoop drained after the snapshot).
+func TestLiveUpgradeNoDataLoss(t *testing.T) {
+	dir := t.TempDir()
+	env := testEnv(t)
+	writeTestServerConfig(t, env)
+
+	socketPath := filepath.Join(dir, "nxtermd.sock")
+
+	cmd := exec.Command("nxtermd", "unix:"+socketPath)
+	cmd.Env = env
+	cmd.Stderr = os.Stderr
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	defer func() { syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); cmd.Wait() }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(socketPath); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	fe := startFrontendWithEnv(t, socketPath, env)
+	defer fe.Kill()
+	fe.WaitFor(t, "nxterm$", 10*time.Second)
+
+	// Start a high-rate awk loop that continuously emits "i=NNN i=NNN
+	// i=NNN..." tokens. The token-per-iteration rate is high enough
+	// that the kernel PTY buffer is always full and the readLoop is
+	// actively draining bytes throughout the entire upgrade window.
+	// Without the StopReadLoop fix, the OLD readLoop drains bytes
+	// after the snapshot was taken; those bytes never make it to the
+	// new process and show up as a gap in the counter sequence.
+	fe.Write([]byte(`awk 'BEGIN { for (i=1; i<=20000; i++) printf "i=%d ", i; printf "\nDONE\n" }'` + "\r"))
+
+	// Wait until output is actively flowing.
+	fe.WaitFor(t, "i=10", 10*time.Second)
+
+	// Trigger live upgrade mid-stream.
+	if err := syscall.Kill(cmd.Process.Pid, syscall.SIGUSR2); err != nil {
+		t.Fatalf("kill -USR2: %v", err)
+	}
+
+	// Wait for the loop to finish.
+	fe.WaitFor(t, "DONE", 60*time.Second)
+	fe.WaitFor(t, "nxterm$", 30*time.Second)
+	fe.WaitForSilence(500 * time.Millisecond)
+
+	// Walk the visible screen and pull out every "i=NNN" token, then
+	// check the sequence is contiguous. Concatenate all rows into one
+	// string first, then strip the line-wrap whitespace, so tokens
+	// that wrap across rows (e.g. "i=198" + "00") survive intact.
+	lines := fe.ScreenLines()
+	var joined strings.Builder
+	for i := 1; i < len(lines); i++ { // skip tab bar at row 0
+		joined.WriteString(strings.TrimRight(lines[i], " "))
+	}
+	flat := joined.String()
+
+	var seen []int
+	for {
+		idx := strings.Index(flat, "i=")
+		if idx < 0 {
+			break
+		}
+		flat = flat[idx+2:]
+		j := 0
+		for j < len(flat) && flat[j] >= '0' && flat[j] <= '9' {
+			j++
+		}
+		if j == 0 {
+			continue
+		}
+		n, err := strconv.Atoi(flat[:j])
+		if err == nil {
+			seen = append(seen, n)
+		}
+		flat = flat[j:]
+	}
+
+	if len(seen) < 5 {
+		t.Fatalf("not enough counter values on screen: %v\nlines:\n%s",
+			seen, strings.Join(lines, "\n"))
+	}
+	for i := 1; i < len(seen); i++ {
+		if seen[i] != seen[i-1]+1 {
+			t.Fatalf("counter discontinuity at index %d: %d → %d\nfull sequence: %v\nlines:\n%s",
+				i, seen[i-1], seen[i], seen, strings.Join(lines, "\n"))
+		}
+	}
+	t.Logf("counter contiguous over %d values: %d..%d", len(seen), seen[0], seen[len(seen)-1])
+}
+
 // getStatusPID opens the TUI status pane (ctrl+b s), extracts the server
 // PID from the "PID:" line, closes the pane (q), and returns the PID.
 func getStatusPID(t *testing.T, fe *frontend) int {
