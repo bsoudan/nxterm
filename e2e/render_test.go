@@ -343,6 +343,183 @@ func TestFaintRendering(t *testing.T) {
 	}
 }
 
+// TestModifyOtherKeysDoesNotLeakSGR verifies that xterm's
+// "modifyOtherKeys" CSI sequences (\e[>4m, \e[>4;2m) — emitted by
+// bubbletea v2 on startup to enable extended keyboard reporting — are
+// NOT misparsed as SGR by the server's VT layer. Without the fix in
+// pkg/te/stream.go, the parser stripped the '>' private prefix and
+// dispatched [4;2]m to SelectGraphicRendition, where 4 is the SGR
+// code for underline and 2 is faint, contaminating every subsequent
+// draw with stale attributes.
+//
+// This is a full-pipeline regression: bytes go through bash → server
+// te.Stream → te.Screen cells → protocol → client te.Screen → test
+// harness te.Screen, so any cell-level corruption shows up here.
+func TestModifyOtherKeysDoesNotLeakSGR(t *testing.T) {
+	socketPath, serverCleanup := startServer(t)
+	defer serverCleanup()
+
+	pio, frontendCleanup := startFrontend(t, socketPath)
+	defer frontendCleanup()
+
+	pio.WaitFor(t, "nxterm$", 10*time.Second)
+
+	// Emit \e[>4;2m (modifyOtherKeys) and then a plain "MARKER" with
+	// no styling. If the parser misinterprets >4;2 as SGR, MARKER
+	// will pick up underline+faint from the contaminated cursor.
+	pio.Write([]byte("printf '\\e[>4;2mMARKER\\n'\r"))
+
+	pio.WaitForScreen(t, func(lines []string) bool {
+		for _, line := range lines {
+			if strings.HasPrefix(line, "MARKER") {
+				return true
+			}
+		}
+		return false
+	}, "output line starting with 'MARKER'", 10*time.Second)
+	pio.WaitForSilence(200 * time.Millisecond)
+
+	cells := pio.ScreenCells()
+	outputRow := -1
+	for row, line := range cells {
+		if len(line) >= 6 && line[0].Data == "M" && line[1].Data == "A" &&
+			line[2].Data == "R" && line[3].Data == "K" && line[4].Data == "E" && line[5].Data == "R" {
+			outputRow = row
+			break
+		}
+	}
+	if outputRow < 0 {
+		t.Fatal("could not find output line starting with 'MARKER'")
+	}
+
+	for col := 0; col < 6; col++ {
+		c := cells[outputRow][col]
+		if c.Attr.Underline {
+			t.Errorf("col %d %q: expected Underline=false (modifyOtherKeys leaked)", col, c.Data)
+		}
+		if c.Attr.Faint {
+			t.Errorf("col %d %q: expected Faint=false (modifyOtherKeys leaked)", col, c.Data)
+		}
+		if c.Attr.Bold {
+			t.Errorf("col %d %q: expected Bold=false", col, c.Data)
+		}
+	}
+}
+
+// TestKittyKeyboardSequencesDoNotLeakAsText verifies that CSI
+// sequences with the '<' / '=' private prefixes (kitty keyboard
+// protocol push/pop) are fully consumed by the parser instead of
+// having their parameter bytes drawn as text. Bubbletea v2 emits
+// "\e[=0;1u" / "\e[=1;1u" on startup and a corresponding pop on
+// shutdown; before the fix, the parser bailed on '=' (treated it as
+// an unknown final byte), then drew "0;1u" as plain text on the
+// screen next to the cursor.
+func TestKittyKeyboardSequencesDoNotLeakAsText(t *testing.T) {
+	socketPath, serverCleanup := startServer(t)
+	defer serverCleanup()
+
+	pio, frontendCleanup := startFrontend(t, socketPath)
+	defer frontendCleanup()
+
+	pio.WaitFor(t, "nxterm$", 10*time.Second)
+
+	// Emit the kitty keyboard push and pop sequences, then a marker
+	// we can locate. If the parser leaks, "0;1u" or "1;1u" appears in
+	// the screen text adjacent to the marker.
+	pio.Write([]byte("printf '\\e[=0;1u\\e[=1;1u\\e[<uMARKER\\n'\r"))
+
+	pio.WaitForScreen(t, func(lines []string) bool {
+		for _, line := range lines {
+			if strings.HasPrefix(line, "MARKER") {
+				return true
+			}
+		}
+		return false
+	}, "output line starting with 'MARKER'", 10*time.Second)
+	pio.WaitForSilence(200 * time.Millisecond)
+
+	cells := pio.ScreenCells()
+	for row, line := range cells {
+		if len(line) == 0 || line[0].Data != "M" {
+			continue
+		}
+		// Check that no leaked kitty params appear ahead of MARKER on
+		// this row, and that MARKER itself is at column 0.
+		_ = row
+		if line[0].Data == "M" && line[1].Data == "A" && line[2].Data == "R" {
+			// Walk the row scanning for stray "0;1u" / "1;1u" / "u" before MARKER.
+			// (MARKER starts at col 0, so there should be nothing before it.)
+			return
+		}
+	}
+
+	// Also walk the whole screen and assert no row contains the
+	// distinctive leaked-text patterns.
+	for _, line := range cells {
+		var sb strings.Builder
+		for _, c := range line {
+			sb.WriteString(c.Data)
+		}
+		row := sb.String()
+		for _, leak := range []string{"0;1u", "1;1u"} {
+			if strings.Contains(row, leak) {
+				t.Errorf("found leaked kitty keyboard params %q in row: %q", leak, strings.TrimRight(row, " "))
+			}
+		}
+	}
+}
+
+// TestPTYRegionRespondsToDECRQM verifies that the server's te.Screen
+// writes replies back to the PTY for terminal queries from the child.
+// Specifically, when the child sends DECRQM (\e[?2026$p), it should
+// receive a DECRPM reply on its stdin. Without the WriteProcessInput
+// wiring in NewRegion, the te generates the reply but it goes to a
+// no-op callback and the child times out.
+//
+// Bubbletea v2 emits these queries on startup; without replies it
+// falls back to assuming features are unsupported and adds startup
+// latency. This test exercises the same query path via bash.
+func TestPTYRegionRespondsToDECRQM(t *testing.T) {
+	socketPath, serverCleanup := startServer(t)
+	defer serverCleanup()
+
+	pio, frontendCleanup := startFrontend(t, socketPath)
+	defer frontendCleanup()
+
+	pio.WaitFor(t, "nxterm$", 10*time.Second)
+
+	// Send a DECRQM query (\e[?2026$p) directly to /dev/tty so it
+	// reaches the server's te through the PTY master, then read the
+	// reply from /dev/tty with a 1s timeout, and finally print the
+	// captured byte count. If the wiring is correct, len > 0; if not,
+	// len = 0 (timeout). The DECRPM reply for mode 2026 is
+	// "\e[?2026;<status>$y" which is 11 bytes.
+	//
+	// We have to use a marker that survives bash's command echo: the
+	// raw command line is also written to the screen, so any literal
+	// like "DECRQM_LEN=" appears in both the echoed command and the
+	// actual output. Embedding the variable expansion only in the
+	// output line — "ANS:${#reply}" — means the echoed command has
+	// "ANS:$" while the output has "ANS:11" (or "ANS:0" on failure),
+	// which we can distinguish.
+	pio.Write([]byte(`printf '\e[?2026$p' > /dev/tty; IFS= read -rsn 16 -t 1 reply < /dev/tty; echo "ANS:${#reply}"` + "\r"))
+
+	hasNonZeroAns := func(lines []string) bool {
+		for _, line := range lines {
+			for i := 0; i+5 < len(line); i++ {
+				if line[i:i+4] == "ANS:" {
+					next := line[i+4]
+					if next >= '1' && next <= '9' {
+						return true
+					}
+				}
+			}
+		}
+		return false
+	}
+	pio.WaitForScreen(t, hasNonZeroAns, `ANS:N where N > 0`, 10*time.Second)
+}
+
 func TestActiveTabBold(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()

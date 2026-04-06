@@ -149,6 +149,15 @@ func NewRegion(cmdStr string, args []string, env map[string]string, width, heigh
 	}
 
 	hscreen := te.NewHistoryScreen(width, height, scrollbackSize)
+	// Wire the screen's reply path back to the PTY master so device
+	// queries from the child (DECRQM, DA, DSR, DECRQSS, etc.) actually
+	// receive answers. Without this, programs that probe the terminal
+	// — bubbletea v2 in particular emits \e[?2026$p / \e[?2027$p / \e[?u
+	// on startup — sit waiting for replies that never arrive, leading
+	// to multi-second timeouts and missing-feature fallbacks.
+	hscreen.Screen.WriteProcessInput = func(data string) {
+		ptmx.Write([]byte(data))
+	}
 	proxy := NewEventProxy(hscreen)
 	stream := te.NewStream(proxy, false)
 

@@ -446,7 +446,13 @@ func (st *Stream) handleCSI(ch rune) error {
 		st.csiPrefix = ch
 		return nil
 	}
-	if ch == '>' {
+	// '<', '=', '>' are private parameter indicators per ECMA-48 §5.4.1.
+	// '?' is the only one we natively understand for SetMode/ResetMode/etc;
+	// the others (xterm modifyOtherKeys, kitty keyboard protocol, …) are
+	// recognized as prefixes so their full sequences are consumed and the
+	// trailing bytes don't leak into the ground state as plain text. The
+	// dispatchCSI gate below decides whether to act on each sequence.
+	if ch == '<' || ch == '=' || ch == '>' {
 		st.csiPrefix = ch
 		return nil
 	}
@@ -706,6 +712,28 @@ func (st *Stream) appendParam() {
 }
 
 func (st *Stream) dispatchCSI(final rune, params []int) {
+	// Private CSI prefixes other than '?' have alternate semantics for
+	// each final byte. Without explicit handling, falling through to
+	// the standard switch would misinterpret them — e.g. \e[>4m as
+	// SGR(4)=underline (xterm modifyOtherKeys), or \e[=0;1u as cursor
+	// restore (kitty keyboard push). We don't implement these
+	// extensions; ignore them unless we have a specific handler in the
+	// allow-list below. ('?' is handled inside the called methods,
+	// which check st.private and behave accordingly.)
+	if st.csiPrefix == '<' || st.csiPrefix == '=' || st.csiPrefix == '>' {
+		allowed := false
+		if st.csiPrefix == '>' {
+			switch final {
+			case 'c', 't', 'T':
+				// 'c' = DA2 (secondary device attributes)
+				// 't', 'T' = SetTitleMode
+				allowed = true
+			}
+		}
+		if !allowed {
+			return
+		}
+	}
 	switch final {
 	case '@':
 		st.listener.InsertCharacters(params...)
