@@ -24,7 +24,7 @@ type Model struct {
 	Detached bool
 }
 
-func NewModel(s *Server, pipeW io.Writer, registry *Registry, ring *termlog.LogRingBuffer, endpoint, version, changelog, sessionName string, connectFn func(string)) Model {
+func NewModel(s *Server, pipeW io.Writer, registry *Registry, ring *termlog.LogRingBuffer, endpoint, version, changelog, sessionName string, connectFn func(endpoint, session string)) Model {
 	hostname, _ := os.Hostname()
 	req := &requestState{pending: make(map[uint64]ReplyFunc)}
 	// currentServer is a mutable pointer so requestFn always uses the

@@ -42,11 +42,13 @@ func browseServers(ctx context.Context, p *tea.Program) {
 
 // parseDiscoveredEntry converts a zeroconf entry into a DiscoveredServerMsg.
 // It prefers TCP, then WS, then SSH from TXT records for the endpoint.
+// The s= TXT record (if present) is parsed into the Sessions field.
 func parseDiscoveredEntry(entry *zeroconf.ServiceEntry) ui.DiscoveredServerMsg {
 	name := entry.Instance
 
-	// Parse TXT records for transport-specific ports.
+	// Parse TXT records for transport-specific ports and session list.
 	ports := make(map[string]int)
+	var sessions []string
 	for _, txt := range entry.Text {
 		parts := strings.SplitN(txt, "=", 2)
 		if len(parts) != 2 {
@@ -59,6 +61,12 @@ func parseDiscoveredEntry(entry *zeroconf.ServiceEntry) ui.DiscoveredServerMsg {
 			portStr := strings.SplitN(val, ",", 2)[0]
 			if p, err := strconv.Atoi(portStr); err == nil {
 				ports[key] = p
+			}
+		case "s":
+			for _, name := range strings.Split(val, ",") {
+				if name = strings.TrimSpace(name); name != "" {
+					sessions = append(sessions, name)
+				}
 			}
 		}
 	}
@@ -94,5 +102,5 @@ func parseDiscoveredEntry(entry *zeroconf.ServiceEntry) ui.DiscoveredServerMsg {
 		endpoint = fmt.Sprintf("tcp:%s:%d", host, entry.Port)
 	}
 
-	return ui.DiscoveredServerMsg{Name: name, Endpoint: endpoint}
+	return ui.DiscoveredServerMsg{Name: name, Endpoint: endpoint, Sessions: sessions}
 }

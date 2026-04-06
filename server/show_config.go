@@ -47,7 +47,7 @@ func showServerConfig(cmd *cli.Command) error {
 		{Name: "sessions.default-programs", Value: cfg.Sessions.DefaultPrograms, Source: config.FileOrDefault("sessions.default-programs", keyLocs)},
 		{Name: "discovery.enabled", Value: cfg.Discovery.IsEnabled(), Source: config.FileOrDefault("discovery.enabled", keyLocs)},
 		{Name: "discovery.name", Value: cfg.Discovery.Name, Source: config.FileOrDefault("discovery.name", keyLocs)},
-		{Name: "upgrade.binaries-dir", Value: cfg.Upgrade.BinariesDir, Source: config.FileOrDefault("upgrade.binaries-dir", keyLocs)},
+		{Name: "upgrade.binaries-dir", Value: resolveBinariesDir(cfg.Upgrade.BinariesDir), Source: config.FileOrDefault("upgrade.binaries-dir", keyLocs)},
 		{Name: "termctl.connect", Value: cfg.Termctl.Connect, Source: config.FileOrDefault("termctl.connect", keyLocs)},
 		{Name: "termctl.debug", Value: cfg.Termctl.Debug, Source: config.FileOrDefault("termctl.debug", keyLocs)},
 	}

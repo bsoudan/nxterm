@@ -28,6 +28,11 @@ type Server struct {
 	shutdownResp chan shutdownResult
 	shutdown     atomic.Bool
 
+	// sessionsChanged is invoked from the event loop (in a goroutine)
+	// whenever the set of sessions changes. The argument is the sorted
+	// list of session names. Set via SetSessionsChanged before Run.
+	sessionsChanged atomic.Value // func([]string)
+
 	// init* fields transfer ownership of maps to the event loop goroutine.
 	// They are set in NewServer and consumed (nilled) by eventLoop on startup.
 	initRegions  map[string]Region
@@ -59,7 +64,7 @@ func NewServer(listeners []net.Listener, version string, cfg config.ServerConfig
 
 	s := &Server{
 		version:      version,
-		binariesDir:  cfg.Upgrade.BinariesDir,
+		binariesDir:  resolveBinariesDir(cfg.Upgrade.BinariesDir),
 		listeners:    listeners,
 		startTime:    time.Now(),
 		sessionsCfg:  sessionsCfg,
@@ -528,6 +533,14 @@ func (s *Server) getSessionInfos() []protocol.SessionInfo {
 		return nil
 	}
 	return <-resp
+}
+
+// SetSessionsChanged registers a callback invoked from the server event
+// loop whenever the set of sessions changes. The callback receives a
+// sorted snapshot of session names and is dispatched in its own
+// goroutine, so it may block without stalling the event loop.
+func (s *Server) SetSessionsChanged(fn func([]string)) {
+	s.sessionsChanged.Store(fn)
 }
 
 func (s *Server) Subscribe(clientID uint32, regionID string) (Region, Snapshot) {

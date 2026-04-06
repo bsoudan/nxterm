@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log/slog"
+	"sort"
 
 	"nxtermd/config"
 	"nxtermd/frontend/protocol"
@@ -220,6 +221,23 @@ func (s *Server) eventLoop() {
 	clientSessions := make(map[uint32]string)          // clientID → sessionName
 	overlays := make(map[string]*overlayState)         // regionID → overlay
 
+	// notifySessionsChanged dispatches the SetSessionsChanged callback
+	// (if any) with a sorted snapshot of session names. Called after any
+	// session create or destroy from inside the event loop. The callback
+	// runs in its own goroutine to avoid blocking the loop.
+	notifySessionsChanged := func() {
+		fn, _ := s.sessionsChanged.Load().(func([]string))
+		if fn == nil {
+			return
+		}
+		names := make([]string, 0, len(sessions))
+		for name := range sessions {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		go fn(names)
+	}
+
 	for {
 		select {
 		case req := <-s.requests:
@@ -271,13 +289,18 @@ func (s *Server) eventLoop() {
 			case spawnRegionReq:
 				regions[r.region.ID()] = r.region
 				sess := sessions[r.sessionName]
+				created := false
 				if sess == nil {
 					sess = NewSession(r.sessionName)
 					sessions[r.sessionName] = sess
+					created = true
 				}
 				sess.regions[r.region.ID()] = r.region
 				r.region.SetSession(r.sessionName)
 				r.resp <- struct{}{}
+				if created {
+					notifySessionsChanged()
+				}
 
 			case destroyRegionReq:
 				region, ok := regions[r.regionID]
@@ -287,10 +310,12 @@ func (s *Server) eventLoop() {
 				}
 				delete(regions, r.regionID)
 				delete(overlays, r.regionID)
+				sessionRemoved := false
 				if sess := sessions[region.Session()]; sess != nil {
 					delete(sess.regions, r.regionID)
 					if len(sess.regions) == 0 {
 						delete(sessions, region.Session())
+						sessionRemoved = true
 						slog.Info("removed empty session", "session", region.Session())
 					}
 				}
@@ -305,6 +330,9 @@ func (s *Server) eventLoop() {
 					delete(regionSubs, r.regionID)
 				}
 				r.resp <- destroyResult{region: region, subscribers: subscribers, found: true}
+				if sessionRemoved {
+					notifySessionsChanged()
+				}
 
 			case findRegionReq:
 				r.resp <- regions[r.regionID]
@@ -646,14 +674,19 @@ func (s *Server) eventLoop() {
 			case restoreRegionReq:
 				regions[r.region.ID()] = r.region
 				sess, ok := sessions[r.session]
+				created := false
 				if !ok {
 					sess = &Session{name: r.session, regions: make(map[string]Region)}
 					sessions[r.session] = sess
+					created = true
 				}
 				sess.regions[r.region.ID()] = r.region
 				r.region.SetSession(r.session)
 				go s.watchRegion(r.region)
 				r.resp <- struct{}{}
+				if created {
+					notifySessionsChanged()
+				}
 			}
 
 		case <-s.done:

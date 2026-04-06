@@ -234,6 +234,9 @@ func runServer(_ context.Context, cmd *cli.Command) error {
 		slog.Warn("discovery: mDNS registration failed", "err", err)
 	}
 	defer disc.shutdown()
+	if disc != nil {
+		srv.SetSessionsChanged(disc.updateSessions)
+	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT, syscall.SIGUSR2)

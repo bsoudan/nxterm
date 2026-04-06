@@ -50,9 +50,9 @@ type MainLayer struct {
 	termWidth  int
 	termHeight int
 
-	connectFn    func(string) // dials a server and sends ConnectedMsg
-	sessionName  string       // initial session name, used after deferred connect
-	swapServerFn func(*Server) // updates the requestFn's server reference
+	connectFn    func(endpoint, session string) // dials a server and sends ConnectedMsg
+	sessionName  string                         // initial session name, used after deferred connect
+	swapServerFn func(*Server)                  // updates the requestFn's server reference
 
 	// Command mode: active after the prefix key is pressed, buffering
 	// chord keys until a match or mismatch is found.
@@ -64,7 +64,7 @@ func NewMainLayer(
 	server *Server, pipeW io.Writer, requestFn RequestFunc, registry *Registry,
 	logRing *termlog.LogRingBuffer,
 	endpoint, version, changelog, hostname, sessionName string,
-	connectFn func(string),
+	connectFn func(endpoint, session string),
 ) *MainLayer {
 	m := &MainLayer{
 		server:        server,
@@ -273,7 +273,7 @@ func (m *MainLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 		m.Deactivate()
 		m.sessions = nil
 		m.activeSession = 0
-		m.connectFn(msg.Endpoint)
+		m.connectFn(msg.Endpoint, msg.Session)
 		return nil, nil, true
 
 	case ConnectedMsg:
@@ -281,13 +281,18 @@ func (m *MainLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 		m.swapServerFn(msg.Server)
 		m.endpoint = msg.Endpoint
 		m.connStatus = "connected"
+		// If the connect overlay specified a session, adopt it so
+		// future reconnects target the same session.
+		if msg.Session != "" {
+			m.sessionName = msg.Session
+		}
 		session := NewSessionLayer(m.server, m.requestFn, m.registry, m.logRing, m.endpoint, m.version, m.changelog, m.localHostname, m.sessionName)
 		session.termWidth = m.termWidth
 		session.termHeight = m.termHeight
 		m.sessions = []*SessionLayer{session}
 		m.activeSession = 0
 		session.server.Send(protocol.SessionConnectRequest{Session: session.sessionName})
-		SaveRecent(msg.Endpoint, msg.Endpoint)
+		SaveRecent(recentAddress(msg.Endpoint, msg.Session), msg.Endpoint)
 		m.checkForUpgrades()
 		return nil, tea.Tick(3*time.Second, func(time.Time) tea.Msg { return showHintMsg{} }), true
 

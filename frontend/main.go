@@ -171,7 +171,9 @@ func runFrontend(_ context.Context, cmd *cli.Command) error {
 	// connectFn dials a server and starts a Server.Run goroutine.
 	// It creates a fresh Server each time so it works for both the
 	// initial connect and subsequent reconnects from the connect overlay.
-	connectFn := func(ep string) {
+	// session, if non-empty, is propagated through ConnectedMsg so the
+	// new SessionLayer requests that session instead of the default.
+	connectFn := func(ep, session string) {
 		go func() {
 			c, err := transport.Dial(ep)
 			if err != nil {
@@ -180,7 +182,7 @@ func runFrontend(_ context.Context, cmd *cli.Command) error {
 			}
 			df := func() (net.Conn, error) { return transport.Dial(ep) }
 			newSrv := ui.NewServer(64, "nxterm")
-			p.Send(ui.ConnectedMsg{Endpoint: ep, Server: newSrv})
+			p.Send(ui.ConnectedMsg{Endpoint: ep, Session: session, Server: newSrv})
 			newSrv.Run(c, df, p)
 		}()
 	}

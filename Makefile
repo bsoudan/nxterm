@@ -1,9 +1,12 @@
-.PHONY: all build-server changelog build-tui build-tui-windows build-termctl build-mousehelper build-nativeapp build-upgrade-binaries build-upgrade-test-binaries check-windows test test-e2e test-upgrade test-stress test-stress-long rpm version clean
+.PHONY: all build-server changelog build-tui build-tui-windows build-termctl build-mousehelper build-nativeapp build-upgrade-test-binaries check-windows test test-e2e test-upgrade test-stress test-stress-long rpm version clean
 
 # Binary names
 SERVER_BIN   := nxtermd
 TUI_BIN      := nxterm
 CTL_BIN      := nxtermctl
+
+# Host platform for full-name binaries (e.g. nxtermd-linux-amd64).
+HOST_OS_ARCH := $(shell go env GOOS)-$(shell go env GOARCH)
 
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/-g[0-9a-f]*//;s/-dirty/*/' || echo "dev")
 LDFLAGS := -X main.version=$(VERSION)
@@ -11,10 +14,15 @@ ifndef RELEASE
   GCFLAGS := -gcflags "all=-N -l"
 endif
 
-all: build-server build-tui build-tui-windows build-termctl build-mousehelper build-nativeapp build-upgrade-binaries
+all: build-server build-tui build-tui-windows build-termctl build-mousehelper build-nativeapp
 
+# Host binaries are built with their full <name>-<os>-<arch> filename so
+# the same artifact serves as both the locally-runnable binary and the
+# upgrade binary the server hands out to clients. Short names are
+# symlinked to the full name for convenience.
 build-server:
-	go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o .local/bin/$(SERVER_BIN) ./server
+	go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o .local/bin/$(SERVER_BIN)-$(HOST_OS_ARCH) ./server
+	ln -sf $(SERVER_BIN)-$(HOST_OS_ARCH) .local/bin/$(SERVER_BIN)
 
 changelog:
 	@tmp=$$(mktemp); \
@@ -28,10 +36,12 @@ changelog:
 	mv "$$tmp" frontend/changelog.txt
 
 build-tui: changelog
-	go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o .local/bin/$(TUI_BIN) ./frontend
+	go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o .local/bin/$(TUI_BIN)-$(HOST_OS_ARCH) ./frontend
+	ln -sf $(TUI_BIN)-$(HOST_OS_ARCH) .local/bin/$(TUI_BIN)
 
 build-tui-windows: changelog
-	GOOS=windows GOARCH=amd64 go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o .local/bin/$(TUI_BIN).exe ./frontend
+	GOOS=windows GOARCH=amd64 go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o .local/bin/$(TUI_BIN)-windows-amd64.exe ./frontend
+	ln -sf $(TUI_BIN)-windows-amd64.exe .local/bin/$(TUI_BIN).exe
 
 build-mousehelper:
 	cd e2e/testdata/mousehelper && go build -o ../../../.local/bin/mousehelper .
@@ -41,14 +51,6 @@ build-nativeapp:
 
 build-termctl:
 	go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o .local/bin/$(CTL_BIN) ./termctl
-
-UPGRADE_DIR := .local/share/nxtermd
-
-build-upgrade-binaries: changelog
-	@mkdir -p $(UPGRADE_DIR)
-	RELEASE=1 go build -ldflags "$(LDFLAGS)" -o $(UPGRADE_DIR)/$(SERVER_BIN)-$$(go env GOOS)-$$(go env GOARCH) ./server
-	RELEASE=1 go build -ldflags "$(LDFLAGS)" -o $(UPGRADE_DIR)/$(TUI_BIN)-$$(go env GOOS)-$$(go env GOARCH) ./frontend
-	GOOS=windows GOARCH=amd64 RELEASE=1 go build -ldflags "$(LDFLAGS)" -o $(UPGRADE_DIR)/$(TUI_BIN)-windows-amd64.exe ./frontend
 
 UPGRADE_TEST_DIR := .local/upgrade-binaries
 UPGRADE_TEST_VERSION := upgrade-test-v2
@@ -90,5 +92,5 @@ version:
 	@echo "$(VERSION)" | tr -d '*' > dist/.version
 
 clean:
-	rm -rf .local/bin dist/.version
+	rm -rf .local/bin .local/share/nxtermd dist/.version
 	go clean ./...

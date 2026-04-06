@@ -44,8 +44,12 @@ func (c *ConnectLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 	case tea.KeyPressMsg:
 		return c.handleKey(msg)
 	case DiscoveredServerMsg:
-		for _, d := range c.discovered {
+		// Replace in place if we already have this endpoint, so a
+		// refreshed announcement with an updated session list takes
+		// effect immediately.
+		for i, d := range c.discovered {
 			if d.Endpoint == msg.Endpoint {
+				c.discovered[i] = msg
 				return nil, nil, true
 			}
 		}
@@ -78,19 +82,17 @@ func (c *ConnectLayer) handleRaw(data []byte) (tea.Msg, tea.Cmd, bool) {
 			case 0x1b: // ESC
 				return QuitLayerMsg{}, nil, true
 			case 0x0d, 0x0a: // Enter
-				addr := strings.TrimSpace(string(c.input))
-				if c.selected >= 0 {
-					items := c.suggestions()
-					if c.selected < len(items) {
-						addr = items[c.selected].endpoint
-					}
-				}
-				if addr == "" {
+				endpoint, session := c.selectedConnect()
+				if endpoint == "" {
 					return nil, nil, true
 				}
 				c.err = ""
-				return QuitLayerMsg{}, cmdMsg(ConnectToServerMsg{Endpoint: addr}), true
+				return QuitLayerMsg{}, cmdMsg(ConnectToServerMsg{Endpoint: endpoint, Session: session}), true
 			case 0x7f, 0x08: // Backspace / DEL
+				if c.removeSelectedRecent() {
+					pos += n
+					continue
+				}
 				if c.cursor > 0 {
 					c.input = append(c.input[:c.cursor-1], c.input[c.cursor:]...)
 					c.cursor--
@@ -155,18 +157,12 @@ func (c *ConnectLayer) handleKey(msg tea.KeyPressMsg) (tea.Msg, tea.Cmd, bool) {
 	case "esc", "ctrl+c":
 		return QuitLayerMsg{}, nil, true
 	case "enter":
-		addr := strings.TrimSpace(string(c.input))
-		if c.selected >= 0 {
-			items := c.suggestions()
-			if c.selected < len(items) {
-				addr = items[c.selected].endpoint
-			}
-		}
-		if addr == "" {
+		endpoint, session := c.selectedConnect()
+		if endpoint == "" {
 			return nil, nil, true
 		}
 		c.err = ""
-		return QuitLayerMsg{}, cmdMsg(ConnectToServerMsg{Endpoint: addr}), true
+		return QuitLayerMsg{}, cmdMsg(ConnectToServerMsg{Endpoint: endpoint, Session: session}), true
 	case "up":
 		c.selected--
 		if c.selected < -1 {
@@ -180,6 +176,9 @@ func (c *ConnectLayer) handleKey(msg tea.KeyPressMsg) (tea.Msg, tea.Cmd, bool) {
 		}
 		return nil, nil, true
 	case "backspace":
+		if c.removeSelectedRecent() {
+			return nil, nil, true
+		}
 		if c.cursor > 0 {
 			c.input = append(c.input[:c.cursor-1], c.input[c.cursor:]...)
 			c.cursor--
@@ -211,19 +210,109 @@ func (c *ConnectLayer) handleKey(msg tea.KeyPressMsg) (tea.Msg, tea.Cmd, bool) {
 }
 
 type suggestion struct {
-	label    string
-	endpoint string
+	label    string // friendly name shown in the picker
+	display  string // address column shown next to the label (may be "session@endpoint")
+	endpoint string // server endpoint to dial (no session prefix)
+	session  string // session name to request, or "" for the server default
 }
 
 func (c *ConnectLayer) suggestions() []suggestion {
 	var items []suggestion
 	for _, r := range c.recents {
-		items = append(items, suggestion{label: r.Label, endpoint: r.Address})
+		// Recents are stored as the literal address the user picked,
+		// which may already be in "session@endpoint" form. Split it
+		// here so the dial path always sees a bare endpoint, while the
+		// display column reproduces the original combined form.
+		session, endpoint := splitSessionEndpoint(r.Address)
+		items = append(items, suggestion{
+			label:    r.Label,
+			display:  r.Address,
+			endpoint: endpoint,
+			session:  session,
+		})
 	}
 	for _, d := range c.discovered {
-		items = append(items, suggestion{label: d.Name, endpoint: d.Endpoint})
+		if len(d.Sessions) == 0 {
+			items = append(items, suggestion{
+				label:    d.Name,
+				display:  d.Endpoint,
+				endpoint: d.Endpoint,
+			})
+			continue
+		}
+		for _, sess := range d.Sessions {
+			items = append(items, suggestion{
+				label:    d.Name,
+				display:  sess + "@" + d.Endpoint,
+				endpoint: d.Endpoint,
+				session:  sess,
+			})
+		}
 	}
 	return items
+}
+
+// removeSelectedRecent removes the currently-highlighted recent entry
+// from both the in-memory list and the on-disk recents file. Returns
+// true when the current selection points at a recent (and the action
+// applied), false otherwise — which lets the caller fall through to
+// the default backspace behaviour of editing the input field.
+func (c *ConnectLayer) removeSelectedRecent() bool {
+	if c.selected < 0 || c.selected >= len(c.recents) {
+		return false
+	}
+	addr := c.recents[c.selected].Address
+	if err := RemoveRecent(addr); err != nil {
+		c.err = "remove recent: " + err.Error()
+		return true
+	}
+	c.recents = append(c.recents[:c.selected], c.recents[c.selected+1:]...)
+	total := len(c.recents) + len(c.discovered)
+	if c.selected >= total {
+		if total == 0 {
+			c.selected = -1
+		} else {
+			c.selected = total - 1
+		}
+	}
+	return true
+}
+
+// selectedConnect returns the (endpoint, session) pair the user is
+// about to connect to: either the highlighted suggestion or, if none
+// is selected, the typed input parsed for a "session@" prefix. Returns
+// ("", "") when there is nothing to connect to.
+func (c *ConnectLayer) selectedConnect() (endpoint, session string) {
+	if c.selected >= 0 {
+		items := c.suggestions()
+		if c.selected < len(items) {
+			s := items[c.selected]
+			return s.endpoint, s.session
+		}
+	}
+	addr := strings.TrimSpace(string(c.input))
+	if addr == "" {
+		return "", ""
+	}
+	session, endpoint = splitSessionEndpoint(addr)
+	return endpoint, session
+}
+
+// splitSessionEndpoint parses an address that may begin with a
+// "session@" prefix. A leading token followed by "@" is treated as a
+// session name only when it contains no ":" or "/" (which would make
+// it part of a URL or filesystem path). This lets ssh:user@host and
+// unix paths flow through unchanged.
+func splitSessionEndpoint(s string) (session, endpoint string) {
+	at := strings.Index(s, "@")
+	if at <= 0 {
+		return "", s
+	}
+	prefix := s[:at]
+	if strings.ContainsAny(prefix, ":/") {
+		return "", s
+	}
+	return prefix, s[at+1:]
 }
 
 func (c *ConnectLayer) View(width, height int, rs *RenderState) []*lipgloss.Layer {
@@ -236,9 +325,23 @@ func (c *ConnectLayer) View(width, height int, rs *RenderState) []*lipgloss.Laye
 	content := c.buildContent(contentW, height)
 	dialog := paletteStyle.Width(overlayW).Render(content)
 
+	hint := overlayHint.Render("• " + c.hintText() + " •")
+	helpPad := max((lipgloss.Width(dialog)-lipgloss.Width(hint))/2, 0)
+	dialog = dialog + "\n" + strings.Repeat(" ", helpPad) + hint
+
 	x := max((width-overlayW)/2, 0)
 
 	return overlayLayers(dialog, x, 0, 2)
+}
+
+// hintText returns the keybinding hint shown beneath the dialog.
+// When a recent entry is highlighted the hint advertises that bksp
+// removes it; otherwise bksp simply edits the input field.
+func (c *ConnectLayer) hintText() string {
+	if c.selected >= 0 && c.selected < len(c.recents) {
+		return "↑↓ select · enter connect · bksp remove recent · esc cancel"
+	}
+	return "↑↓ select · enter connect · esc cancel"
 }
 
 func (c *ConnectLayer) buildContent(w, height int) string {
@@ -261,8 +364,9 @@ func (c *ConnectLayer) buildContent(w, height int) string {
 
 	if len(c.recents) > 0 {
 		lines = append(lines, paletteFaint.Render(" recent"))
-		for _, r := range c.recents {
-			line := c.renderSuggestion(r.Label, r.Address, relativeTime(r.Timestamp), w, suggIdx)
+		for i := range c.recents {
+			s := items[suggIdx]
+			line := c.renderSuggestion(s.label, s.display, relativeTime(c.recents[i].Timestamp), w, suggIdx)
 			lines = append(lines, line)
 			suggIdx++
 		}
@@ -273,8 +377,9 @@ func (c *ConnectLayer) buildContent(w, height int) string {
 			lines = append(lines, separator)
 		}
 		lines = append(lines, paletteFaint.Render(" discovered"))
-		for _, d := range c.discovered {
-			line := c.renderSuggestion(d.Name, d.Endpoint, "", w, suggIdx)
+		for suggIdx < len(items) {
+			s := items[suggIdx]
+			line := c.renderSuggestion(s.label, s.display, "", w, suggIdx)
 			lines = append(lines, line)
 			suggIdx++
 		}

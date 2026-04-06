@@ -208,6 +208,21 @@ func (c *Client) streamBinary(f *os.File, fileSize, startOffset int64, path stri
 		"path", path, "size", fileSize)
 }
 
+// resolveBinariesDir returns the directory where upgrade binaries are
+// looked up. If configured is non-empty it is used as-is; otherwise
+// the directory of the running nxtermd executable is used so that
+// upgrades work out-of-the-box when binaries are placed alongside it.
+func resolveBinariesDir(configured string) string {
+	if configured != "" {
+		return configured
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	return filepath.Dir(exe)
+}
+
 // upgradeBinPath returns the full path for an upgrade binary, adding
 // .exe for Windows targets.
 func upgradeBinPath(dir, base, goos, goarch string) string {

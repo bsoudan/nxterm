@@ -78,7 +78,7 @@
         };
 
         devShells.default = pkgs.mkShell {
-          name = "nxtermd-dev";
+          name = "nxterm-dev";
 
           packages = with pkgs; [
             bash
@@ -111,7 +111,7 @@
             export NIX_SHELL=nxtermd
 
             echo
-            echo "entering nxtermd dev environment"
+            echo "entering nxterm dev environment"
             echo "  * go  $(go version)"
             echo "  * gcc $(gcc --version | awk 'NR==1{print $NF}')"
             if [ -z "$IN_SANDBOXED_SHELL" ]; then

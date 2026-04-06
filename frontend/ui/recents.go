@@ -16,6 +16,16 @@ type RecentServer struct {
 	Timestamp time.Time `json:"timestamp"`
 }
 
+// recentAddress combines a dial endpoint with an optional session name
+// into the canonical "session@endpoint" form used by the recents list,
+// or returns the endpoint unchanged when no session was specified.
+func recentAddress(endpoint, session string) string {
+	if session == "" {
+		return endpoint
+	}
+	return session + "@" + endpoint
+}
+
 // LoadRecents reads the recents file. Returns empty slice on any error.
 func LoadRecents() []RecentServer {
 	data, err := os.ReadFile(recentsPath())
@@ -50,6 +60,34 @@ func SaveRecent(address, label string) error {
 	if len(recents) > maxRecents {
 		recents = recents[:maxRecents]
 	}
+
+	p := recentsPath()
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(recents, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(p, data, 0o600)
+}
+
+// RemoveRecent removes the entry with the given address from the
+// recents file. It is a no-op if no matching entry exists.
+func RemoveRecent(address string) error {
+	recents := LoadRecents()
+
+	n := 0
+	for _, r := range recents {
+		if r.Address != address {
+			recents[n] = r
+			n++
+		}
+	}
+	if n == len(recents) {
+		return nil
+	}
+	recents = recents[:n]
 
 	p := recentsPath()
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
