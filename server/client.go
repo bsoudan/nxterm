@@ -590,6 +590,8 @@ func (c *Client) handleGetScreen(msg protocol.GetScreenRequest, reply func(any))
 		Lines:     snap.Lines,
 		Cells:     snap.Cells,
 		Modes:     snap.Modes,
+		Title:     snap.Title,
+		IconName:  snap.IconName,
 		Error:     false,
 		Message:   "",
 	})

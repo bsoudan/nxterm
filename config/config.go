@@ -73,8 +73,22 @@ type TermctlConfig struct {
 
 // FrontendConfig represents nxterm/config.toml.
 type FrontendConfig struct {
-	Connect string `toml:"connect"`
-	Debug   bool   `toml:"debug"`
+	Connect         string `toml:"connect"`
+	Debug           bool   `toml:"debug"`
+	StatusBarMargin *int   `toml:"status-bar-margin"` // nil = default (1)
+}
+
+// GetStatusBarMargin returns the configured number of blank rows
+// between the status bar and terminal content. Defaults to 1 when
+// unset; explicit 0 disables the margin.
+func (c FrontendConfig) GetStatusBarMargin() int {
+	if c.StatusBarMargin == nil {
+		return 1
+	}
+	if *c.StatusBarMargin < 0 {
+		return 0
+	}
+	return *c.StatusBarMargin
 }
 
 // LoadServerConfig reads the server configuration file.

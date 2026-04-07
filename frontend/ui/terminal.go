@@ -36,11 +36,12 @@ type TerminalLayer struct {
 
 	scrollbackLayer *ScrollbackLayer // non-nil when scrollback is active
 
-	server     *Server
-	regionID   string
-	regionName string
-	termWidth  int
-	termHeight int
+	server          *Server
+	regionID        string
+	regionName      string
+	termWidth       int
+	termHeight      int
+	statusBarMargin int
 
 	termEnv       map[string]string
 	keyboardFlags int
@@ -48,13 +49,14 @@ type TerminalLayer struct {
 }
 
 // NewTerminalLayer creates a terminal layer for a region.
-func NewTerminalLayer(server *Server, regionID, regionName string, width, height int) *TerminalLayer {
+func NewTerminalLayer(server *Server, regionID, regionName string, width, height, statusBarMargin int) *TerminalLayer {
 	return &TerminalLayer{
-		server:     server,
-		regionID:   regionID,
-		regionName: regionName,
-		termWidth:  width,
-		termHeight: height,
+		server:          server,
+		regionID:        regionID,
+		regionName:      regionName,
+		termWidth:       width,
+		termHeight:      height,
+		statusBarMargin: statusBarMargin,
 	}
 }
 
@@ -77,7 +79,7 @@ func (t *TerminalLayer) Deactivate() {
 }
 
 func (t *TerminalLayer) contentHeight() int {
-	h := t.termHeight - 1 // tab bar
+	h := t.termHeight - 1 - t.statusBarMargin // tab bar + status-bar margin
 	if h < 1 {
 		h = 1
 	}
@@ -101,9 +103,9 @@ func (t *TerminalLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 
 	switch msg := msg.(type) {
 	case protocol.ScreenUpdate:
-		return nil, t.handleScreenUpdate(msg.Lines, msg.Cells, msg.CursorRow, msg.CursorCol, msg.Modes), true
+		return nil, t.handleScreenUpdate(msg.Lines, msg.Cells, msg.CursorRow, msg.CursorCol, msg.Modes, msg.Title, msg.IconName), true
 	case protocol.GetScreenResponse:
-		return nil, t.handleScreenUpdate(msg.Lines, msg.Cells, msg.CursorRow, msg.CursorCol, msg.Modes), true
+		return nil, t.handleScreenUpdate(msg.Lines, msg.Cells, msg.CursorRow, msg.CursorCol, msg.Modes, msg.Title, msg.IconName), true
 	case protocol.TerminalEvents:
 		return nil, t.handleTerminalEvents(msg.Events), true
 	case protocol.ResizeResponse:
@@ -137,7 +139,7 @@ func (t *TerminalLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 	}
 }
 
-func (t *TerminalLayer) handleScreenUpdate(lines []string, cells [][]protocol.ScreenCell, cursorRow, cursorCol uint16, modes map[int]bool) tea.Cmd {
+func (t *TerminalLayer) handleScreenUpdate(lines []string, cells [][]protocol.ScreenCell, cursorRow, cursorCol uint16, modes map[int]bool, title, iconName string) tea.Cmd {
 	height := t.contentHeight()
 	if t.termHeight <= 0 {
 		height = 23
@@ -162,6 +164,8 @@ func (t *TerminalLayer) handleScreenUpdate(lines []string, cells [][]protocol.Sc
 		}
 	}
 	t.screen.CursorPosition(int(cursorRow)+1, int(cursorCol)+1)
+	t.screen.Title = title
+	t.screen.IconName = iconName
 	// Replace the mode set entirely rather than merging — a missing
 	// key in the snapshot means "unset" on the server, and merging
 	// would silently keep stale modes alive (most importantly DECTCEM,
@@ -277,8 +281,15 @@ func (t *TerminalLayer) View(width, height int, rs *RenderState) []*lipgloss.Lay
 	return []*lipgloss.Layer{lipgloss.NewLayer(sb.String())}
 }
 
-// Title returns the region name for the tab bar.
-func (t *TerminalLayer) Title() string { return t.regionName }
+// Title returns the display name for the tab bar and outer window
+// title. The PTY-set title (OSC 0/2) takes precedence; if none has been
+// set, the server-assigned region name is used as a fallback.
+func (t *TerminalLayer) Title() string {
+	if t.screen != nil && t.screen.Title != "" {
+		return t.screen.Title
+	}
+	return t.regionName
+}
 
 // Status implements the TermdLayer interface.
 func (t *TerminalLayer) Status(rs *RenderState) (string, lipgloss.Style) {

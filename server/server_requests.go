@@ -266,16 +266,7 @@ func (s *Server) eventLoop() {
 						// Restore PTY terminal attributes and re-send plain snapshot.
 						if region, ok := regions[rid]; ok {
 							region.RestoreTermios()
-							snap := region.Snapshot()
-							snapMsg := protocol.ScreenUpdate{
-								Type:      "screen_update",
-								RegionID:  rid,
-								CursorRow: snap.CursorRow,
-								CursorCol: snap.CursorCol,
-								Lines:     snap.Lines,
-								Cells:     snap.Cells,
-								Modes:     snap.Modes,
-							}
+							snapMsg := newScreenUpdate(rid, region.Snapshot())
 							for cid := range regionSubs[rid] {
 								if c, ok := clients[cid]; ok {
 									c.SendMessage(snapMsg)
@@ -521,15 +512,7 @@ func (s *Server) eventLoop() {
 				// drop them (no local screen yet), and be left with a
 				// stale snapshot.
 				if client, ok := clients[r.clientID]; ok {
-					client.SendMessage(protocol.ScreenUpdate{
-						Type:      "screen_update",
-						RegionID:  region.ID(),
-						CursorRow: snap.CursorRow,
-						CursorCol: snap.CursorCol,
-						Lines:     snap.Lines,
-						Cells:     snap.Cells,
-						Modes:     snap.Modes,
-					})
+					client.SendMessage(newScreenUpdate(region.ID(), snap))
 				}
 				subscriptions[r.clientID] = r.regionID
 				if regionSubs[r.regionID] == nil {
@@ -598,15 +581,7 @@ func (s *Server) eventLoop() {
 				}
 				snap := region.Snapshot()
 				composited := compositeSnapshot(snap, ov)
-				snapMsg := protocol.ScreenUpdate{
-					Type:      "screen_update",
-					RegionID:  r.regionID,
-					CursorRow: composited.CursorRow,
-					CursorCol: composited.CursorCol,
-					Lines:     composited.Lines,
-					Cells:     composited.Cells,
-					Modes:     composited.Modes,
-				}
+				snapMsg := newScreenUpdate(r.regionID, composited)
 				for cid := range regionSubs[r.regionID] {
 					if c, ok := clients[cid]; ok {
 						c.SendMessage(snapMsg)
@@ -626,16 +601,7 @@ func (s *Server) eventLoop() {
 				slog.Info("overlay cleared", "region_id", r.regionID, "client_id", r.clientID)
 				// Re-send plain PTY snapshot.
 				if region, ok := regions[r.regionID]; ok {
-					snap := region.Snapshot()
-					snapMsg := protocol.ScreenUpdate{
-						Type:      "screen_update",
-						RegionID:  r.regionID,
-						CursorRow: snap.CursorRow,
-						CursorCol: snap.CursorCol,
-						Lines:     snap.Lines,
-						Cells:     snap.Cells,
-						Modes:     snap.Modes,
-					}
+					snapMsg := newScreenUpdate(r.regionID, region.Snapshot())
 					for cid := range regionSubs[r.regionID] {
 						if c, ok := clients[cid]; ok {
 							c.SendMessage(snapMsg)

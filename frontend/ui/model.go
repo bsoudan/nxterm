@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -11,6 +12,7 @@ import (
 	termlog "nxtermd/frontend/log"
 	"nxtermd/frontend/protocol"
 	"nxtermd/pkg/tui"
+	"nxtermd/transport"
 )
 
 // Model is the top-level bubbletea model. It owns the layer stack and
@@ -24,7 +26,7 @@ type Model struct {
 	Detached bool
 }
 
-func NewModel(s *Server, pipeW io.Writer, registry *Registry, ring *termlog.LogRingBuffer, endpoint, version, changelog, sessionName string, connectFn func(endpoint, session string)) Model {
+func NewModel(s *Server, pipeW io.Writer, registry *Registry, ring *termlog.LogRingBuffer, endpoint, version, changelog, sessionName string, statusBarMargin int, connectFn func(endpoint, session string)) Model {
 	hostname, _ := os.Hostname()
 	req := &requestState{pending: make(map[uint64]ReplyFunc)}
 	// currentServer is a mutable pointer so requestFn always uses the
@@ -36,7 +38,7 @@ func NewModel(s *Server, pipeW io.Writer, registry *Registry, ring *termlog.LogR
 		currentServer.Send(protocol.TaggedWithReqID(msg, req.nextReqID))
 	}
 	req.requestFn = requestFn
-	main := NewMainLayer(s, pipeW, requestFn, registry, ring, endpoint, version, changelog, hostname, sessionName, connectFn)
+	main := NewMainLayer(s, pipeW, requestFn, registry, ring, endpoint, version, changelog, hostname, sessionName, statusBarMargin, connectFn)
 	main.swapServerFn = func(newSrv *Server) { currentServer = newSrv }
 	tasks := tui.NewTaskRunner[RenderState]()
 	main.tasks = tasks
@@ -257,6 +259,7 @@ func (m Model) View() tea.View {
 
 	v := tea.NewView(content)
 	v.AltScreen = true
+	v.WindowTitle = windowTitle(main)
 
 	if activeTerm := main.ActiveTerm(); activeTerm != nil {
 		switch activeTerm.MouseMode() {
@@ -268,6 +271,53 @@ func (m Model) View() tea.View {
 	}
 
 	return v
+}
+
+// serverFromEndpoint returns the host:port (or path) portion of a dial
+// spec, used for the window title prefix. For ssh specs with a user@
+// prefix, the user is stripped. Unknown / empty specs are returned
+// unchanged.
+func serverFromEndpoint(endpoint string) string {
+	if endpoint == "" {
+		return ""
+	}
+	_, addr := transport.ParseSpec(endpoint)
+	if at := strings.Index(addr, "@"); at >= 0 {
+		return addr[at+1:]
+	}
+	return addr
+}
+
+// windowTitle composes the outer-terminal window title for the active
+// session+region. Format:
+//
+//	"<title> | nx <server>"             when sessionName == "main"
+//	"<title> | nx <session>@<server>"   otherwise
+//
+// The title falls back to the region name when the PTY has not set one;
+// if there is no active region, the "<title> | " prefix is omitted.
+// When there is no active session/endpoint, returns "nxterm".
+func windowTitle(main *MainLayer) string {
+	session := main.activeSessionLayer()
+	if session == nil {
+		return "nxterm"
+	}
+	server := serverFromEndpoint(session.endpoint)
+	if server == "" {
+		return "nxterm"
+	}
+	suffix := "nx "
+	if session.sessionName != "" && session.sessionName != "main" {
+		suffix += session.sessionName + "@"
+	}
+	suffix += server
+
+	if t := main.ActiveTerm(); t != nil {
+		if title := t.Title(); title != "" {
+			return title + " | " + suffix
+		}
+	}
+	return suffix
 }
 
 // renderStatusBar renders the right side of the tab bar for compositing

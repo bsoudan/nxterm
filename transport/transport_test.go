@@ -30,9 +30,9 @@ func TestParseSpec(t *testing.T) {
 		{"wss://host:443/ws", "wss", "host:443/ws"},
 	}
 	for _, tt := range tests {
-		scheme, addr := parseSpec(tt.spec)
+		scheme, addr := ParseSpec(tt.spec)
 		if scheme != tt.wantScheme || addr != tt.wantAddr {
-			t.Errorf("parseSpec(%q) = (%q, %q), want (%q, %q)",
+			t.Errorf("ParseSpec(%q) = (%q, %q), want (%q, %q)",
 				tt.spec, scheme, addr, tt.wantScheme, tt.wantAddr)
 		}
 	}

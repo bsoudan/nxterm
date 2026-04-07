@@ -174,6 +174,8 @@ type ScreenUpdate struct {
 	Lines     []string       `json:"lines"`
 	Cells     [][]ScreenCell `json:"cells,omitempty"`
 	Modes     map[int]bool   `json:"modes,omitempty"`
+	Title     string         `json:"title,omitempty"`
+	IconName  string         `json:"icon_name,omitempty"`
 }
 
 type RegionDestroyed struct {
@@ -223,6 +225,8 @@ type GetScreenResponse struct {
 	Lines     []string       `json:"lines"`
 	Cells     [][]ScreenCell `json:"cells,omitempty"`
 	Modes     map[int]bool   `json:"modes,omitempty"`
+	Title     string         `json:"title,omitempty"`
+	IconName  string         `json:"icon_name,omitempty"`
 	Error     bool           `json:"error"`
 	Message   string         `json:"message"`
 }

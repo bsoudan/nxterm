@@ -16,7 +16,7 @@ import (
 
 // Listen creates a net.Listener for the given address spec.
 func Listen(spec string) (net.Listener, error) {
-	scheme, addr := parseSpec(spec)
+	scheme, addr := ParseSpec(spec)
 	switch scheme {
 	case "unix":
 		return listenUnix(addr)
@@ -31,7 +31,7 @@ func Listen(spec string) (net.Listener, error) {
 
 // Dial connects to the given address spec and returns a net.Conn.
 func Dial(spec string) (net.Conn, error) {
-	scheme, addr := parseSpec(spec)
+	scheme, addr := ParseSpec(spec)
 	switch scheme {
 	case "unix":
 		return dialUnix(addr)
@@ -53,7 +53,7 @@ func Dial(spec string) (net.Conn, error) {
 // Cleanup performs any necessary cleanup for a listener address (e.g.,
 // removing the Unix socket file).
 func Cleanup(spec string) {
-	scheme, addr := parseSpec(spec)
+	scheme, addr := ParseSpec(spec)
 	if scheme == "unix" {
 		cleanupUnix(addr)
 	}
@@ -86,7 +86,7 @@ func ListenerFile(ln net.Listener) (*os.File, error) {
 // ListenFromFile reconstructs a net.Listener from an OS file and spec.
 // The spec determines the listener type (unix, tcp, ssh, ws).
 func ListenFromFile(f *os.File, spec string, sshCfg SSHListenerConfig) (net.Listener, error) {
-	scheme, _ := parseSpec(spec)
+	scheme, _ := ParseSpec(spec)
 	ln, err := net.FileListener(f)
 	if err != nil {
 		return nil, fmt.Errorf("file listener for %s: %w", spec, err)
@@ -111,7 +111,11 @@ func parseSSHAddr(addr string) (user, host string) {
 	return "", addr
 }
 
-func parseSpec(spec string) (scheme, addr string) {
+// ParseSpec splits an address spec into its scheme and address. Bare paths
+// (starting with / or .) and spec with no scheme default to unix. The
+// optional "//" separator after the scheme is stripped, so
+// "tcp://host:port" and "tcp:host:port" both return ("tcp", "host:port").
+func ParseSpec(spec string) (scheme, addr string) {
 	// Bare paths default to unix
 	if strings.HasPrefix(spec, "/") || strings.HasPrefix(spec, ".") {
 		return "unix", spec

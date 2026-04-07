@@ -59,6 +59,8 @@ type Snapshot struct {
 	CursorCol uint16
 	Cells     [][]protocol.ScreenCell
 	Modes     map[int]bool
+	Title     string
+	IconName  string
 }
 
 // scrollbackSize is the maximum number of lines kept in the scrollback buffer.
@@ -460,6 +462,8 @@ func (r *PTYRegion) Snapshot() Snapshot {
 		CursorCol: uint16(r.screen.Cursor.Col),
 		Cells:     cells,
 		Modes:     modes,
+		Title:     r.screen.Title,
+		IconName:  r.screen.IconName,
 	}
 }
 

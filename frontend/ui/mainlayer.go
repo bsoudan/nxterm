@@ -59,6 +59,10 @@ type MainLayer struct {
 	sessionName  string                         // initial session name, used after deferred connect
 	swapServerFn func(*Server)                  // updates the requestFn's server reference
 
+	// Number of blank rows between the tab/status bar at row 0 and the
+	// terminal content. Configured via FrontendConfig.StatusBarMargin.
+	statusBarMargin int
+
 	// Command mode: active after the prefix key is pressed, buffering
 	// chord keys until a match or mismatch is found.
 	commandMode   bool
@@ -69,25 +73,27 @@ func NewMainLayer(
 	server *Server, pipeW io.Writer, requestFn RequestFunc, registry *Registry,
 	logRing *termlog.LogRingBuffer,
 	endpoint, version, changelog, hostname, sessionName string,
+	statusBarMargin int,
 	connectFn func(endpoint, session string),
 ) *MainLayer {
 	m := &MainLayer{
-		server:        server,
-		pipeW:         pipeW,
-		requestFn:     requestFn,
-		registry:      registry,
-		logRing:       logRing,
-		localHostname: hostname,
-		endpoint:      endpoint,
-		version:       version,
-		changelog:     changelog,
-		connStatus:    "connected",
-		connectFn:     connectFn,
-		sessionName:   sessionName,
+		server:          server,
+		pipeW:           pipeW,
+		requestFn:       requestFn,
+		registry:        registry,
+		logRing:         logRing,
+		localHostname:   hostname,
+		endpoint:        endpoint,
+		version:         version,
+		changelog:       changelog,
+		connStatus:      "connected",
+		connectFn:       connectFn,
+		sessionName:     sessionName,
+		statusBarMargin: statusBarMargin,
 	}
 	if endpoint != "" {
 		// Connected mode: create initial session immediately.
-		session := NewSessionLayer(server, requestFn, registry, logRing, endpoint, version, changelog, hostname, sessionName)
+		session := NewSessionLayer(server, requestFn, registry, logRing, endpoint, version, changelog, hostname, sessionName, statusBarMargin)
 		m.sessions = []*SessionLayer{session}
 	}
 	return m
@@ -216,9 +222,10 @@ func (m *MainLayer) Init() tea.Cmd {
 }
 
 // viewportHeight returns the number of rows available for terminal content,
-// i.e. the window height minus the tab bar. Mirrors TerminalLayer.contentHeight.
+// i.e. the window height minus the tab bar and status-bar margin.
+// Mirrors TerminalLayer.contentHeight.
 func (m *MainLayer) viewportHeight() int {
-	h := m.termHeight - 1
+	h := m.termHeight - 1 - m.statusBarMargin
 	if h < 1 {
 		h = 1
 	}
@@ -304,7 +311,7 @@ func (m *MainLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 		if msg.Session != "" {
 			m.sessionName = msg.Session
 		}
-		session := NewSessionLayer(m.server, m.requestFn, m.registry, m.logRing, m.endpoint, m.version, m.changelog, m.localHostname, m.sessionName)
+		session := NewSessionLayer(m.server, m.requestFn, m.registry, m.logRing, m.endpoint, m.version, m.changelog, m.localHostname, m.sessionName, m.statusBarMargin)
 		session.termWidth = m.termWidth
 		session.termHeight = m.termHeight
 		m.sessions = []*SessionLayer{session}

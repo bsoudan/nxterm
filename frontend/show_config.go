@@ -99,6 +99,7 @@ func showFrontendConfig(cmd *cli.Command) error {
 		{Name: "browse", Value: cmd.Bool("browse"), Source: flagOrDefault(cmd, "browse", []string{"b"}, "")},
 		{Name: "debug", Value: debugVal, Source: config.ScalarSource(cmd, "debug", []string{"d"}, "NXTERMD_DEBUG", "debug", frontendKeys)},
 		{Name: "log-stderr", Value: cmd.Bool("log-stderr"), Source: flagOrDefault(cmd, "log-stderr", nil, "")},
+		{Name: "status-bar-margin", Value: frontendCfg.GetStatusBarMargin(), Source: config.FileOrDefault("status-bar-margin", frontendKeys)},
 	}
 
 	title := fmt.Sprintf("nxterm %s configuration", version)

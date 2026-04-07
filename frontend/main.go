@@ -192,7 +192,7 @@ func runFrontend(_ context.Context, cmd *cli.Command) error {
 		initEndpoint = ""
 	}
 
-	model := ui.NewModel(server, pipeW, registry, logRing, initEndpoint, version, changelog, sessionName, connectFn)
+	model := ui.NewModel(server, pipeW, registry, logRing, initEndpoint, version, changelog, sessionName, cfg.GetStatusBarMargin(), connectFn)
 	p = tea.NewProgram(model,
 		tea.WithInput(pipeR),
 		tea.WithColorProfile(colorprofile.TrueColor),

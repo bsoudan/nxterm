@@ -42,8 +42,9 @@ type SessionLayer struct {
 	changelog     string
 	sessionName   string
 
-	termWidth  int
-	termHeight int
+	termWidth       int
+	termHeight      int
+	statusBarMargin int
 }
 
 // activeTerm returns the active tab's TerminalLayer, or nil.
@@ -124,26 +125,28 @@ func NewSessionLayer(
 	server *Server, requestFn RequestFunc, registry *Registry,
 	logRing *termlog.LogRingBuffer,
 	endpoint, version, changelog, hostname, sessionName string,
+	statusBarMargin int,
 ) *SessionLayer {
 	return &SessionLayer{
-		server:        server,
-		requestFn:     requestFn,
-		registry:      registry,
-		endpoint:      endpoint,
-		version:       version,
-		changelog:     changelog,
-		localHostname: hostname,
-		logRing:       logRing,
-		sessionName:   sessionName,
-		connStatus:    "connected",
-		status:        "connecting...",
+		server:          server,
+		requestFn:       requestFn,
+		registry:        registry,
+		endpoint:        endpoint,
+		version:         version,
+		changelog:       changelog,
+		localHostname:   hostname,
+		logRing:         logRing,
+		sessionName:     sessionName,
+		statusBarMargin: statusBarMargin,
+		connStatus:      "connected",
+		status:          "connecting...",
 	}
 }
 
 // Reconnect re-sends the SessionConnectRequest to refresh the region list.
 // Called by MainLayer after a connection is restored.
 func (s *SessionLayer) Reconnect() {
-	height := s.termHeight - 1
+	height := s.termHeight - 1 - s.statusBarMargin
 	if height < 1 {
 		height = 1
 	}
@@ -187,7 +190,7 @@ func (s *SessionLayer) ensureTerminal() {
 	}
 	t := &s.tabs[s.activeTab]
 	if t.term == nil {
-		t.term = NewTerminalLayer(s.server, t.regionID, t.regionName, s.termWidth, s.termHeight)
+		t.term = NewTerminalLayer(s.server, t.regionID, t.regionName, s.termWidth, s.termHeight, s.statusBarMargin)
 	}
 }
 
@@ -198,7 +201,7 @@ func (s *SessionLayer) ensureTerminalForTab(idx int) {
 	}
 	t := &s.tabs[idx]
 	if t.term == nil {
-		t.term = NewTerminalLayer(s.server, t.regionID, t.regionName, s.termWidth, s.termHeight)
+		t.term = NewTerminalLayer(s.server, t.regionID, t.regionName, s.termWidth, s.termHeight, s.statusBarMargin)
 	}
 }
 
@@ -448,12 +451,13 @@ func (s *SessionLayer) View(width, height int, rs *RenderState) []*lipgloss.Laye
 
 	layers := []*lipgloss.Layer{lipgloss.NewLayer(s.renderTabBar(width))}
 
-	contentHeight := max(height-1, 1)
+	termY := 1 + s.statusBarMargin
+	contentHeight := max(height-termY, 1)
 	if term := s.activeTerm(); term != nil {
 		term.disconnected = (s.connStatus == "reconnecting")
 		termLayers := term.View(width, contentHeight, rs)
 		for i := range termLayers {
-			termLayers[i] = termLayers[i].Y(1)
+			termLayers[i] = termLayers[i].Y(termY)
 		}
 		layers = append(layers, termLayers...)
 	} else {
@@ -466,7 +470,7 @@ func (s *SessionLayer) View(width, height int, rs *RenderState) []*lipgloss.Laye
 				sb.WriteByte('\n')
 			}
 		}
-		layers = append(layers, lipgloss.NewLayer(sb.String()).Y(1))
+		layers = append(layers, lipgloss.NewLayer(sb.String()).Y(termY))
 	}
 
 	return layers
@@ -482,7 +486,15 @@ func (s *SessionLayer) renderTabBar(width int) string {
 	used := 1
 
 	for i, t := range s.tabs {
-		label := fmt.Sprintf(" %d:%s ", i+1, t.regionName)
+		name := t.regionName
+		if t.term != nil {
+			name = t.term.Title()
+		}
+		cap := 30
+		if i == s.activeTab {
+			cap = 40
+		}
+		label := fmt.Sprintf(" %d:%s ", i+1, truncateTitle(name, cap))
 		if i == s.activeTab {
 			sb.WriteString(statusBold.Render(label))
 		} else {
@@ -516,6 +528,23 @@ var (
 	statusBold       = lipgloss.NewStyle().Bold(true)
 	commandModeStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.BrightCyan)
 )
+
+// truncateTitle caps s at max runes, replacing the tail with an
+// ellipsis (…) when it would otherwise be longer. The returned string
+// is at most max runes wide.
+func truncateTitle(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	if max == 1 {
+		return "…"
+	}
+	return string(r[:max-1]) + "…"
+}
 
 func (s *SessionLayer) WantsKeyboardInput() *KeyboardFilter { return nil }
 

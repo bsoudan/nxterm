@@ -313,15 +313,7 @@ func (s *Server) sendTerminalEvents(region Region) {
 	if data.overlay != nil {
 		snap := region.Snapshot()
 		composited := compositeSnapshot(snap, data.overlay)
-		snapMsg := protocol.ScreenUpdate{
-			Type:      "screen_update",
-			RegionID:  region.ID(),
-			CursorRow: composited.CursorRow,
-			CursorCol: composited.CursorCol,
-			Lines:     composited.Lines,
-			Cells:     composited.Cells,
-			Modes:     composited.Modes,
-		}
+		snapMsg := newScreenUpdate(region.ID(), composited)
 		for _, c := range data.clients {
 			c.SendMessage(snapMsg)
 		}
@@ -329,16 +321,7 @@ func (s *Server) sendTerminalEvents(region Region) {
 	}
 
 	if needsSnapshot {
-		snap := region.Snapshot()
-		snapMsg := protocol.ScreenUpdate{
-			Type:      "screen_update",
-			RegionID:  region.ID(),
-			CursorRow: snap.CursorRow,
-			CursorCol: snap.CursorCol,
-			Lines:     snap.Lines,
-			Cells:     snap.Cells,
-			Modes:     snap.Modes,
-		}
+		snapMsg := newScreenUpdate(region.ID(), region.Snapshot())
 		for _, c := range data.clients {
 			c.SendMessage(snapMsg)
 		}
@@ -356,6 +339,23 @@ func (s *Server) sendTerminalEvents(region Region) {
 	}
 }
 
+// newScreenUpdate builds a protocol.ScreenUpdate from a Snapshot for the
+// given region. All construction sites go through this so fields stay in
+// sync across snapshot, overlay, and subscribe paths.
+func newScreenUpdate(regionID string, snap Snapshot) protocol.ScreenUpdate {
+	return protocol.ScreenUpdate{
+		Type:      "screen_update",
+		RegionID:  regionID,
+		CursorRow: snap.CursorRow,
+		CursorCol: snap.CursorCol,
+		Lines:     snap.Lines,
+		Cells:     snap.Cells,
+		Modes:     snap.Modes,
+		Title:     snap.Title,
+		IconName:  snap.IconName,
+	}
+}
+
 // compositeSnapshot overlays cells from an overlay on top of a base snapshot.
 // Non-empty overlay cells replace base cells. The overlay's cursor and modes
 // take precedence.
@@ -363,6 +363,8 @@ func compositeSnapshot(base Snapshot, ov *overlayState) Snapshot {
 	result := Snapshot{
 		CursorRow: ov.cursorRow,
 		CursorCol: ov.cursorCol,
+		Title:     base.Title,
+		IconName:  base.IconName,
 	}
 
 	// Deep copy base cells.
