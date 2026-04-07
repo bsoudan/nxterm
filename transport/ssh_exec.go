@@ -1,5 +1,3 @@
-//go:build !windows
-
 package transport
 
 import (
@@ -181,7 +179,7 @@ func scanSSHAuth(conn *execConn, prompter Prompter, nonce string) (*bufio.Reader
 				return nil, err
 			}
 			if send {
-				if _, werr := conn.pty.Write([]byte(resp + "\n")); werr != nil {
+				if _, werr := conn.Write([]byte(resp + "\n")); werr != nil {
 					return nil, fmt.Errorf("ssh: write response: %w", werr)
 				}
 			}

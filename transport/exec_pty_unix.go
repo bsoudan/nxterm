@@ -79,12 +79,6 @@ func isPTYEIO(err error) bool {
 func (c *execConn) LocalAddr() net.Addr  { return execAddr("exec:" + c.label) }
 func (c *execConn) RemoteAddr() net.Addr { return execAddr("exec:" + c.label) }
 
-// execAddr is a synthetic net.Addr for execConn. Diagnostic only.
-type execAddr string
-
-func (a execAddr) Network() string { return "exec" }
-func (a execAddr) String() string  { return string(a) }
-
 // Deadlines are no-ops to match the rest of the transport package.
 func (c *execConn) SetDeadline(t time.Time) error      { return nil }
 func (c *execConn) SetReadDeadline(t time.Time) error  { return nil }

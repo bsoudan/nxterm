@@ -216,7 +216,9 @@ exec nxtermctl proxy "$@"
 	pio := newPtyIO(ptmx, 80, 24)
 	defer func() { cmd.Process.Kill(); cmd.Wait(); ptmx.Close() }()
 
-	pio.WaitFor(t, "bash", 10*time.Second)
+	// The active tab no longer renders the program name (commit
+	// 98da964) so the historical WaitFor("bash") here can't be used;
+	// wait for the bash prompt directly.
 	pio.WaitFor(t, "nxterm$", 10*time.Second)
 
 	pio.Write([]byte("echo ssh_exec_works\r"))
