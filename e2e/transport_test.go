@@ -89,7 +89,7 @@ func TestSSHTransport(t *testing.T) {
 	cmd := exec.Command("nxtermd",
 		"--ssh-host-key", hostKeyPath,
 		"--ssh-no-auth",
-		"unix:"+socketPath, "ssh://127.0.0.1:0")
+		"unix:"+socketPath, "dssh://127.0.0.1:0")
 	cmd.Env = env
 	stderrR, stderrW, _ := os.Pipe()
 	cmd.Stderr = stderrW
@@ -138,7 +138,7 @@ func TestSSHTransport(t *testing.T) {
 	_ = runNxtermctl(t, socketPath, "region", "spawn", "shell")
 
 	// Connect frontend via SSH
-	feCmd := exec.Command("nxterm", "--socket", "ssh://"+sshAddr, )
+	feCmd := exec.Command("nxterm", "--socket", "dssh://"+sshAddr)
 	feCmd.Env = append(testEnv(t), "TERM=dumb")
 	ptmx, err := pty.StartWithSize(feCmd, &pty.Winsize{Rows: 24, Cols: 80})
 	if err != nil {

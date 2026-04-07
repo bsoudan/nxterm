@@ -35,7 +35,7 @@ func TestLiveUpgrade(t *testing.T) {
 		"unix:"+socketPath,
 		"tcp://127.0.0.1:0",
 		"ws://127.0.0.1:0",
-		"ssh://127.0.0.1:0",
+		"dssh://127.0.0.1:0",
 	)
 	cmd.Env = env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -137,7 +137,7 @@ func TestLiveUpgrade(t *testing.T) {
 	// SSH — clear SSH_AUTH_SOCK so the client doesn't try to contact
 	// a real agent (which adds latency and is unnecessary with --ssh-no-auth).
 	{
-		feCmd := exec.Command("nxterm", "--socket", "ssh://"+sshAddr)
+		feCmd := exec.Command("nxterm", "--socket", "dssh://"+sshAddr)
 		feCmd.Env = append(env, "TERM=dumb", "SSH_AUTH_SOCK=")
 		ptmx, err := pty.StartWithSize(feCmd, &pty.Winsize{Rows: 24, Cols: 80})
 		if err != nil {

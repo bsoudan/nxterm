@@ -59,11 +59,11 @@ func startDiscovery(cfg config.DiscoveryConfig, specs []string, listeners []net.
 		return nil, nil
 	}
 
-	// Build base TXT records: v=version, tcp=port,port, ws=port, ssh=port.
+	// Build base TXT records: v=version, tcp=port,port, ws=port, dssh=port.
 	// The session list is appended later via updateSessions.
 	var baseTXT []string
 	baseTXT = append(baseTXT, "v="+version)
-	for _, t := range []string{"tcp", "ws", "ssh"} {
+	for _, t := range []string{"tcp", "ws", "dssh"} {
 		if p, ok := ports[t]; ok {
 			baseTXT = append(baseTXT, t+"="+strings.Join(p, ","))
 		}

@@ -1,8 +1,14 @@
 // Package transport provides multi-transport listener and dialer for nxtermd.
 // Address specs have the form "scheme:address":
 //
-//	unix:/tmp/nxtermd.sock   Unix domain socket
-//	tcp:127.0.0.1:9090     TCP
+//	unix:/tmp/nxtermd.sock         Unix domain socket
+//	tcp:127.0.0.1:9090             TCP
+//	ws://host:port/path            WebSocket
+//	wss://host:port/path           WebSocket over TLS
+//	dssh:user@host:port            Direct SSH (in-process Go SSH client
+//	                               talking to nxtermd's own SSH listener)
+//	ssh://[user@]host[/sock]       System SSH binary spawning
+//	                               `nxtermctl proxy` on the remote
 //
 // A bare path (starting with / or .) defaults to unix.
 package transport
@@ -41,8 +47,9 @@ func Dial(spec string) (net.Conn, error) {
 		return dialWS("ws://" + addr)
 	case "wss":
 		return dialWS("wss://" + addr)
-	case "ssh":
-		// Parse user@host:port from addr
+	case "dssh":
+		// Direct SSH: in-process Go client → nxtermd's SSH listener.
+		// Parse user@host:port from addr.
 		user, host := parseSSHAddr(addr)
 		return DialSSH(host, user)
 	default:
@@ -84,7 +91,7 @@ func ListenerFile(ln net.Listener) (*os.File, error) {
 }
 
 // ListenFromFile reconstructs a net.Listener from an OS file and spec.
-// The spec determines the listener type (unix, tcp, ssh, ws).
+// The spec determines the listener type (unix, tcp, dssh, ws).
 func ListenFromFile(f *os.File, spec string, sshCfg SSHListenerConfig) (net.Listener, error) {
 	scheme, _ := ParseSpec(spec)
 	ln, err := net.FileListener(f)
@@ -94,7 +101,7 @@ func ListenFromFile(f *os.File, spec string, sshCfg SSHListenerConfig) (net.List
 	switch scheme {
 	case "unix", "tcp":
 		return ln, nil
-	case "ssh":
+	case "dssh":
 		return ListenSSHFromListener(ln, sshCfg)
 	case "ws":
 		return listenWSFromListener(ln)

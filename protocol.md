@@ -8,19 +8,26 @@ byte stream can be used.
 
 ### Supported transports
 
-| Scheme   | Server                        | Client                          |
-|----------|-------------------------------|---------------------------------|
-| `unix:`  | `--listen unix:/path`         | `--socket /path`                |
-| `tcp:`   | `--listen tcp:host:port`      | `--socket tcp:host:port`        |
-| `ws:`    | `--listen ws:host:port`       | `--socket ws://host:port`       |
-| `ssh:`   | `--listen ssh:host:port`      | `--socket ssh://user@host:port` |
+| Scheme    | Server                         | Client                            |
+|-----------|--------------------------------|-----------------------------------|
+| `unix:`   | `--listen unix:/path`          | `--socket /path`                  |
+| `tcp:`    | `--listen tcp:host:port`       | `--socket tcp:host:port`          |
+| `ws:`     | `--listen ws:host:port`        | `--socket ws://host:port`         |
+| `dssh:`   | `--listen dssh:host:port`      | `--socket dssh://user@host:port`  |
+| `ssh:`    | *(client-only)*                | `--socket ssh://[user@]host[/sock]` |
 
 The server accepts multiple `--listen` flags to listen on several transports simultaneously.
 All listeners share the same server state (regions, clients).
 
-SSH transport requires `--ssh-host-key` (auto-generated if missing) and optionally
-`--ssh-auth-keys` for public key authentication. Without `--ssh-auth-keys`, all connections
-are accepted (dev mode).
+The `dssh:` (direct SSH) transport runs an in-process Go SSH server inside `nxtermd`.
+It requires `--ssh-host-key` (auto-generated if missing) and optionally `--ssh-auth-keys`
+for public key authentication. Without `--ssh-auth-keys`, all connections are accepted
+(dev mode).
+
+The `ssh:` client-only transport spawns the system `ssh` binary in a PTY, connects to a
+regular sshd, and runs `nxtermctl proxy` on the remote to bridge the unix socket. This is
+the recommended way to reach a remote `nxtermd` over the network because it reuses the
+user's existing `~/.ssh/config`, agent, jump hosts, and keys.
 
 ### Reconnection
 

@@ -9,7 +9,7 @@ func TestTransportScheme(t *testing.T) {
 	}{
 		{"tcp://0.0.0.0:9100", "tcp"},
 		{"tcp:0.0.0.0:9100", "tcp"},
-		{"ssh://0.0.0.0:2222", "ssh"},
+		{"dssh://0.0.0.0:2222", "dssh"},
 		{"ws://0.0.0.0:8080", "ws"},
 		{"unix:/tmp/nxtermd.sock", "unix"},
 	}

@@ -7,7 +7,9 @@
 # Server address (same as --socket flag)
 # connect = "unix:/tmp/nxtermd.sock"
 # connect = "tcp:myserver:9090"
-# connect = "ssh://user@myserver:2222"
+# connect = "ssh://user@myserver"             # spawns the system ssh binary
+# connect = "ssh://user@myserver/run/user/1000/nxtermd.sock"  # explicit remote socket
+# connect = "dssh://user@myserver:2222"       # in-process Go SSH client
 
 # Command to run in new regions
 # command = "bash"

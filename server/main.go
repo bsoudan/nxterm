@@ -28,7 +28,7 @@ func main() {
   unix:/path/to/sock     Unix socket
   tcp://host:port        TCP
   ws://host:port         WebSocket
-  ssh://host:port        SSH (requires --ssh-host-key)
+  dssh://host:port       Direct SSH (requires --ssh-host-key)
 
   Default: unix:/tmp/nxtermd.sock`,
 		Version: version,
@@ -214,8 +214,8 @@ func runServer(_ context.Context, cmd *cli.Command) error {
 	for _, spec := range specs {
 		var ln net.Listener
 		var err error
-		if strings.HasPrefix(spec, "ssh:") || strings.HasPrefix(spec, "ssh://") {
-			addr := strings.TrimPrefix(strings.TrimPrefix(spec, "ssh:"), "//")
+		if strings.HasPrefix(spec, "dssh:") || strings.HasPrefix(spec, "dssh://") {
+			addr := strings.TrimPrefix(strings.TrimPrefix(spec, "dssh:"), "//")
 			ln, err = transport.ListenSSH(addr, sshCfg)
 		} else {
 			ln, err = transport.Listen(spec)

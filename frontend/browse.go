@@ -41,7 +41,7 @@ func browseServers(ctx context.Context, p *tea.Program) {
 }
 
 // parseDiscoveredEntry converts a zeroconf entry into a DiscoveredServerMsg.
-// It prefers TCP, then WS, then SSH from TXT records for the endpoint.
+// It prefers TCP, then WS, then direct SSH from TXT records for the endpoint.
 // The s= TXT record (if present) is parsed into the Sessions field.
 func parseDiscoveredEntry(entry *zeroconf.ServiceEntry) ui.DiscoveredServerMsg {
 	name := entry.Instance
@@ -56,7 +56,7 @@ func parseDiscoveredEntry(entry *zeroconf.ServiceEntry) ui.DiscoveredServerMsg {
 		}
 		key, val := parts[0], parts[1]
 		switch key {
-		case "tcp", "ws", "ssh":
+		case "tcp", "ws", "dssh":
 			// Take first port if multiple.
 			portStr := strings.SplitN(val, ",", 2)[0]
 			if p, err := strconv.Atoi(portStr); err == nil {
@@ -81,17 +81,17 @@ func parseDiscoveredEntry(entry *zeroconf.ServiceEntry) ui.DiscoveredServerMsg {
 		host = strings.TrimSuffix(entry.HostName, ".")
 	}
 
-	// Build endpoint: prefer tcp, then ws, then ssh.
+	// Build endpoint: prefer tcp, then ws, then dssh.
 	var endpoint string
-	for _, scheme := range []string{"tcp", "ws", "ssh"} {
+	for _, scheme := range []string{"tcp", "ws", "dssh"} {
 		if p, ok := ports[scheme]; ok {
 			switch scheme {
 			case "tcp":
 				endpoint = fmt.Sprintf("tcp:%s:%d", host, p)
 			case "ws":
 				endpoint = fmt.Sprintf("ws://%s:%d", host, p)
-			case "ssh":
-				endpoint = fmt.Sprintf("ssh://%s:%d", host, p)
+			case "dssh":
+				endpoint = fmt.Sprintf("dssh://%s:%d", host, p)
 			}
 			break
 		}

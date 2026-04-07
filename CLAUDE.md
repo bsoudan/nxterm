@@ -64,7 +64,7 @@ The protocol is documented in `protocol.md`.
 
 ### Transport (`transport/`)
 
-Transport-agnostic `Listen(spec)` / `Dial(spec)` functions. Supported schemes: `unix:`, `tcp:`, `ws:`/`wss:`, `ssh:`. All return `net.Listener`/`net.Conn` — the rest of the codebase is transport-unaware.
+Transport-agnostic `Listen(spec)` / `Dial(spec)` functions. Supported schemes: `unix:`, `tcp:`, `ws:`/`wss:`, `dssh:` (in-process Go SSH server), `ssh:` (client-only; spawns the system `ssh` binary in a PTY and runs `nxtermctl proxy` on the remote). All return `net.Listener`/`net.Conn` — the rest of the codebase is transport-unaware.
 
 ### Terminal Emulator (`pkg/te/`)
 

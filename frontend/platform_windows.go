@@ -6,7 +6,7 @@ package main
 const defaultSocket = ""
 
 // inferEndpoint returns the endpoint as-is on Windows. Unix sockets are
-// not supported; users must provide a scheme (tcp:, ws:, ssh:).
+// not supported; users must provide a scheme (tcp:, ws:, dssh:, ssh:).
 func inferEndpoint(endpoint string) string {
 	return endpoint
 }
