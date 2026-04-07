@@ -137,17 +137,23 @@ func runFrontend(_ context.Context, cmd *cli.Command) error {
 	// Try to connect. If the user didn't explicitly set an address and
 	// the default socket doesn't exist, start in disconnected mode.
 	// --browse forces disconnected mode to show the connect dialog.
+	//
+	// The initial dial happens before SetupRawTerminal, so the
+	// terminal is still in cooked mode and the cookedPrompter can
+	// read passwords / passphrases / yes-no answers via /dev/tty.
 	var conn net.Conn
 	if !browse {
-		dialFn := func() (net.Conn, error) { return transport.Dial(endpoint) }
+		initDial := func() (net.Conn, error) {
+			return transport.DialWithPrompter(endpoint, cookedPrompter{})
+		}
 		if userSetSocket {
 			var err error
-			conn, err = dialFn()
+			conn, err = initDial()
 			if err != nil {
 				return fmt.Errorf("connect %s: %w", endpoint, err)
 			}
 		} else {
-			conn, _ = dialFn()
+			conn, _ = initDial()
 		}
 	}
 
@@ -166,6 +172,9 @@ func runFrontend(_ context.Context, cmd *cli.Command) error {
 	// p is declared here so the connectFn closure can capture it.
 	// It is assigned after NewModel below.
 	var p *tea.Program
+	// uiPrompter is similarly captured by reference — the closures
+	// only run after p (and thus the prompter) has been set.
+	var uiPrompter *ui.UIPrompter
 	var wg sync.WaitGroup
 
 	// connectFn dials a server and starts a Server.Run goroutine.
@@ -173,14 +182,17 @@ func runFrontend(_ context.Context, cmd *cli.Command) error {
 	// initial connect and subsequent reconnects from the connect overlay.
 	// session, if non-empty, is propagated through ConnectedMsg so the
 	// new SessionLayer requests that session instead of the default.
+	//
+	// Both the dial and the reconnect-loop dialFn use uiPrompter so
+	// any ssh:// auth prompts surface as overlays in the alt screen.
 	connectFn := func(ep, session string) {
 		go func() {
-			c, err := transport.Dial(ep)
+			c, err := transport.DialWithPrompter(ep, uiPrompter)
 			if err != nil {
 				p.Send(ui.ConnectErrorMsg{Endpoint: ep, Error: err.Error()})
 				return
 			}
-			df := func() (net.Conn, error) { return transport.Dial(ep) }
+			df := func() (net.Conn, error) { return transport.DialWithPrompter(ep, uiPrompter) }
 			newSrv := ui.NewServer(64, "nxterm")
 			p.Send(ui.ConnectedMsg{Endpoint: ep, Session: session, Server: newSrv})
 			newSrv.Run(c, df, p)
@@ -197,6 +209,7 @@ func runFrontend(_ context.Context, cmd *cli.Command) error {
 		tea.WithInput(pipeR),
 		tea.WithColorProfile(colorprofile.TrueColor),
 	)
+	uiPrompter = ui.NewUIPrompter(p)
 
 	stdinDup, err := dupStdin()
 	if err != nil {
@@ -207,7 +220,9 @@ func runFrontend(_ context.Context, cmd *cli.Command) error {
 	logHandler.SetNotifyFn(func() { p.Send(ui.LogEntryMsg{}) })
 
 	if !disconnected {
-		dialFn := func() (net.Conn, error) { return transport.Dial(endpoint) }
+		dialFn := func() (net.Conn, error) {
+			return transport.DialWithPrompter(endpoint, uiPrompter)
+		}
 		wg.Add(1)
 		go func() { defer wg.Done(); server.Run(conn, dialFn, p) }()
 	}

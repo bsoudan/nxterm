@@ -154,6 +154,75 @@ func TestSSHTransport(t *testing.T) {
 	pio.WaitFor(t, "ssh_works", 10*time.Second)
 }
 
+// TestSSHExecTransport exercises the ssh:// transport (system ssh
+// binary spawned in a PTY → nxtermctl proxy on the remote). Real ssh
+// is replaced with a fake-ssh wrapper script that strips the ssh
+// argv prefix and exec's `nxtermctl proxy` directly, so the test
+// covers everything except the actual SSH protocol exchange.
+func TestSSHExecTransport(t *testing.T) {
+	socketPath, _, serverCleanup := startServerWithListeners(t)
+	defer serverCleanup()
+
+	dir := t.TempDir()
+
+	// Spawn a region via the unix socket so the frontend has
+	// something to subscribe to.
+	_ = runNxtermctl(t, socketPath, "region", "spawn", "shell")
+
+	// Build a fake-ssh wrapper. The transport invokes
+	//   ssh -T <host> -- nxtermctl proxy [SOCK] <NONCE>
+	// We strip those leading args and exec `nxtermctl proxy ...`
+	// directly. The remaining args are forwarded verbatim, so the
+	// real socket path passed via "ssh://host/PATH" flows through.
+	fakeSSH := filepath.Join(dir, "ssh")
+	wrapper := `#!/bin/sh
+# args: -T host -- nxtermctl proxy [args...]
+# strip 5 fixed args
+shift 5
+exec nxtermctl proxy "$@"
+`
+	if err := os.WriteFile(fakeSSH, []byte(wrapper), 0o755); err != nil {
+		t.Fatalf("write fake ssh: %v", err)
+	}
+
+	// Prepend the fake-ssh dir to PATH so transport.Dial("ssh://...")
+	// picks up the wrapper instead of the system ssh (which probably
+	// isn't even installed in the test environment).
+	env := append(testEnv(t), "TERM=dumb")
+	envWithFakeSSH := make([]string, 0, len(env))
+	added := false
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "PATH=") {
+			envWithFakeSSH = append(envWithFakeSSH, "PATH="+dir+":"+strings.TrimPrefix(kv, "PATH="))
+			added = true
+		} else {
+			envWithFakeSSH = append(envWithFakeSSH, kv)
+		}
+	}
+	if !added {
+		envWithFakeSSH = append(envWithFakeSSH, "PATH="+dir+":"+os.Getenv("PATH"))
+	}
+
+	// Connect via ssh:// — the host portion is irrelevant since the
+	// fake wrapper ignores it; the path portion is the explicit
+	// remote socket the proxy will dial.
+	cmd := exec.Command("nxterm", "--socket", "ssh://anyhost"+socketPath)
+	cmd.Env = envWithFakeSSH
+
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 80})
+	if err != nil {
+		t.Fatalf("start frontend via ssh-exec: %v", err)
+	}
+	pio := newPtyIO(ptmx, 80, 24)
+	defer func() { cmd.Process.Kill(); cmd.Wait(); ptmx.Close() }()
+
+	pio.WaitFor(t, "bash", 10*time.Second)
+	pio.WaitFor(t, "nxterm$", 10*time.Second)
+
+	pio.Write([]byte("echo ssh_exec_works\r"))
+	pio.WaitFor(t, "ssh_exec_works", 10*time.Second)
+}
+
 func TestMultiTransportSharedRegion(t *testing.T) {
 	socketPath, tcpAddr, serverCleanup := startServerWithTCP(t)
 	defer serverCleanup()

@@ -145,6 +145,18 @@ func main() {
 					{Name: "kill", Usage: "disconnect a client", ArgsUsage: "<client_id>", Action: cmdClientKill},
 				},
 			},
+			{
+				Name:      "proxy",
+				Usage:     "io.Copy stdin/stdout to a local nxtermd socket (used as the remote command for ssh:// transport)",
+				ArgsUsage: "[SOCKET] [NONCE]",
+				Description: `Bridges stdin/stdout to a local nxtermd unix socket. Intended to be
+invoked as the remote command of an ssh connection by nxterm's ssh://
+transport. SOCKET is optional and defaults to the first unix listen
+address in server.toml or /tmp/nxtermd.sock. NONCE is echoed back in the
+ready sentinel so the calling client can detect the boundary between
+ssh authentication chatter and the start of the data stream.`,
+				Action: cmdProxy,
+			},
 		},
 	}
 

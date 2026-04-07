@@ -36,7 +36,20 @@ func Listen(spec string) (net.Listener, error) {
 }
 
 // Dial connects to the given address spec and returns a net.Conn.
+//
+// For interactive transports (currently ssh://) that may need to ask
+// the user for credentials or confirmations, use DialWithPrompter
+// instead — Dial uses a non-interactive prompter that fails any
+// prompt with an error.
 func Dial(spec string) (net.Conn, error) {
+	return DialWithPrompter(spec, nullPrompter{})
+}
+
+// DialWithPrompter is the same as Dial but accepts a Prompter so
+// interactive transports can ask the user for passwords, passphrases,
+// and host-key confirmations during the dial. Non-interactive
+// schemes ignore the prompter.
+func DialWithPrompter(spec string, prompter Prompter) (net.Conn, error) {
 	scheme, addr := ParseSpec(spec)
 	switch scheme {
 	case "unix":
@@ -52,6 +65,10 @@ func Dial(spec string) (net.Conn, error) {
 		// Parse user@host:port from addr.
 		user, host := parseSSHAddr(addr)
 		return DialSSH(host, user)
+	case "ssh":
+		// System ssh binary spawned in a PTY → `nxtermctl proxy`
+		// on the remote. See ssh_exec.go.
+		return dialSSHExec(addr, prompter)
 	default:
 		return nil, fmt.Errorf("unsupported dial scheme: %q", scheme)
 	}
