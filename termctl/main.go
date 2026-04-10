@@ -155,6 +155,12 @@ transport. SOCKET is optional and defaults to the first unix listen
 address in server.toml or /tmp/nxtermd.sock. NONCE is echoed back in the
 ready sentinel so the calling client can detect the boundary between
 ssh authentication chatter and the start of the data stream.`,
+				Flags: []cli.Flag{
+					&cli.BoolFlag{
+						Name:  "base64",
+						Usage: "base64-encode protocol lines (used by Windows ConPTY transport)",
+					},
+				},
 				Action: cmdProxy,
 			},
 		},

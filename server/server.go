@@ -13,6 +13,7 @@ import (
 
 	"nxtermd/config"
 	"nxtermd/frontend/protocol"
+	"nxtermd/transport"
 )
 
 type Server struct {
@@ -137,7 +138,7 @@ func (s *Server) acceptLoop(ln net.Listener) {
 			conn.Close()
 			continue
 		}
-		s.acceptClient(conn)
+		s.acceptClient(transport.WrapTracing(conn, fmt.Sprintf("server:%s", conn.RemoteAddr())))
 	}
 }
 

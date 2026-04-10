@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sync"
@@ -19,15 +20,10 @@ import (
 )
 
 // execConn wraps a child process spawned under a Windows ConPTY
-// (pseudo-console) as a net.Conn. The conpty exposes Read and Write
-// that flow bytes between the child's stdin/stdout and us, with the
-// child believing it has a real interactive console — which is what
-// makes ssh.exe willing to write its password / passphrase / host-key
-// prompts to a place we can scan.
-//
-// This is the Windows counterpart to exec_pty_unix.go's PTY-based
-// execConn. The two files define the same type with the same exported
-// methods so the platform-agnostic ssh_exec.go can use either.
+// (pseudo-console) as a net.Conn. Read and Write are RAW — they
+// pass bytes directly to/from the ConPTY. The base64 encoding for
+// the data phase is handled by wrapDataPhase (in ssh_exec_flags_windows.go),
+// which wraps the connection AFTER the auth scanner completes.
 type execConn struct {
 	cpty  *conpty.ConPty
 	label string
@@ -63,14 +59,20 @@ func startExecConn(cmd *exec.Cmd, label string) (*execConn, error) {
 		return nil, fmt.Errorf("ssh: could not resolve %q on PATH", cmd.Args[0])
 	}
 
-	// Compose the Windows command-line string from cmd.Args. The
-	// first element must be the full path to the executable.
-	args := append([]string{exe}, cmd.Args[1:]...)
+	// Wrap the command in `nxterm.exe --internal-conpty-wrap --` so
+	// echo is disabled on the ConPTY console before ssh.exe starts.
+	self, selfErr := os.Executable()
+	if selfErr != nil {
+		return nil, fmt.Errorf("ssh: os.Executable: %w", selfErr)
+	}
+	args := append([]string{self, "--internal-conpty-wrap", "--", exe}, cmd.Args[1:]...)
 	cmdLine := windows.ComposeCommandLine(args)
 
-	// Default size — ssh.exe doesn't really care, but a 0x0 size
-	// confuses some console clients. 80x24 mirrors a typical login.
-	cpty, err := conpty.Start(cmdLine, conpty.ConPtyDimensions(80, 24))
+	// Use a very wide console so ConPTY doesn't wrap protocol lines.
+	// The width matters because ConPTY inserts line breaks at the
+	// column boundary, which would split base64 lines mid-chunk.
+	// 16384 is safely beyond any chunk length (4096).
+	cpty, err := conpty.Start(cmdLine, conpty.ConPtyDimensions(16384, 24))
 	if err != nil {
 		return nil, fmt.Errorf("ssh: ConPTY spawn: %w", err)
 	}
@@ -90,10 +92,8 @@ func startExecConn(cmd *exec.Cmd, label string) (*execConn, error) {
 	return c, nil
 }
 
-// Read returns bytes from the conpty output. ConPTY signals child
-// exit via ERROR_BROKEN_PIPE on the read pipe; translate that to
-// io.EOF so callers see clean end-of-stream the same way they do on
-// Linux (where the equivalent is EIO).
+// Read returns raw bytes from the ConPTY output. EOF translation
+// (ERROR_BROKEN_PIPE → io.EOF) mirrors the unix EIO translation.
 func (c *execConn) Read(b []byte) (int, error) {
 	n, err := c.cpty.Read(b)
 	if err != nil && isConPtyEOF(err) {

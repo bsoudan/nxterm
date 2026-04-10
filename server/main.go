@@ -72,6 +72,11 @@ GLOBAL OPTIONS:{{template "visibleFlagTemplate" .}}{{end}}{{if .Description}}
 				Usage:   "enable debug logging",
 				Sources: cli.EnvVars("NXTERMD_DEBUG"),
 			},
+			&cli.StringSliceFlag{
+				Name:    "trace",
+				Usage:   "enable trace flags (comma-separated, repeatable): wire",
+				Sources: cli.EnvVars("NXTERMD_TRACE"),
+			},
 			&cli.StringFlag{
 				Name:  "pprof",
 				Usage: "enable pprof HTTP server (default: localhost:6060, or specify host:port)",
@@ -180,7 +185,10 @@ func runServer(_ context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("config: %w", err)
 	}
 
-	debug := cmd.Bool("debug") || cfg.Debug
+	config.SetTraceFlags(cmd.StringSlice("trace")...)
+	config.SetTraceFlags(cfg.Trace...)
+
+	debug := cmd.Bool("debug") || cfg.Debug || config.TraceEnabled("wire")
 	level := slog.LevelInfo
 	if debug {
 		level = slog.LevelDebug

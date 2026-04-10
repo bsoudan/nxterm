@@ -4,6 +4,7 @@ package client
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -94,9 +95,33 @@ func (c *Client) readLoop() {
 	scanner := bufio.NewScanner(c.conn)
 	scanner.Buffer(make([]byte, 1<<20), 16<<20)
 	for scanner.Scan() {
-		msg, err := protocol.ParseInbound(scanner.Bytes())
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		msg, err := protocol.ParseInbound(line)
 		if err != nil {
-			slog.Debug("recv parse error", "error", err)
+			// Log context around the error. For JSON syntax errors,
+			// show the bytes around the reported offset.
+			first200 := line
+			if len(first200) > 200 {
+				first200 = first200[:200]
+			}
+			errCtx := fmt.Sprintf("first200=%q", first200)
+			var jsonErr *json.SyntaxError
+			if errors.As(err, &jsonErr) && jsonErr.Offset > 0 {
+				off := int(jsonErr.Offset)
+				start := off - 50
+				if start < 0 {
+					start = 0
+				}
+				end := off + 50
+				if end > len(line) {
+					end = len(line)
+				}
+				errCtx = fmt.Sprintf("offset=%d around=%q", off, line[start:end])
+			}
+			slog.Warn("recv parse error", "error", err, "len", len(line), "detail", errCtx)
 			continue
 		}
 		termlog.LogProtocolMsg("recv", msg)

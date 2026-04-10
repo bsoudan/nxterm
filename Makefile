@@ -1,4 +1,4 @@
-.PHONY: all build-server changelog build-tui build-tui-windows build-termctl build-mousehelper build-nativeapp build-upgrade-test-binaries check-windows test test-e2e test-upgrade test-stress test-stress-long rpm version clean
+.PHONY: all build-server changelog build-tui build-termctl build-mousehelper build-nativeapp build-upgrade-test-binaries check-windows test test-e2e test-upgrade test-stress test-stress-long rpm version clean
 
 # Binary names
 SERVER_BIN   := nxtermd
@@ -14,7 +14,7 @@ ifndef RELEASE
   GCFLAGS := -gcflags "all=-N -l"
 endif
 
-all: build-server build-tui build-tui-windows build-termctl build-mousehelper build-nativeapp
+all: build-server build-tui build-termctl build-mousehelper build-nativeapp
 
 # Host binaries are built with their full <name>-<os>-<arch> filename so
 # the same artifact serves as both the locally-runnable binary and the
@@ -38,8 +38,6 @@ changelog:
 build-tui: changelog
 	go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o .local/bin/$(TUI_BIN)-$(HOST_OS_ARCH) ./frontend
 	ln -sf $(TUI_BIN)-$(HOST_OS_ARCH) .local/bin/$(TUI_BIN)
-
-build-tui-windows: changelog
 	GOOS=windows GOARCH=amd64 go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o .local/bin/$(TUI_BIN)-windows-amd64.exe ./frontend
 	ln -sf $(TUI_BIN)-windows-amd64.exe .local/bin/$(TUI_BIN).exe
 

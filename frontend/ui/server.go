@@ -82,7 +82,7 @@ func (s *Server) Close() {
 // Run connects to the server, processes messages, and handles reconnection.
 // It blocks until the send channel is closed.
 func (s *Server) Run(conn net.Conn, dialFn func() (net.Conn, error), p *tea.Program) {
-	c := client.New(conn)
+	c := s.newClient(conn)
 	s.sendIdentify(c)
 
 	for {
@@ -169,7 +169,7 @@ func (s *Server) reconnect(dialFn func() (net.Conn, error), p *tea.Program) *cli
 		// before the new process has called Accept(). Without this
 		// check, ReconnectedMsg fires prematurely and subsequent
 		// requests hang because nobody is reading the connection.
-		c := client.New(conn)
+		c := s.newClient(conn)
 		timer := time.NewTimer(3 * time.Second)
 		select {
 		case _, ok := <-c.Recv():
@@ -261,6 +261,10 @@ drain:
 		}
 	}
 	inbound <- protocol.Message{Payload: protocol.TerminalEvents{RegionID: regionID, Events: batch}}
+}
+
+func (s *Server) newClient(conn net.Conn) *client.Client {
+	return client.New(conn)
 }
 
 func (s *Server) sendIdentify(c *client.Client) {

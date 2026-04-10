@@ -10,9 +10,24 @@ import (
 
 // LogProtocolMsg logs a protocol message with structured key=value fields.
 func LogProtocolMsg(direction string, msg any) {
+	// Unwrap protocol.Message and tagged wrappers so the inner
+	// payload hits the specific cases instead of the default.
+	if m, ok := msg.(protocol.Message); ok {
+		LogProtocolMsg(direction, m.Payload)
+		return
+	}
+	if inner := protocol.UnwrapTagged(msg); inner != nil {
+		LogProtocolMsg(direction, inner)
+		return
+	}
+
 	switch m := msg.(type) {
 	case protocol.Identify:
 		slog.Debug(direction, "type", "identify", "hostname", m.Hostname, "username", m.Username, "pid", m.Pid, "process", m.Process)
+	case protocol.SessionConnectRequest:
+		slog.Debug(direction, "type", "session_connect_request", "session", m.Session, "width", m.Width, "height", m.Height)
+	case protocol.SessionConnectResponse:
+		slog.Debug(direction, "type", "session_connect_response", "session", m.Session, "regions", len(m.Regions), "programs", len(m.Programs), "error", m.Error, "message", m.Message)
 	case protocol.SpawnRequest:
 		slog.Debug(direction, "type", "spawn_request", "program", m.Program, "session", m.Session)
 	case protocol.SpawnResponse:
@@ -21,6 +36,8 @@ func LogProtocolMsg(direction string, msg any) {
 		slog.Debug(direction, "type", "subscribe_request", "region_id", m.RegionID)
 	case protocol.SubscribeResponse:
 		slog.Debug(direction, "type", "subscribe_response", "region_id", m.RegionID, "error", m.Error, "message", m.Message)
+	case protocol.UnsubscribeRequest:
+		slog.Debug(direction, "type", "unsubscribe_request", "region_id", m.RegionID)
 	case protocol.InputMsg:
 		decoded, _ := base64.StdEncoding.DecodeString(m.Data)
 		slog.Debug(direction, "type", "input", "region_id", m.RegionID, "data", fmt.Sprintf("[%d bytes]", len(decoded)))
@@ -41,7 +58,7 @@ func LogProtocolMsg(direction string, msg any) {
 	case protocol.GetScreenResponse:
 		slog.Debug(direction, "type", "get_screen_response", "region_id", m.RegionID, "cursor", fmt.Sprintf("(%d,%d)", m.CursorRow, m.CursorCol), "lines", fmt.Sprintf("[%d lines]", len(m.Lines)), "error", m.Error)
 	case protocol.ScreenUpdate:
-		slog.Debug(direction, "type", "screen_update", "region_id", m.RegionID, "cursor", fmt.Sprintf("(%d,%d)", m.CursorRow, m.CursorCol), "lines", fmt.Sprintf("[%d lines]", len(m.Lines)))
+		slog.Debug(direction, "type", "screen_update", "region_id", m.RegionID, "cursor", fmt.Sprintf("(%d,%d)", m.CursorRow, m.CursorCol), "lines", fmt.Sprintf("[%d lines]", len(m.Lines)), "title", m.Title)
 	case protocol.RegionCreated:
 		slog.Debug(direction, "type", "region_created", "region_id", m.RegionID, "name", m.Name)
 	case protocol.RegionDestroyed:
@@ -60,6 +77,8 @@ func LogProtocolMsg(direction string, msg any) {
 		slog.Debug(direction, "type", "kill_client_response", "client_id", m.ClientID, "error", m.Error)
 	case protocol.TerminalEvents:
 		slog.Debug(direction, "type", "terminal_events", "region_id", m.RegionID, "events", len(m.Events))
+	case protocol.Disconnect:
+		slog.Debug(direction, "type", "disconnect")
 	default:
 		slog.Debug(direction, "type", fmt.Sprintf("%T", msg))
 	}

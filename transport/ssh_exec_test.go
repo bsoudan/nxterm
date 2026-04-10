@@ -79,7 +79,8 @@ func scanWithBash(t *testing.T, script string, p *mockPrompter, nonce string) (*
 		conn.Close()
 		return nil, scanErr
 	}
-	return &bufferedExecConn{execConn: conn, br: br}, nil
+	r, w := wrapDataPhase(br, conn)
+	return &bufferedExecConn{execConn: conn, r: r, w: w}, nil
 }
 
 func TestScanSSHAuth_NoPrompt(t *testing.T) {

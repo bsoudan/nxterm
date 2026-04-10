@@ -26,6 +26,18 @@ var version = "dev"
 var changelog string
 
 func main() {
+	// On Windows, the ssh:// transport re-executes nxterm.exe inside
+	// a ConPTY to disable console echo before launching ssh.exe.
+	// Detect this early, before any CLI/TUI setup.
+	if len(os.Args) > 1 && os.Args[1] == "--internal-conpty-wrap" {
+		args := os.Args[2:]
+		if len(args) > 0 && args[0] == "--" {
+			args = args[1:]
+		}
+		handleConptyWrap(args)
+		return
+	}
+
 	app := &cli.Command{
 		Name:    "nxterm",
 		Usage:   "terminal multiplexer TUI client",
@@ -58,6 +70,11 @@ func main() {
 				Aliases: []string{"d"},
 				Usage:   "enable debug logging",
 				Sources: cli.EnvVars("NXTERMD_DEBUG"),
+			},
+			&cli.StringSliceFlag{
+				Name:    "trace",
+				Usage:   "enable trace flags (comma-separated, repeatable): wire",
+				Sources: cli.EnvVars("NXTERM_TRACE"),
 			},
 			&cli.BoolFlag{
 				Name:  "log-stderr",
@@ -109,7 +126,12 @@ func runFrontend(_ context.Context, cmd *cli.Command) error {
 	}
 	registry := ui.NewRegistry(kbCfg.Style, kbCfg.Prefix, kbCfg.Overrides())
 
-	debug := cmd.Bool("debug") || cfg.Debug
+	// Initialize trace flags from CLI + config + env (env is handled
+	// by urfave via the Sources on the flag definition).
+	config.SetTraceFlags(cmd.StringSlice("trace")...)
+	config.SetTraceFlags(cfg.Trace...)
+
+	debug := cmd.Bool("debug") || cfg.Debug || config.TraceEnabled("wire")
 	level := slog.LevelWarn
 	if debug {
 		level = slog.LevelDebug
@@ -144,7 +166,11 @@ func runFrontend(_ context.Context, cmd *cli.Command) error {
 	var conn net.Conn
 	if !browse {
 		initDial := func() (net.Conn, error) {
-			return transport.DialWithPrompter(endpoint, cookedPrompter{})
+			c, err := transport.DialWithPrompter(endpoint, cookedPrompter{})
+			if err != nil {
+				return nil, err
+			}
+			return transport.WrapTracing(c, "client"), nil
 		}
 		if userSetSocket {
 			var err error
@@ -192,7 +218,14 @@ func runFrontend(_ context.Context, cmd *cli.Command) error {
 				p.Send(ui.ConnectErrorMsg{Endpoint: ep, Error: err.Error()})
 				return
 			}
-			df := func() (net.Conn, error) { return transport.DialWithPrompter(ep, uiPrompter) }
+			c = transport.WrapTracing(c, "client")
+			df := func() (net.Conn, error) {
+				rc, err := transport.DialWithPrompter(ep, uiPrompter)
+				if err != nil {
+					return nil, err
+				}
+				return transport.WrapTracing(rc, "client"), nil
+			}
 			newSrv := ui.NewServer(64, "nxterm")
 			p.Send(ui.ConnectedMsg{Endpoint: ep, Session: session, Server: newSrv})
 			newSrv.Run(c, df, p)
@@ -221,7 +254,11 @@ func runFrontend(_ context.Context, cmd *cli.Command) error {
 
 	if !disconnected {
 		dialFn := func() (net.Conn, error) {
-			return transport.DialWithPrompter(endpoint, uiPrompter)
+			c, err := transport.DialWithPrompter(endpoint, uiPrompter)
+			if err != nil {
+				return nil, err
+			}
+			return transport.WrapTracing(c, "client"), nil
 		}
 		wg.Add(1)
 		go func() { defer wg.Done(); server.Run(conn, dialFn, p) }()

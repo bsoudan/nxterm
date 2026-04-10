@@ -49,6 +49,7 @@ type UpgradeConfig struct {
 type ServerConfig struct {
 	Listen    []string        `toml:"listen"`
 	Debug     bool            `toml:"debug"`
+	Trace     []string        `toml:"trace"`
 	Pprof     string          `toml:"pprof"`
 	Programs  []ProgramConfig `toml:"programs"`
 	SSH       SSHConfig       `toml:"ssh"`
@@ -73,9 +74,10 @@ type TermctlConfig struct {
 
 // FrontendConfig represents nxterm/config.toml.
 type FrontendConfig struct {
-	Connect         string `toml:"connect"`
-	Debug           bool   `toml:"debug"`
-	StatusBarMargin *int   `toml:"status-bar-margin"` // nil = default (1)
+	Connect         string   `toml:"connect"`
+	Debug           bool     `toml:"debug"`
+	Trace           []string `toml:"trace"`
+	StatusBarMargin *int     `toml:"status-bar-margin"` // nil = default (1)
 }
 
 // GetStatusBarMargin returns the configured number of blank rows

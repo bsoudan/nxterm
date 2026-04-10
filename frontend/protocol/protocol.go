@@ -557,6 +557,16 @@ func parsePayload(typ string, line []byte) (any, error) {
 	}
 }
 
+// UnwrapTagged returns the inner Msg if msg is a tagged wrapper,
+// or nil if it is not. Used by the protocol logger to print the
+// payload type instead of "protocol.tagged".
+func UnwrapTagged(msg any) any {
+	if t, ok := msg.(tagged); ok {
+		return t.Msg
+	}
+	return nil
+}
+
 // tagged wraps a message with its type tag for JSON marshaling.
 // The Type field is set automatically so callers don't need to.
 type tagged struct {

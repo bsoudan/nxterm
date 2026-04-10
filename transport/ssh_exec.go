@@ -62,13 +62,17 @@ func dialSSHExec(addr string, prompter Prompter) (net.Conn, error) {
 	// that bash emits (because -T means no remote pty) is ignored
 	// by the scanner.
 	// nxtermctl proxy takes [SOCKET] [NONCE] as positional args.
-	// When no explicit socket is given, pass an empty string so the
-	// nonce doesn't land in position 0 and get mistaken for a path.
+	// When no explicit socket is given, omit it — the proxy
+	// command distinguishes a bare hex nonce from a socket path.
+	// An explicit empty-string arg (`""`) breaks on Windows
+	// because ComposeCommandLine's quoting mangles the embedded
+	// double-quotes before ssh.exe sees them.
 	remoteCmd := "nxtermctl proxy"
+	if flags := proxyFlags(); flags != "" {
+		remoteCmd += " " + flags
+	}
 	if remoteSock != "" {
 		remoteCmd += " " + shellQuote(remoteSock)
-	} else {
-		remoteCmd += ` ""`
 	}
 	remoteCmd += " " + nonce
 
@@ -96,7 +100,12 @@ func dialSSHExec(addr string, prompter Prompter) (net.Conn, error) {
 		return nil, err
 	}
 
-	return &bufferedExecConn{execConn: conn, br: br}, nil
+	// Wrap the post-auth reader and writer for the data phase.
+	// On Windows this adds base64 encoding/decoding to survive
+	// ConPTY byte-mangling. On Linux it's a no-op.
+	dataReader, dataWriter := wrapDataPhase(br, conn)
+
+	return &bufferedExecConn{execConn: conn, r: dataReader, w: dataWriter}, nil
 }
 
 // shellQuote wraps s in single quotes for safe embedding in a shell
@@ -124,15 +133,17 @@ func newNonce() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
-// bufferedExecConn wraps an execConn whose underlying PTY may have
-// already buffered bytes (post-sentinel) inside a bufio.Reader. Read
-// drains the buffer first; Write goes directly to the PTY.
+// bufferedExecConn wraps an execConn with platform-specific reader
+// and writer for the data phase. On Windows, these are base64
+// codec wrappers. On Linux, they're the raw bufio.Reader and PTY.
 type bufferedExecConn struct {
 	*execConn
-	br *bufio.Reader
+	r io.Reader
+	w io.Writer
 }
 
-func (b *bufferedExecConn) Read(p []byte) (int, error) { return b.br.Read(p) }
+func (b *bufferedExecConn) Read(p []byte) (int, error)  { return b.r.Read(p) }
+func (b *bufferedExecConn) Write(p []byte) (int, error) { return b.w.Write(p) }
 
 // scanSSHAuth reads bytes from conn (the ssh process's pty) one at a
 // time, accumulating a current line. When the accumulated line ends in
@@ -171,6 +182,7 @@ func scanSSHAuth(conn *execConn, prompter Prompter, nonce string) (*bufio.Reader
 		// Line terminator: process the complete line.
 		if b == '\n' {
 			s := strings.TrimRight(string(line), "\r")
+			s = stripANSI(s)
 			line = line[:0]
 
 			if s == wantSentinel {
@@ -181,7 +193,7 @@ func scanSSHAuth(conn *execConn, prompter Prompter, nonce string) (*bufio.Reader
 				return nil, perr
 			}
 
-			if s != "" {
+			if s != "" && !isBashNoise(s) {
 				prompter.Info(s)
 				if recent.Len() > 1024 {
 					recent.Reset()
@@ -289,6 +301,23 @@ func classifyErrorLine(line string) error {
 		return fmt.Errorf("ssh: %s", line)
 	}
 	return nil
+}
+
+// reANSI matches ANSI escape sequences (CSI and OSC). ConPTY on
+// Windows injects cursor-visibility and other sequences that would
+// prevent the sentinel from matching if left in the line.
+var reANSI = regexp.MustCompile(`\x1b(?:\[[0-9;?]*[a-zA-Z]|\][^\x07\x1b]*(?:\x07|\x1b\\))`)
+
+func stripANSI(s string) string {
+	return reANSI.ReplaceAllString(s, "")
+}
+
+// isBashNoise returns true for harmless warnings that bash -i emits
+// when running without a real PTY (because ssh -T disables the remote
+// PTY). These are expected and should not be shown to the user.
+func isBashNoise(s string) bool {
+	return strings.Contains(s, "cannot set terminal process group") ||
+		strings.Contains(s, "no job control in this shell")
 }
 
 // sshExitError builds a useful error message for an unexpected EOF
