@@ -52,11 +52,34 @@ func dialSSHExec(addr string, prompter Prompter) (net.Conn, error) {
 	// We deliberately do NOT pass any -o options here. The user's
 	// ~/.ssh/config (ProxyJump, ControlMaster, IdentityFile, etc.)
 	// is the source of truth.
-	args := []string{"-T", dest, "--", "nxtermctl", "proxy"}
+	//
+	// The remote command is wrapped in `bash -ic '...'` so that
+	// ~/.bashrc is fully sourced. sshd runs commands via a
+	// non-interactive shell by default, and most .bashrc files
+	// have a `case $- in *i*) ;; *) return;; esac` guard that
+	// skips PATH setup for non-interactive shells. The -i flag
+	// gets past this guard. The harmless "no job control" warning
+	// that bash emits (because -T means no remote pty) is ignored
+	// by the scanner.
+	// nxtermctl proxy takes [SOCKET] [NONCE] as positional args.
+	// When no explicit socket is given, pass an empty string so the
+	// nonce doesn't land in position 0 and get mistaken for a path.
+	remoteCmd := "nxtermctl proxy"
 	if remoteSock != "" {
-		args = append(args, remoteSock)
+		remoteCmd += " " + shellQuote(remoteSock)
+	} else {
+		remoteCmd += ` ""`
 	}
-	args = append(args, nonce)
+	remoteCmd += " " + nonce
+
+	// Pass the whole "bash -ic '...'" as a single ssh argument.
+	// ssh concatenates all post-hostname args with spaces before
+	// sending them over the wire, so if we passed "bash", "-ic",
+	// and the command as separate args, ssh would send
+	// "bash -ic nxtermctl proxy ..." — and bash -c would only see
+	// "nxtermctl" as its command (the rest becomes $0/$1).
+	// Wrapping in shellQuote preserves the argument boundary.
+	args := []string{"-T", dest, "--", "bash -ic " + shellQuote(remoteCmd)}
 
 	cmd := exec.Command("ssh", args...)
 	conn, err := startExecConn(cmd, "ssh "+dest)
@@ -74,6 +97,13 @@ func dialSSHExec(addr string, prompter Prompter) (net.Conn, error) {
 	}
 
 	return &bufferedExecConn{execConn: conn, br: br}, nil
+}
+
+// shellQuote wraps s in single quotes for safe embedding in a shell
+// command string. Internal single quotes are escaped as '\'' (end
+// quote, backslash-escaped literal quote, re-open quote).
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // splitSSHExecAddr splits a ssh-exec spec address into the ssh

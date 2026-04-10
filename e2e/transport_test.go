@@ -167,16 +167,14 @@ func TestSSHExecTransport(t *testing.T) {
 	_ = runNxtermctl(t, socketPath, "region", "spawn", "shell")
 
 	// Build a fake-ssh wrapper. The transport invokes
-	//   ssh -T <host> -- nxtermctl proxy [SOCK] <NONCE>
-	// We strip those leading args and exec `nxtermctl proxy ...`
-	// directly. The remaining args are forwarded verbatim, so the
-	// real socket path passed via "ssh://host/PATH" flows through.
+	//   ssh -T <host> -- 'bash -ic <quoted-command>'
+	// The entire bash -ic invocation is a single argument. Strip
+	// the 3 leading args (-T host --) and eval the rest.
 	fakeSSH := filepath.Join(dir, "ssh")
 	wrapper := `#!/bin/sh
-# args: -T host -- nxtermctl proxy [args...]
-# strip 5 fixed args
-shift 5
-exec nxtermctl proxy "$@"
+# args: -T host -- 'bash -ic ...'
+shift 3
+eval "$1"
 `
 	if err := os.WriteFile(fakeSSH, []byte(wrapper), 0o755); err != nil {
 		t.Fatalf("write fake ssh: %v", err)
