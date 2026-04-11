@@ -8,7 +8,6 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	termlog "nxtermd/internal/frontendlog"
 	"nxtermd/internal/protocol"
 )
 
@@ -35,7 +34,7 @@ type SessionLayer struct {
 	status     string
 	err        string
 
-	logRing       *termlog.LogRingBuffer
+	logRing       *LogRingBuffer
 	localHostname string
 	endpoint      string
 	version       string
@@ -123,7 +122,7 @@ func (s *SessionLayer) syncTabs(regions []protocol.RegionInfo) {
 // NewSessionLayer creates a session layer with the given dependencies.
 func NewSessionLayer(
 	server *Server, requestFn RequestFunc, registry *Registry,
-	logRing *termlog.LogRingBuffer,
+	logRing *LogRingBuffer,
 	endpoint, version, changelog, hostname, sessionName string,
 	statusBarMargin int,
 ) *SessionLayer {

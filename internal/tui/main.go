@@ -15,7 +15,7 @@ import (
 	"github.com/charmbracelet/colorprofile"
 	"github.com/urfave/cli/v3"
 	"nxtermd/internal/config"
-	termlog "nxtermd/internal/frontendlog"
+	"nxtermd/internal/nxlog"
 	"nxtermd/internal/transport"
 )
 
@@ -137,12 +137,12 @@ func runFrontend(_ context.Context, cmd *cli.Command) error {
 	if debug {
 		level = slog.LevelDebug
 	}
-	logRing := termlog.NewLogRingBuffer(1000)
+	logRing := NewLogRingBuffer(1000)
 	var logW io.Writer
 	if cmd.Bool("log-stderr") {
 		logW = os.Stderr
 	}
-	logHandler := termlog.NewHandler(logW, level, logRing)
+	logHandler := nxlog.NewHandler(logW, level, logRing.Append)
 	slog.SetDefault(slog.New(logHandler))
 
 	transport.InstallStackDump("nxterm")

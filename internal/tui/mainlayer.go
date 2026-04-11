@@ -12,7 +12,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
-	termlog "nxtermd/internal/frontendlog"
 	"nxtermd/internal/protocol"
 	"nxtermd/pkg/layer"
 )
@@ -29,7 +28,7 @@ type MainLayer struct {
 	sessions      []*SessionLayer
 	activeSession int
 
-	logRing       *termlog.LogRingBuffer
+	logRing       *LogRingBuffer
 	localHostname string
 	endpoint      string
 	version       string
@@ -71,7 +70,7 @@ type MainLayer struct {
 
 func NewMainLayer(
 	server *Server, pipeW io.Writer, requestFn RequestFunc, registry *Registry,
-	logRing *termlog.LogRingBuffer,
+	logRing *LogRingBuffer,
 	endpoint, version, changelog, hostname, sessionName string,
 	statusBarMargin int,
 	connectFn func(endpoint, session string),

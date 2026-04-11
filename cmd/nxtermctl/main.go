@@ -13,7 +13,7 @@ import (
 	"github.com/urfave/cli/v3"
 	"nxtermd/internal/config"
 	"nxtermd/internal/client"
-	termlog "nxtermd/internal/frontendlog"
+	"nxtermd/internal/nxlog"
 	"nxtermd/internal/protocol"
 	"nxtermd/internal/transport"
 )
@@ -69,7 +69,7 @@ func main() {
 			if debug {
 				level = slog.LevelDebug
 			}
-			slog.SetDefault(slog.New(termlog.NewHandler(os.Stderr, level, nil)))
+			slog.SetDefault(slog.New(nxlog.NewHandler(os.Stderr, level, nil)))
 			transport.InstallStackDump("nxtermctl")
 			return ctx, nil
 		},

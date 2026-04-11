@@ -13,7 +13,7 @@ import (
 
 	"github.com/urfave/cli/v3"
 	"nxtermd/internal/config"
-	tlog "nxtermd/internal/frontendlog"
+	"nxtermd/internal/nxlog"
 	"nxtermd/internal/transport"
 )
 
@@ -195,7 +195,7 @@ func runServer(_ context.Context, cmd *cli.Command) error {
 	if debug {
 		level = slog.LevelDebug
 	}
-	handler := tlog.NewHandler(os.Stderr, level, nil)
+	handler := nxlog.NewHandler(os.Stderr, level, nil)
 	slog.SetDefault(slog.New(handler))
 
 	transport.InstallStackDump("nxtermd")

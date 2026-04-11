@@ -12,7 +12,6 @@ import (
 	"os/user"
 	"path/filepath"
 
-	termlog "nxtermd/internal/frontendlog"
 	"nxtermd/internal/protocol"
 )
 
@@ -43,7 +42,7 @@ func (c *Client) Send(msg any) error {
 		return fmt.Errorf("marshal: %w", err)
 	}
 	data = append(data, '\n')
-	termlog.LogProtocolMsg("send", msg)
+	protocol.LogProtocolMsg("send", msg)
 	_, err = c.conn.Write(data)
 	return err
 }
@@ -62,7 +61,7 @@ func (c *Client) SendWithReqID(msg any, reqID uint64) error {
 		return fmt.Errorf("marshal: %w", err)
 	}
 	data = append(data, '\n')
-	termlog.LogProtocolMsg("send", msg)
+	protocol.LogProtocolMsg("send", msg)
 	_, err = c.conn.Write(data)
 	return err
 }
@@ -124,7 +123,7 @@ func (c *Client) readLoop() {
 			slog.Warn("recv parse error", "error", err, "len", len(line), "detail", errCtx)
 			continue
 		}
-		termlog.LogProtocolMsg("recv", msg)
+		protocol.LogProtocolMsg("recv", msg)
 		c.recvCh <- msg
 	}
 	if err := scanner.Err(); err != nil {

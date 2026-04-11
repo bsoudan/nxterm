@@ -6,7 +6,6 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	termlog "nxtermd/internal/frontendlog"
 )
 
 // ScrollableLayer is a layer that displays scrollable content in a centered
@@ -15,10 +14,10 @@ type ScrollableLayer struct {
 	label   string
 	vp      viewport.Model
 	hScroll int
-	logRing *termlog.LogRingBuffer // non-nil for logviewer (live content)
+	logRing *LogRingBuffer // non-nil for logviewer (live content)
 }
 
-func NewScrollableLayer(label, content string, gotoBottom bool, logRing *termlog.LogRingBuffer, termWidth, termHeight int) *ScrollableLayer {
+func NewScrollableLayer(label, content string, gotoBottom bool, logRing *LogRingBuffer, termWidth, termHeight int) *ScrollableLayer {
 	h := termHeight * 80 / 100
 	if h < 5 {
 		h = 5

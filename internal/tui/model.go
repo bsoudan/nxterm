@@ -9,7 +9,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
-	termlog "nxtermd/internal/frontendlog"
 	"nxtermd/internal/protocol"
 	"nxtermd/pkg/layer"
 	"nxtermd/internal/transport"
@@ -26,7 +25,7 @@ type Model struct {
 	Detached bool
 }
 
-func NewModel(s *Server, pipeW io.Writer, registry *Registry, ring *termlog.LogRingBuffer, endpoint, version, changelog, sessionName string, statusBarMargin int, connectFn func(endpoint, session string)) Model {
+func NewModel(s *Server, pipeW io.Writer, registry *Registry, ring *LogRingBuffer, endpoint, version, changelog, sessionName string, statusBarMargin int, connectFn func(endpoint, session string)) Model {
 	hostname, _ := os.Hostname()
 	req := &requestState{pending: make(map[uint64]ReplyFunc)}
 	// currentServer is a mutable pointer so requestFn always uses the

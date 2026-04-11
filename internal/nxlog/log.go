@@ -1,4 +1,4 @@
-package log
+package nxlog
 
 import (
 	"context"
@@ -21,13 +21,13 @@ type Handler struct {
 	w        io.Writer
 	level    slog.Level
 	mu       sync.Mutex
-	ring     *LogRingBuffer
+	appendFn func(string)
 	notifyFn func()
 	lastNote time.Time
 }
 
-func NewHandler(w io.Writer, level slog.Level, ring *LogRingBuffer) *Handler {
-	return &Handler{w: w, level: level, ring: ring}
+func NewHandler(w io.Writer, level slog.Level, appendFn func(string)) *Handler {
+	return &Handler{w: w, level: level, appendFn: appendFn}
 }
 
 // SetNotifyFn sets a function called (throttled) when new log entries arrive.
@@ -68,8 +68,8 @@ func (h *Handler) Handle(_ context.Context, r slog.Record) error {
 		h.w.Write([]byte(line))
 	}
 
-	if h.ring != nil {
-		h.ring.append(line)
+	if h.appendFn != nil {
+		h.appendFn(line)
 	}
 
 	if h.notifyFn != nil && time.Since(h.lastNote) >= 100*time.Millisecond {
@@ -94,51 +94,4 @@ func formatLevel(l slog.Level) string {
 	default:
 		return "debug"
 	}
-}
-
-// LogRingBuffer is a fixed-capacity ring buffer of log lines.
-type LogRingBuffer struct {
-	mu      sync.Mutex
-	entries []string
-	head    int
-	count   int
-	cap     int
-}
-
-func NewLogRingBuffer(capacity int) *LogRingBuffer {
-	return &LogRingBuffer{
-		entries: make([]string, capacity),
-		cap:     capacity,
-	}
-}
-
-func (r *LogRingBuffer) append(line string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	idx := (r.head + r.count) % r.cap
-	r.entries[idx] = line
-	if r.count < r.cap {
-		r.count++
-	} else {
-		r.head = (r.head + 1) % r.cap
-	}
-}
-
-// String returns all buffered log lines joined together.
-func (r *LogRingBuffer) String() string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	var sb strings.Builder
-	for i := 0; i < r.count; i++ {
-		sb.WriteString(r.entries[(r.head+i)%r.cap])
-	}
-	return sb.String()
-}
-
-// Count returns the number of entries in the buffer.
-func (r *LogRingBuffer) Count() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.count
 }
