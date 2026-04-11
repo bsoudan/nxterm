@@ -11,7 +11,7 @@ import (
 
 	"github.com/creack/pty"
 
-	"nxtermd/pkg/nxtest"
+	"nxtermd/internal/nxtest"
 )
 
 func TestTCPTransport(t *testing.T) {

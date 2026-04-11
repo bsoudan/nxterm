@@ -33,7 +33,7 @@ Set `RELEASE=1` to build optimized binaries (no debug symbols).
 
 **nxtermd** is a terminal multiplexer with a client-server architecture. The server manages PTYs and terminal state; clients connect over the network to view and interact with terminals.
 
-### Server (`server/`)
+### Server (`internal/server/`, `cmd/nxtermd/`)
 
 The server uses a **single event loop** for all mutable state (regions, clients, sessions). No mutexes protect server-level maps — all mutations go through `Server.requests` channel and are handled in `eventLoop()` (`server_requests.go`). Client and region goroutines communicate with the event loop via typed request structs with response channels.
 
@@ -43,26 +43,26 @@ The server uses a **single event loop** for all mutable state (regions, clients,
 - **EventProxy** (`event_proxy.go`): sits between the VT parser and the client write path. Captures terminal events into a batch, handles synchronized output mode (mode 2026) by buffering events until sync completes, then sending a full snapshot instead.
 - **Live upgrade** (`upgrade.go`, `upgrade_protocol.go`, `upgrade_recv.go`): supports zero-downtime server replacement. The old server serializes all state (regions, clients, sessions) to the new process over a Unix socket, including PTY file descriptors.
 
-### Frontend / TUI (`frontend/`)
+### TUI (`internal/tui/`, `internal/ui/`, `cmd/nxterm/`)
 
-Built on **bubbletea v2** with **lipgloss v2** for rendering.
+Built on **bubbletea v2** with **lipgloss v2** for rendering. `internal/tui/` contains the CLI entry point and connection setup. `internal/ui/` contains the bubbletea model and layer stack.
 
-- **Model** (`ui/model.go`): top-level bubbletea model that owns a **layer stack**. Messages propagate top-down through layers; the first layer that handles a message stops propagation.
-- **Layer interface** (`ui/layer.go`): all UI components implement `Layer` (Update/View/Activate/Deactivate). Layers return `[]*lipgloss.Layer` slices that get composited together.
-- **MainLayer** (`ui/mainlayer.go`): the base layer — manages the tab bar, terminal viewport, and region subscriptions.
-- **Terminal** (`ui/terminal.go`): local VT screen that replays `terminal_events` from the server to maintain a synchronized copy of the remote terminal.
-- **Raw input** (`ui/rawio.go`): after bubbletea Init completes, stdin is read directly and forwarded as `RawInputMsg` to avoid bubbletea's input parsing. This preserves exact terminal escape sequences for the remote PTY.
-- **Server connection** (`ui/server.go`): manages the WebSocket/Unix/TCP connection to the server, with automatic reconnection (exponential backoff, 100ms–60s).
+- **Model** (`internal/ui/model.go`): top-level bubbletea model that owns a **layer stack**. Messages propagate top-down through layers; the first layer that handles a message stops propagation.
+- **Layer interface** (`internal/ui/layer.go`): all UI components implement `Layer` (Update/View/Activate/Deactivate). Layers return `[]*lipgloss.Layer` slices that get composited together.
+- **MainLayer** (`internal/ui/mainlayer.go`): the base layer — manages the tab bar, terminal viewport, and region subscriptions.
+- **Terminal** (`internal/ui/terminal.go`): local VT screen that replays `terminal_events` from the server to maintain a synchronized copy of the remote terminal.
+- **Raw input** (`internal/ui/rawio.go`): after bubbletea Init completes, stdin is read directly and forwarded as `RawInputMsg` to avoid bubbletea's input parsing. This preserves exact terminal escape sequences for the remote PTY.
+- **Server connection** (`internal/ui/server.go`): manages the WebSocket/Unix/TCP connection to the server, with automatic reconnection (exponential backoff, 100ms–60s).
 - **Overlay layers**: `connectlayer.go` (session picker), `commandlayer.go` (command palette), `helplayer.go`, `programlayer.go` (spawn program), `scrollablelayer.go` (scrollback), `statuslayer.go`.
-- **Tasks** (`ui/task.go`): synchronous goroutine abstraction over bubbletea's async event loop. A task is a goroutine that communicates with bubbletea through a channel bridge managed by `TaskRunner` in Model. Tasks call `Request()` to make server roundtrips, `WaitFor(filter)` to wait for messages, and `PushLayer()`/`PopLayer()` to manage overlays — all as blocking calls. The `WaitFor` filter returns `(deliver, handled bool)` mirroring the layer pattern: `deliver` routes the message to the task, `handled` controls whether layers also see it. Use tasks for multi-step async workflows (e.g. upgrade); simple single-step overlays (help, picker, input) should stay as plain layers.
+- **Tasks** (`internal/ui/task.go`): synchronous goroutine abstraction over bubbletea's async event loop. A task is a goroutine that communicates with bubbletea through a channel bridge managed by `TaskRunner` in Model. Tasks call `Request()` to make server roundtrips, `WaitFor(filter)` to wait for messages, and `PushLayer()`/`PopLayer()` to manage overlays — all as blocking calls. The `WaitFor` filter returns `(deliver, handled bool)` mirroring the layer pattern: `deliver` routes the message to the task, `handled` controls whether layers also see it. Use tasks for multi-step async workflows (e.g. upgrade); simple single-step overlays (help, picker, input) should stay as plain layers.
 
-### Protocol (`frontend/protocol/`, `protocol.md`)
+### Protocol (`internal/protocol/`, `protocol.md`)
 
 Newline-delimited JSON over any transport. Request/response pattern: every request has a corresponding response with `error` bool + `message` string. Exceptions: `identify` and `input` are fire-and-forget. Server-initiated messages (`screen_update`, `terminal_events`, `region_created`, `region_destroyed`) have no response.
 
 The protocol is documented in `protocol.md`.
 
-### Transport (`transport/`)
+### Transport (`internal/transport/`)
 
 Transport-agnostic `Listen(spec)` / `Dial(spec)` functions. Supported schemes: `unix:`, `tcp:`, `ws:`/`wss:`, `dssh:` (in-process Go SSH server), `ssh:` (client-only; spawns the system `ssh` binary in a PTY and runs `nxtermctl proxy` on the remote). All return `net.Listener`/`net.Conn` — the rest of the codebase is transport-unaware.
 
@@ -70,11 +70,11 @@ Transport-agnostic `Listen(spec)` / `Dial(spec)` functions. Supported schemes: `
 
 A full VT100/xterm terminal emulator library. `Stream` parses escape sequences, `Screen` maintains cell state with colors/attributes, `HistoryScreen` wraps Screen with scrollback. Extensively tested with esctest2 test suite ports and pyte compatibility tests.
 
-### nxtermctl (`termctl/`)
+### nxtermctl (`cmd/nxtermctl/`)
 
-CLI admin tool for the server. Connects using `frontend/client` and sends protocol messages (status, list regions, spawn, kill, etc.).
+CLI admin tool for the server. Connects using `internal/client` and sends protocol messages (status, list regions, spawn, kill, etc.).
 
-### Config (`config/`)
+### Config (`internal/config/`)
 
 TOML configuration. Server: `~/.config/nxtermd/server.toml`. Frontend: `~/.config/nxterm/config.toml`.
 

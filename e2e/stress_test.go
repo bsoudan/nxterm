@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
-	"nxtermd/pkg/nxtest"
+	"nxtermd/internal/nxtest"
 )
 
 // ── Configuration ───────────────────────────────────────────────────────────

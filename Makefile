@@ -21,7 +21,7 @@ all: build-server build-tui build-termctl build-mousehelper build-nativeapp
 # upgrade binary the server hands out to clients. Short names are
 # symlinked to the full name for convenience.
 build-server:
-	go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o .local/bin/$(SERVER_BIN)-$(HOST_OS_ARCH) ./server
+	go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o .local/bin/$(SERVER_BIN)-$(HOST_OS_ARCH) ./cmd/nxtermd
 	ln -sf $(SERVER_BIN)-$(HOST_OS_ARCH) .local/bin/$(SERVER_BIN)
 
 changelog:
@@ -33,12 +33,12 @@ changelog:
 		ver=$$(git describe --tags --always $$hash 2>/dev/null); \
 		printf '%18s %s\n' "$$ver:" "$$rest"; \
 	done >> "$$tmp"; \
-	mv "$$tmp" frontend/changelog.txt
+	mv "$$tmp" internal/tui/changelog.txt
 
 build-tui: changelog
-	go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o .local/bin/$(TUI_BIN)-$(HOST_OS_ARCH) ./frontend
+	go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o .local/bin/$(TUI_BIN)-$(HOST_OS_ARCH) ./cmd/nxterm
 	ln -sf $(TUI_BIN)-$(HOST_OS_ARCH) .local/bin/$(TUI_BIN)
-	GOOS=windows GOARCH=amd64 go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o .local/bin/$(TUI_BIN)-windows-amd64.exe ./frontend
+	GOOS=windows GOARCH=amd64 go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o .local/bin/$(TUI_BIN)-windows-amd64.exe ./cmd/nxterm
 	ln -sf $(TUI_BIN)-windows-amd64.exe .local/bin/$(TUI_BIN).exe
 
 build-mousehelper:
@@ -48,22 +48,22 @@ build-nativeapp:
 	cd e2e/testdata/nativeapp && go build -o ../../../.local/bin/nativeapp .
 
 build-termctl:
-	go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o .local/bin/$(CTL_BIN) ./termctl
+	go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o .local/bin/$(CTL_BIN) ./cmd/nxtermctl
 
 build-nxtest:
-	go build $(GCFLAGS) -o .local/bin/nxtest ./nxtest
+	go build $(GCFLAGS) -o .local/bin/nxtest ./cmd/nxtest
 
 UPGRADE_TEST_DIR := .local/upgrade-binaries
 UPGRADE_TEST_VERSION := upgrade-test-v2
 
 build-upgrade-test-binaries: changelog
 	@mkdir -p $(UPGRADE_TEST_DIR)
-	go build $(GCFLAGS) -ldflags "-X main.version=$(UPGRADE_TEST_VERSION)" -o $(UPGRADE_TEST_DIR)/$(SERVER_BIN)-$$(go env GOOS)-$$(go env GOARCH) ./server
-	go build $(GCFLAGS) -ldflags "-X main.version=$(UPGRADE_TEST_VERSION)" -o $(UPGRADE_TEST_DIR)/$(TUI_BIN)-$$(go env GOOS)-$$(go env GOARCH) ./frontend
+	go build $(GCFLAGS) -ldflags "-X main.version=$(UPGRADE_TEST_VERSION)" -o $(UPGRADE_TEST_DIR)/$(SERVER_BIN)-$$(go env GOOS)-$$(go env GOARCH) ./cmd/nxtermd
+	go build $(GCFLAGS) -ldflags "-X main.version=$(UPGRADE_TEST_VERSION)" -o $(UPGRADE_TEST_DIR)/$(TUI_BIN)-$$(go env GOOS)-$$(go env GOARCH) ./cmd/nxterm
 
 check-windows:
-	GOOS=windows GOARCH=amd64 go build -o /dev/null ./frontend
-	GOOS=windows GOARCH=amd64 go build -o /dev/null ./transport
+	GOOS=windows GOARCH=amd64 go build -o /dev/null ./cmd/nxterm
+	GOOS=windows GOARCH=amd64 go build -o /dev/null ./internal/transport
 
 test: test-e2e
 

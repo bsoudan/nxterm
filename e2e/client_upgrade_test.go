@@ -15,10 +15,10 @@ import (
 	"time"
 
 	"github.com/creack/pty"
-	"nxtermd/frontend/client"
-	"nxtermd/frontend/protocol"
-	"nxtermd/pkg/nxtest"
-	"nxtermd/transport"
+	"nxtermd/internal/client"
+	"nxtermd/internal/protocol"
+	"nxtermd/internal/nxtest"
+	"nxtermd/internal/transport"
 )
 
 // upgradeBinariesDir returns the path to the pre-built upgrade test binaries.

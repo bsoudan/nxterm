@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
-	"nxtermd/pkg/nxtest"
+	"nxtermd/internal/nxtest"
 	"nxtermd/pkg/te"
 )
 

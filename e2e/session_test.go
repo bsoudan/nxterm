@@ -9,7 +9,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/creack/pty"
-	"nxtermd/pkg/nxtest"
+	"nxtermd/internal/nxtest"
 )
 
 // startFrontendWithSession starts an nxterm with the given --session flag.

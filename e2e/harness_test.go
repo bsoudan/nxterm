@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/x/ansi"
-	"nxtermd/pkg/nxtest"
+	"nxtermd/internal/nxtest"
 )
 
 // shellSGR converts ansi.SGR() output to shell printf \e notation.

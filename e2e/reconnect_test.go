@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
-	"nxtermd/pkg/nxtest"
+	"nxtermd/internal/nxtest"
 )
 
 func TestReconnectUnix(t *testing.T) {

@@ -1,0 +1,101 @@
+0.14.0-97-gd9468dc*:  M CLAUDE.md  M Makefile A  cmd/nxtermctl/main.go A  cmd/nxtermctl/proxy.go A  cmd/nxtermctl/show_config.go A  cmd/nxtest/commands.go A  cmd/nxtest/daemon.go A  cmd/nxtest/ipc.go A  cmd/nxtest/main.go A  cmd/nxtest/nxtest_test.go  D config/config.go  D config/config_test.go  D config/show.go  D config/show_helpers.go  D config/source.go  D config/source_test.go  D config/trace.go  M e2e/client_upgrade_test.go  M e2e/harness_test.go  M e2e/input_test.go  M e2e/keybind_test.go  M e2e/multisession_test.go  M e2e/overlay_test.go  M e2e/reconnect_test.go  M e2e/render_test.go  M e2e/session_test.go  M e2e/stress_test.go  M e2e/transport_test.go  M e2e/upgrade_test.go  D frontend/browse.go  D frontend/client/client.go  D frontend/conpty_wrap_other.go  D frontend/conpty_wrap_windows.go  D frontend/cooked_prompter.go  D frontend/log/log.go  D frontend/log/protocol.go  D frontend/main.go  D frontend/platform_unix.go  D frontend/platform_windows.go  D frontend/protocol/color.go  D frontend/protocol/color_test.go  D frontend/protocol/protocol.go  D frontend/protocol/protocol_test.go  D frontend/show_config.go  D frontend/show_keybindings.go  D frontend/stdin_unix.go  D frontend/stdin_windows.go  D frontend/ui/commandlayer.go  D frontend/ui/commandpalette.go  D frontend/ui/commands.go  D frontend/ui/connectlayer.go  D frontend/ui/helplayer.go  D frontend/ui/keybind.go  D frontend/ui/keybind_test.go  D frontend/ui/layer.go  D frontend/ui/mainlayer.go  D frontend/ui/model.go  D frontend/ui/mouse.go  D frontend/ui/msgs.go  D frontend/ui/programlayer.go  D frontend/ui/rawio.go  D frontend/ui/rawio_test.go  D frontend/ui/rawio_unix.go  D frontend/ui/rawio_windows.go  D frontend/ui/recents.go  D frontend/ui/render_test.go  D frontend/ui/renderstate.go  D frontend/ui/scrollablelayer.go  D frontend/ui/scrollback.go  D frontend/ui/secret_input_layer.go  D frontend/ui/server.go  D frontend/ui/session.go  D frontend/ui/sessionname.go  D frontend/ui/sessionpicker.go  D frontend/ui/statuslayer.go  D frontend/ui/styles.go  D frontend/ui/task.go  D frontend/ui/task_test.go  D frontend/ui/terminal.go  D frontend/ui/toast.go  D frontend/ui/ui_prompter.go  D frontend/ui/upgrade.go  D frontend/ui/upgrade_old_binaries.go  D frontend/ui/upgrade_old_binaries_test.go  D frontend/ui/upgrade_unix.go  D frontend/ui/upgrade_windows.go A  internal/client/client.go A  internal/config/config.go A  internal/config/config_test.go A  internal/config/show.go A  internal/config/show_helpers.go A  internal/config/source.go A  internal/config/source_test.go A  internal/config/trace.go A  internal/frontendlog/log.go A  internal/frontendlog/protocol.go A  internal/nxtest/config.go A  internal/nxtest/frontend.go A  internal/nxtest/nxtest.go A  internal/nxtest/ptyio.go A  internal/nxtest/server.go A  internal/protocol/color.go A  internal/protocol/color_test.go A  internal/protocol/protocol.go A  internal/protocol/protocol_test.go A  internal/server/client.go A  internal/server/client_upgrade.go A  internal/server/discovery.go A  internal/server/discovery_test.go A  internal/server/event_proxy.go A  internal/server/event_proxy_test.go A  internal/server/main.go A  internal/server/pprof.go A  internal/server/region.go A  internal/server/sdnotify.go A  internal/server/sequence_safe_test.go A  internal/server/server.go A  internal/server/server_requests.go A  internal/server/service.go A  internal/server/session.go A  internal/server/show_config.go A  internal/server/upgrade.go A  internal/server/upgrade_protocol.go A  internal/server/upgrade_recv.go A  internal/transport/debug_unix.go A  internal/transport/debug_windows.go A  internal/transport/exec_conn.go A  internal/transport/exec_pty_unix.go A  internal/transport/exec_pty_windows.go A  internal/transport/prompter.go A  internal/transport/ssh.go A  internal/transport/ssh_exec.go A  internal/transport/ssh_exec_flags_unix.go A  internal/transport/ssh_exec_flags_windows.go A  internal/transport/ssh_exec_test.go A  internal/transport/trace_conn.go A  internal/transport/transport.go A  internal/transport/transport_test.go A  internal/transport/unix_unix.go A  internal/transport/unix_windows.go A  internal/transport/ws.go A  internal/tui/browse.go A  internal/tui/conpty_wrap_other.go A  internal/tui/conpty_wrap_windows.go A  internal/tui/cooked_prompter.go A  internal/tui/main.go A  internal/tui/platform_unix.go A  internal/tui/platform_windows.go A  internal/tui/show_config.go A  internal/tui/show_keybindings.go A  internal/tui/stdin_unix.go A  internal/tui/stdin_windows.go A  internal/ui/commandlayer.go A  internal/ui/commandpalette.go A  internal/ui/commands.go A  internal/ui/connectlayer.go A  internal/ui/helplayer.go A  internal/ui/keybind.go A  internal/ui/keybind_test.go A  internal/ui/layer.go A  internal/ui/mainlayer.go A  internal/ui/model.go A  internal/ui/mouse.go A  internal/ui/msgs.go A  internal/ui/programlayer.go A  internal/ui/rawio.go A  internal/ui/rawio_test.go A  internal/ui/rawio_unix.go A  internal/ui/rawio_windows.go A  internal/ui/recents.go A  internal/ui/render_test.go A  internal/ui/renderstate.go A  internal/ui/scrollablelayer.go A  internal/ui/scrollback.go A  internal/ui/secret_input_layer.go A  internal/ui/server.go A  internal/ui/session.go A  internal/ui/sessionname.go A  internal/ui/sessionpicker.go A  internal/ui/statuslayer.go A  internal/ui/styles.go A  internal/ui/task.go A  internal/ui/task_test.go A  internal/ui/terminal.go A  internal/ui/toast.go A  internal/ui/ui_prompter.go A  internal/ui/upgrade.go A  internal/ui/upgrade_old_binaries.go A  internal/ui/upgrade_old_binaries_test.go A  internal/ui/upgrade_unix.go A  internal/ui/upgrade_windows.go  D nxtest/commands.go  D nxtest/daemon.go  D nxtest/ipc.go  D nxtest/main.go  D nxtest/nxtest_test.go A  pkg/layer/stack.go A  pkg/layer/stack_test.go A  pkg/layer/task.go A  pkg/layer/task_test.go  D pkg/nxtest/config.go  D pkg/nxtest/frontend.go  D pkg/nxtest/nxtest.go  D pkg/nxtest/ptyio.go  D pkg/nxtest/server.go  D pkg/tui/stack.go  D pkg/tui/stack_test.go  D pkg/tui/task.go  D pkg/tui/task_test.go  D server/client.go  D server/client_upgrade.go  D server/discovery.go  D server/discovery_test.go  D server/event_proxy.go  D server/event_proxy_test.go  D server/main.go  D server/pprof.go  D server/region.go  D server/sdnotify.go  D server/sequence_safe_test.go  D server/server.go  D server/server_requests.go  D server/service.go  D server/session.go  D server/show_config.go  D server/upgrade.go  D server/upgrade_protocol.go  D server/upgrade_recv.go  D termctl/main.go  D termctl/proxy.go  D termctl/show_config.go  D transport/debug_unix.go  D transport/debug_windows.go  D transport/exec_conn.go  D transport/exec_pty_unix.go  D transport/exec_pty_windows.go  D transport/prompter.go  D transport/ssh.go  D transport/ssh_exec.go  D transport/ssh_exec_flags_unix.go  D transport/ssh_exec_flags_windows.go  D transport/ssh_exec_test.go  D transport/trace_conn.go  D transport/transport.go  D transport/transport_test.go  D transport/unix_unix.go  D transport/unix_windows.go  D transport/ws.go ?? claude ?? cmd/nxterm/ ?? cmd/nxtermd/ ?? doc/server-concurrency.md ?? enter ?? examples/native_scratchpad/native_scratchpad ?? examples_bin/ ?? internal/tui/changelog.txt ?? logos ?? profile001.callgraph.out ?? todo ?? ttui.tape ?? x 
+0.14.0-97-gd9468dc: remove vendored urfave/cli, use upstream module directly
+0.14.0-96-gb46a271: feat: add nxtest agent-driven test harness and CLI
+0.14.0-95-gbbc8217: fix: stabilize stress test against UI and session changes
+0.14.0-94-g3dd61e4: fix: align tests with tab bar angle brackets and upgrade status text
+0.14.0-93-g139ba0a: fix: keep upgrade status notification consistent in tab bar
+0.14.0-92-g1457816: feat: configurable scroll-up/scroll-down keybindings
+0.14.0-91-gbcdf3ff: feat: base64 armor for Windows ConPTY + wire tracing + protocol logging
+0.14.0-90-gcbd616a: fix: ssh:// transport shell quoting and PATH setup
+0.14.0-89-g9f68755: style: restyle tab bar — active tab in cyan with angle brackets
+0.14.0-88-g5225377: test(e2e): repair tests broken by recent UI changes
+0.14.0-87-g1bab56c: feat: ssh:// transport works on Windows via ConPTY
+0.14.0-86-g29504d1: feat: ssh:// transport spawns system ssh in a PTY and runs nxtermctl proxy
+0.14.0-85-g98da964: style: show only tab number in bold for active tab
+0.14.0-84-g5a973e8: refactor: rename ssh transport scheme to dssh
+0.14.0-83-gfbdd6ad: style: separate region title and server with bullet in window title
+0.14.0-82-g4f4ec51: feat: broadcast upgrade phases so client dialog tracks real handoff
+0.14.0-81-g31dc4dc: feat: surface region titles in tab bar and outer terminal title
+0.14.0-80-gf013621: chore: add vhs and ubuntu-classic to dev shell
+0.14.0-79-ga51afe5: fix: stop PTY readLoop before snapshot during live upgrade
+0.14.0-78-g8c8fd2a: fix(windows): use unique .old.<nanos> slot per chained live upgrade
+0.14.0-77-g9a7571e: fix: honor DECTCEM cursor visibility and show modes in status dialog
+0.14.0-76-g560ba45: fix: handle private CSI prefixes and wire region terminal replies
+0.14.0-75-g02282f9: feat: support SGR faint attribute end-to-end
+0.14.0-74-g0c5d999: feat: size regions from client viewport on session connect
+0.14.0-73-g69c49b2: chore: add dev-session.sh for isolated local sessions
+0.14.0-72-gef48b15: feat: session-aware discovery, unified upgrade binaries, recent removal
+0.14.0-71-g505c5cf: feat: --show-config and --show-keybindings introspection
+0.14.0-70-gbffc6c6: vendor urfave/cli v3.8.0 into pkg/ for local patching
+0.14.0-69-g8c4b066: fix: correct NXNXTERMD_VERSION typo in systemd unit template
+0.14.0-68-g66ad3a2: feat: generic render state through layer stack, command mode cursor
+0.14.0-67-g58a1fad: ui: refresh overlay styling and status bar layout
+0.14.0-66-g5ba4cbd: rename termd → nxtermd, termd-tui → nxterm, termctl → nxtermctl
+0.14.0-65-ga768b8f: feat: route input to overlay client via overlay_input messages
+0.14.0-64-ge206c9c: fix: TUI freeze on wide characters (ultraviolet infinite loop)
+0.14.0-63-gfdce57a: vendor ultraviolet into pkg/ for local patching
+0.14.0-62-g88f986e: fix: only dim terminal when an overlay has keyboard focus
+0.14.0-61-g1ce52c4: fix: include modes in get_screen_response so overlays survive refresh
+0.14.0-60-ga777d3d: feat: replace NativeRegion with socket-based overlay system
+0.14.0-59-g4e89079: feat: replace CommandLayer with synchronous command mode in MainLayer
+0.14.0-58-g3e23f7a: feat: add --pprof flag and config option for runtime profiling
+0.14.0-57-gba95089: feat: add native app protocol with fd 3 negotiation, tests, and scratchpad example
+0.14.0-56-g6eaf317: fix: stream scrollback in chunks and add region data to status panel
+0.14.0-55-gb9edf4e: fix: use FreeConsole to detach old process during Windows upgrade
+0.14.0-54-gd5d7763: fix: don't close pipeW in PreUpgradeCleanup on Windows
+0.14.0-53-g011d6cb: feat: use cyan for overlay borders and help text
+0.14.0-52-g196268a: feat: dim terminal and add clear margin when overlay is active
+0.14.0-51-gb98239f: fix: unblock console read before starting new process on Windows
+0.14.0-50-g37f96de: fix: disconnect old process during Windows frontend upgrade
+0.14.0-49-gb22536c: fix: filter bubbletea capability responses from raw input
+0.14.0-48-gc31ccfa: fix: polish scrollback scrollbar rendering
+0.14.0-47-gea38f0d: feat: add scrollbar to scrollback view
+0.14.0-46-g8d7def6: feat: add key filter mechanism to WantsKeyboardInput for PageUp/PageDown scrollback
+0.14.0-45-g8a9a29c: fix: close duplicated stdin handle during Windows frontend upgrade
+0.14.0-44-g090c124: refactor: replace scrollback mode with ScrollbackLayer
+0.14.0-43-g536a442: refactor: extract reusable TUI core into pkg/tui
+0.14.0-42-g4239ddc: fix: prevent stdin split after Windows frontend upgrade
+0.14.0-41-g8e78f93: feat: add RPM packaging and Nix build derivation
+0.14.0-40-g00e58eb: fix: verify server acceptance before declaring reconnect success
+0.14.0-39-g5272e40: docs: document task system in CLAUDE.md
+0.14.0-38-g5818ee4: feat: add synchronous task abstraction for bubbletea UI
+0.14.0-37-gd7cb06b: refactor: split monolithic e2e_test.go into focused test files
+0.14.0-36-g3abdd50: fix: propagate terminal dimensions to new session on reconnect
+0.14.0-35-gab0d65f: fix: kill upgrade test server process groups to prevent orphaned processes
+0.14.0-34-gbb2ac4a: feat: show upgrade availability in status overlay
+0.14.0-33-g694a175: fix: fresh upgrade check on ctrl+b u and Windows cross-drive rename
+0.14.0-32-g919ec4f: fix: show version below logo in startup hint overlay
+0.14.0-31-g5564c71: docs: update TODO with upgrade ack and paginated scrollback ideas
+0.14.0-30-g69a4110: fix: reload config file on live upgrade instead of inheriting stale state
+0.14.0-29-g1325ca6: fix: reduce live upgrade state serialization size
+0.14.0-28-g60b0c15: fix: client upgrade broken for Windows and cross-platform binaries
+0.14.0-27-g0e43911: docs: update CLAUDE.md with full project architecture and build instructions
+0.14.0-26-g724b312: fix: live upgrade fails with large scrollback state
+0.14.0-25-g3ff07be: feat: toast notification popup and no-upgrade feedback
+0.14.0-24-g762e9dc: add build-upgrade-binaries target to default build
+0.14.0-23-g8e37743: feat: client-triggered upgrade for both server and client binaries
+0.14.0-22-g7520fcd: fix: use cmd.Process.Pid directly in upgrade tests instead of roundabout methods
+0.14.0-21-gcec9968: fix: support chained live upgrades (upgrade-from-upgrade)
+0.14.0-20-g4fd2d94: fix: old server process hangs after live upgrade, add simple upgrade test
+0.14.0-19-g26d2ac7: fix: subscribe race where late-joining clients could get blank screen
+0.14.0-18-gc5951d1: systemd notify support, termd live-upgrade command, test reliability
+0.14.0-17-g2b5ccc2: live upgrade: zero-downtime binary upgrade via SIGUSR2
+0.14.0-16-gb838013: connect overlay: browse/select servers from TUI
+0.14.0-15-g45954c5: mDNS service discovery for termd server
+0.14.0-14-gf1c9ae0: fix: ignore Ctrl+Z EOF on Windows to prevent UI freeze
+0.14.0-13-gce63462: no-session mode: stay alive when last session closes
+0.14.0-12-g491c5e7: rename frontend binary to ttui, symlink termd-tui for compat
+0.14.0-11-g0e23117: consolidate multi-module Go layout into single root module
+0.14.0-10-g1f245bb: command palette and rendering fixes
+0.14.0-9-g7fae2ad: fix: buffer incomplete UTF-8 and ANSI sequences across PTY reads
+0.14.0-8-g2b73dfb: add alt+fN, ctrl+fN, and ctrl+./ctrl+, keybindings
+0.14.0-7-g4a0025e: help overlay: use bubbles/v2/table widget, reorder categories
+0.14.0-6-gb4e1b61: refactor: consolidate command messages into SessionCmd and MainCmd
+0.14.0-5-g93ea2ea: command registry with configurable keybindings and style presets
+0.14.0-4-gf644e9d: add alt+, and alt+. shortcuts for prev/next tab navigation
+0.14.0-3-g025ae2c: stress: add detach/kill/pause ops and test-stress-long target
+0.14.0-2-gff5c0b4: stress test harness: TUI + raw protocol clients with periodic snapshots
+0.14.0-1-g3086860: fix: forward stdin to bubbletea during init to prevent escape sequence leak
+           0.14.0: multiple sessions: MainLayer manages session lifecycle with create/kill/switch
+          af81743: refactor: Layer interface gains Activate/Deactivate, View returns slice; TerminalChild→TerminalLayer
+          bf2bf47: fix: seven review issues in server event loop

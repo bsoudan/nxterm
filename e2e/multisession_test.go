@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"nxtermd/pkg/nxtest"
+	"nxtermd/internal/nxtest"
 )
 
 // connectViaUI sends ctrl+b S o to open the connect overlay, types the

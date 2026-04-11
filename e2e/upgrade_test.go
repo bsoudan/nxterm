@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"github.com/creack/pty"
-	"nxtermd/frontend/protocol"
-	"nxtermd/pkg/nxtest"
+	"nxtermd/internal/protocol"
+	"nxtermd/internal/nxtest"
 )
 
 // TestLiveUpgrade starts a server with Unix, TCP, WebSocket, and SSH

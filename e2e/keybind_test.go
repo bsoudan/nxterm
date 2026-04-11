@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"nxtermd/pkg/nxtest"
+	"nxtermd/internal/nxtest"
 )
 
 func TestPrefixKeyDetach(t *testing.T) {
