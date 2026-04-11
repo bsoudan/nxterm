@@ -42,5 +42,3 @@ require (
 )
 
 replace github.com/charmbracelet/ultraviolet => ./pkg/ultraviolet
-
-replace github.com/urfave/cli/v3 => ./pkg/cli
