@@ -111,7 +111,7 @@ func upgradeTask(t *TermdHandle, server *Server,
 		Title:      "Upgrade",
 		Lines:      infoLines,
 		Help:       "enter: upgrade • q/esc: cancel",
-		StatusText: "upgrade ready",
+		StatusText: "Upgrade",
 	}
 	t.PushLayer(overlay)
 	defer t.PopLayer(overlay)
@@ -130,7 +130,6 @@ func upgradeTask(t *TermdHandle, server *Server,
 		overlay.Lines = infoLines[:len(infoLines)-1] // remove prompt
 		overlay.Lines = append(overlay.Lines, "  Upgrading server...")
 		overlay.Help = "q/esc: cancel"
-		overlay.StatusText = "upgrading server..."
 
 		resp, err := t.Request(protocol.ServerUpgradeRequest{})
 		if err != nil {
@@ -167,7 +166,6 @@ func upgradeTask(t *TermdHandle, server *Server,
 			status := raw.(protocol.ServerUpgradeStatus)
 			overlay.Lines = infoLines[:len(infoLines)-1]
 			overlay.Lines = append(overlay.Lines, "  "+phaseStatusLine(status.Phase))
-			overlay.StatusText = phaseStatusLine(status.Phase)
 
 			switch status.Phase {
 			case protocol.UpgradePhaseFailed:
@@ -182,7 +180,6 @@ func upgradeTask(t *TermdHandle, server *Server,
 
 		overlay.Lines = infoLines[:len(infoLines)-1]
 		overlay.Lines = append(overlay.Lines, "  Waiting for new server...")
-		overlay.StatusText = "reconnecting..."
 
 		_, err = t.WaitFor(func(msg any) (bool, bool) {
 			_, ok := msg.(ReconnectedMsg)
@@ -196,7 +193,6 @@ func upgradeTask(t *TermdHandle, server *Server,
 			overlay.Lines = infoLines[:len(infoLines)-1]
 			overlay.Lines = append(overlay.Lines, "  Server upgraded successfully.", "", "  Press any key to close.")
 			overlay.Help = "any key: close"
-			overlay.StatusText = "upgrade complete"
 			t.WaitFor(IsKeyPress)
 			return
 		}
@@ -216,7 +212,6 @@ func upgradeTask(t *TermdHandle, server *Server,
 
 	overlay.Lines = infoLines[:len(infoLines)-1]
 	overlay.Lines = append(overlay.Lines, "  Downloading client binary...")
-	overlay.StatusText = "downloading client..."
 
 	resp, err := t.Request(protocol.ClientBinaryRequest{
 		OS:   runtime.GOOS,
@@ -266,7 +261,6 @@ func setupDownload(server *Server) (*Download, error) {
 
 func applyClientUpgrade(overlay *Overlay, t *TermdHandle, dl *Download, server *Server, expectedHash string, expectedSize int64) {
 	overlay.Lines = []string{"  Applying update..."}
-	overlay.StatusText = "applying client update..."
 
 	downloaded := dl.written.Load()
 	gotHash := fmt.Sprintf("%x", dl.hasher.Sum(nil))
