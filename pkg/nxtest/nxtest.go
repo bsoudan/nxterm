@@ -1,0 +1,73 @@
+// Package nxtest provides a reusable test harness for driving nxterm/nxtermd
+// in a PTY. It includes PtyIO (virtual screen over a PTY), ServerProcess,
+// Frontend, config helpers, and a T type that wraps *testing.T for
+// ergonomic e2e test code.
+package nxtest
+
+import (
+	"testing"
+	"time"
+)
+
+// T wraps a testing.T and a PtyIO (and optionally a Frontend) so that
+// test code can use a single object for all interactions:
+//
+//	nxt.WaitFor("prompt$", 10*time.Second)
+//	nxt.Write([]byte("echo hello\r"))
+//	nxt.WaitForSilence(200 * time.Millisecond)
+//	lines := nxt.ScreenLines()
+type T struct {
+	*testing.T
+	*PtyIO
+	Frontend *Frontend // nil when wrapping a bare PtyIO
+}
+
+// New wraps a bare PtyIO (no frontend process).
+func New(t *testing.T, pio *PtyIO) *T {
+	return &T{T: t, PtyIO: pio}
+}
+
+// NewFromFrontend wraps a Frontend (which embeds a PtyIO).
+func NewFromFrontend(t *testing.T, fe *Frontend) *T {
+	return &T{T: t, PtyIO: fe.PtyIO, Frontend: fe}
+}
+
+// WaitFor waits for needle to appear on the virtual screen.
+// Calls t.Fatal on timeout or PTY close.
+func (t *T) WaitFor(needle string, timeout time.Duration) []string {
+	t.Helper()
+	lines, err := t.PtyIO.WaitFor(needle, timeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return lines
+}
+
+// WaitForScreen waits for check to return true against the screen content.
+// Calls t.Fatal on timeout or PTY close.
+func (t *T) WaitForScreen(check func([]string) bool, desc string, timeout time.Duration) []string {
+	t.Helper()
+	lines, err := t.PtyIO.WaitForScreen(check, desc, timeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return lines
+}
+
+// FindOnScreen returns the row and column where needle first appears
+// on the current screen, or (-1, -1).
+func (t *T) FindOnScreen(needle string) (row, col int) {
+	return FindOnScreen(t.ScreenLines(), needle)
+}
+
+// Kill forcibly terminates the frontend process.
+// Panics if T was created with New (no frontend).
+func (t *T) Kill() {
+	t.Frontend.Kill()
+}
+
+// Wait waits for the frontend process to exit.
+// Panics if T was created with New (no frontend).
+func (t *T) Wait(timeout time.Duration) error {
+	return t.Frontend.Wait(timeout)
+}

@@ -10,10 +10,10 @@ func TestRegionKilledExternally(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()
 
-	pio, frontendCleanup := startFrontend(t, socketPath)
-	defer frontendCleanup()
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
 
-	pio.WaitFor(t, "nxterm$",10*time.Second)
+	nxt.WaitFor("nxterm$", 10*time.Second)
 
 	// Get the region ID
 	out := runNxtermctl(t, socketPath, "region", "list")
@@ -33,19 +33,19 @@ func TestRegionKilledExternally(t *testing.T) {
 	runNxtermctl(t, socketPath, "region", "kill", regionID)
 
 	// Frontend should enter the no-session screen instead of exiting.
-	pio.WaitFor(t, "no session", 10*time.Second)
+	nxt.WaitFor("no session", 10*time.Second)
 }
 
 func TestExit(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()
 
-	pio, frontendCleanup := startFrontend(t, socketPath)
-	defer frontendCleanup()
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
 
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
-	pio.Write([]byte("exit\r"))
+	nxt.WaitFor("nxterm$", 10*time.Second)
+	nxt.Write([]byte("exit\r"))
 
 	// Frontend should enter the no-session screen instead of exiting.
-	pio.WaitFor(t, "no session", 10*time.Second)
+	nxt.WaitFor("no session", 10*time.Second)
 }

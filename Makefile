@@ -1,4 +1,4 @@
-.PHONY: all build-server changelog build-tui build-termctl build-mousehelper build-nativeapp build-upgrade-test-binaries check-windows test test-e2e test-upgrade test-stress test-stress-long rpm version clean
+.PHONY: all build-server changelog build-tui build-termctl build-nxtest build-mousehelper build-nativeapp build-upgrade-test-binaries check-windows test test-e2e test-upgrade test-stress test-stress-long rpm version clean
 
 # Binary names
 SERVER_BIN   := nxtermd
@@ -49,6 +49,9 @@ build-nativeapp:
 
 build-termctl:
 	go build $(GCFLAGS) -ldflags "$(LDFLAGS)" -o .local/bin/$(CTL_BIN) ./termctl
+
+build-nxtest:
+	go build $(GCFLAGS) -o .local/bin/nxtest ./nxtest
 
 UPGRADE_TEST_DIR := .local/upgrade-binaries
 UPGRADE_TEST_VERSION := upgrade-test-v2

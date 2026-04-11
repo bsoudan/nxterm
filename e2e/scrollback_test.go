@@ -18,13 +18,13 @@ func TestScrollbackBuffer(t *testing.T) {
 	regionID := spawnRegion(t, socketPath, "shell")
 
 	// Wait for shell prompt
-	pio, frontendCleanup := startFrontend(t, socketPath)
-	defer frontendCleanup()
-	pio.WaitFor(t, "nxterm$",10*time.Second)
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
+	nxt.WaitFor("nxterm$",10*time.Second)
 
 	// Output 200 lines — in a 24-row terminal, early lines scroll off
-	pio.Write([]byte("seq 1 200\r"))
-	pio.WaitFor(t, "nxterm$",10*time.Second)
+	nxt.Write([]byte("seq 1 200\r"))
+	nxt.WaitFor("nxterm$",10*time.Second)
 
 	// Poll scrollback via nxtermctl until early numbers are present.
 	// The server's terminal emulator may still be processing output
@@ -73,32 +73,32 @@ func TestScrollbackNavigation(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()
 
-	pio, frontendCleanup := startFrontend(t, socketPath)
-	defer frontendCleanup()
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
 
-	pio.WaitFor(t, "nxterm$",10*time.Second)
+	nxt.WaitFor("nxterm$",10*time.Second)
 
 	// Generate enough output to fill scrollback
-	pio.Write([]byte("seq 1 200\r"))
-	pio.WaitFor(t, "nxterm$",10*time.Second)
+	nxt.Write([]byte("seq 1 200\r"))
+	nxt.WaitFor("nxterm$",10*time.Second)
 
 	// Enter scrollback mode with ctrl+b [
-	pio.Write([]byte{0x02, '['})
+	nxt.Write([]byte{0x02, '['})
 
 	// Tab bar should show "scrollback"
-	pio.WaitForScreen(t, func(lines []string) bool {
+	nxt.WaitForScreen(func(lines []string) bool {
 		return strings.Contains(lines[0], "scrollback")
 	}, "scrollback indicator in tab bar", 5*time.Second)
 
 	// Page up several times to reach early numbers
 	for range 20 {
-		pio.Write([]byte{0x15}) // ctrl+u = page up
+		nxt.Write([]byte{0x15}) // ctrl+u = page up
 		time.Sleep(30 * time.Millisecond)
 	}
 
 	// Verify early numbers appear on screen.
 	// Use Fields[0] to ignore the scrollbar column at the right edge.
-	pio.WaitForScreen(t, func(lines []string) bool {
+	nxt.WaitForScreen(func(lines []string) bool {
 		for _, line := range lines[1:] { // skip tab bar
 			if fields := strings.Fields(line); len(fields) > 0 {
 				if fields[0] == "1" || fields[0] == "2" || fields[0] == "3" {
@@ -110,10 +110,10 @@ func TestScrollbackNavigation(t *testing.T) {
 	}, "early numbers (1/2/3) visible on screen", 5*time.Second)
 
 	// Exit scrollback with q
-	pio.Write([]byte("q"))
+	nxt.Write([]byte("q"))
 
 	// Tab bar should no longer show "scrollback" and prompt should be visible
-	pio.WaitForScreen(t, func(lines []string) bool {
+	nxt.WaitForScreen(func(lines []string) bool {
 		if strings.Contains(lines[0], "scrollback") {
 			return false
 		}
@@ -132,32 +132,32 @@ func TestScrollbackPageUpDown(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()
 
-	pio, frontendCleanup := startFrontend(t, socketPath)
-	defer frontendCleanup()
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
 
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
+	nxt.WaitFor("nxterm$", 10*time.Second)
 
 	// Generate enough output to fill scrollback
-	pio.Write([]byte("seq 1 200\r"))
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
-	pio.WaitForSilence(200 * time.Millisecond)
+	nxt.Write([]byte("seq 1 200\r"))
+	nxt.WaitFor("nxterm$", 10*time.Second)
+	nxt.WaitForSilence(200 * time.Millisecond)
 
 	// Send PageUp (\x1b[5~) — should activate scrollback
-	pio.Write([]byte("\x1b[5~"))
+	nxt.Write([]byte("\x1b[5~"))
 
 	// Tab bar should show "scrollback"
-	pio.WaitForScreen(t, func(lines []string) bool {
+	nxt.WaitForScreen(func(lines []string) bool {
 		return strings.Contains(lines[0], "scrollback")
 	}, "scrollback activated by PageUp", 5*time.Second)
 
 	// Send more PageUp keys to scroll further back
 	for range 20 {
-		pio.Write([]byte("\x1b[5~"))
+		nxt.Write([]byte("\x1b[5~"))
 		time.Sleep(30 * time.Millisecond)
 	}
 
 	// Verify early numbers appear on screen.
-	pio.WaitForScreen(t, func(lines []string) bool {
+	nxt.WaitForScreen(func(lines []string) bool {
 		for _, line := range lines[1:] {
 			if fields := strings.Fields(line); len(fields) > 0 {
 				if fields[0] == "1" || fields[0] == "2" || fields[0] == "3" {
@@ -169,9 +169,9 @@ func TestScrollbackPageUpDown(t *testing.T) {
 	}, "early numbers visible via PageUp", 5*time.Second)
 
 	// Exit scrollback with q
-	pio.Write([]byte("q"))
+	nxt.Write([]byte("q"))
 
-	pio.WaitForScreen(t, func(lines []string) bool {
+	nxt.WaitForScreen(func(lines []string) bool {
 		if strings.Contains(lines[0], "scrollback") {
 			return false
 		}
@@ -184,16 +184,16 @@ func TestScrollbackPageUpDown(t *testing.T) {
 	}, "prompt visible after scrollback exit", 5*time.Second)
 
 	// Now test PageDown — should also activate scrollback (at offset 0)
-	pio.Write([]byte("\x1b[6~"))
+	nxt.Write([]byte("\x1b[6~"))
 
-	pio.WaitForScreen(t, func(lines []string) bool {
+	nxt.WaitForScreen(func(lines []string) bool {
 		return strings.Contains(lines[0], "scrollback")
 	}, "scrollback activated by PageDown", 5*time.Second)
 
 	// Exit with q
-	pio.Write([]byte("q"))
+	nxt.Write([]byte("q"))
 
-	pio.WaitForScreen(t, func(lines []string) bool {
+	nxt.WaitForScreen(func(lines []string) bool {
 		return !strings.Contains(lines[0], "scrollback")
 	}, "scrollback exited after PageDown test", 5*time.Second)
 }
@@ -202,21 +202,21 @@ func TestScrollbackScrollWheel(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()
 
-	pio, frontendCleanup := startFrontend(t, socketPath)
-	defer frontendCleanup()
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
 
-	pio.WaitFor(t, "nxterm$",10*time.Second)
+	nxt.WaitFor("nxterm$",10*time.Second)
 
 	// Generate output that scrolls off screen
-	pio.Write([]byte("seq 1 200\r"))
-	pio.WaitFor(t, "nxterm$",10*time.Second)
-	pio.WaitForSilence(200 * time.Millisecond)
+	nxt.Write([]byte("seq 1 200\r"))
+	nxt.WaitFor("nxterm$",10*time.Second)
+	nxt.WaitForSilence(200 * time.Millisecond)
 
 	// Send a scroll wheel up event to activate scrollback
-	pio.Write([]byte(fmt.Sprintf("%c[<64;5;5M", ansi.ESC)))
+	nxt.Write([]byte(fmt.Sprintf("%c[<64;5;5M", ansi.ESC)))
 
 	// Wait for scrollback data to arrive (not just mode activation)
-	pio.WaitForScreen(t, func(lines []string) bool {
+	nxt.WaitForScreen(func(lines []string) bool {
 		// Tab bar should show scrollback with non-zero total
 		return strings.Contains(lines[0], "scrollback") &&
 			!strings.Contains(lines[0], "/0]")
@@ -224,12 +224,12 @@ func TestScrollbackScrollWheel(t *testing.T) {
 
 	// Send more scroll wheel up events to scroll to the top
 	for range 70 {
-		pio.Write([]byte(fmt.Sprintf("%c[<64;5;5M", ansi.ESC)))
+		nxt.Write([]byte(fmt.Sprintf("%c[<64;5;5M", ansi.ESC)))
 		time.Sleep(20 * time.Millisecond)
 	}
 
 	// Verify early numbers appear on screen.
-	pio.WaitForScreen(t, func(lines []string) bool {
+	nxt.WaitForScreen(func(lines []string) bool {
 		for _, line := range lines[1:] {
 			if fields := strings.Fields(line); len(fields) > 0 {
 				if fields[0] == "1" || fields[0] == "2" || fields[0] == "3" {
@@ -242,12 +242,12 @@ func TestScrollbackScrollWheel(t *testing.T) {
 
 	// Scroll wheel down past offset 0 to auto-exit scrollback
 	for range 80 {
-		pio.Write([]byte(fmt.Sprintf("%c[<65;5;5M", ansi.ESC)))
+		nxt.Write([]byte(fmt.Sprintf("%c[<65;5;5M", ansi.ESC)))
 		time.Sleep(20 * time.Millisecond)
 	}
 
 	// Verify scrollback exited and prompt is visible
-	pio.WaitForScreen(t, func(lines []string) bool {
+	nxt.WaitForScreen(func(lines []string) bool {
 		if strings.Contains(lines[0], "scrollback") {
 			return false
 		}
@@ -267,18 +267,18 @@ func TestScrollbackPageUpAltScreen(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()
 
-	pio, frontendCleanup := startFrontend(t, socketPath)
-	defer frontendCleanup()
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
 
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
+	nxt.WaitFor("nxterm$", 10*time.Second)
 
 	// Generate scrollback so pgup would normally activate scrollback.
-	pio.Write([]byte("seq 1 200\r"))
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
+	nxt.Write([]byte("seq 1 200\r"))
+	nxt.WaitFor("nxterm$", 10*time.Second)
 
 	// Enter less (alt-screen program).
-	pio.Write([]byte("seq 1 100 | less\r"))
-	pio.WaitForScreen(t, func(lines []string) bool {
+	nxt.Write([]byte("seq 1 100 | less\r"))
+	nxt.WaitForScreen(func(lines []string) bool {
 		for _, line := range lines[1:] {
 			if strings.TrimSpace(line) == "1" {
 				return true
@@ -288,25 +288,25 @@ func TestScrollbackPageUpAltScreen(t *testing.T) {
 	}, "less showing line 1", 5*time.Second)
 
 	// Send PageUp — should be forwarded to less, NOT enter scrollback.
-	pio.Write([]byte("\x1b[5~"))
+	nxt.Write([]byte("\x1b[5~"))
 	time.Sleep(300 * time.Millisecond)
 
 	// Scrollback should NOT be active.
-	pio.WaitForScreen(t, func(lines []string) bool {
+	nxt.WaitForScreen(func(lines []string) bool {
 		return !strings.Contains(lines[0], "scrollback")
 	}, "scrollback not activated in alt-screen", 2*time.Second)
 
 	// Quit less.
-	pio.Write([]byte("q"))
-	pio.WaitFor(t, "nxterm$", 5*time.Second)
+	nxt.Write([]byte("q"))
+	nxt.WaitFor("nxterm$", 5*time.Second)
 
 	// Now pgup SHOULD enter scrollback (no longer in alt-screen).
-	pio.Write([]byte("\x1b[5~"))
-	pio.WaitForScreen(t, func(lines []string) bool {
+	nxt.Write([]byte("\x1b[5~"))
+	nxt.WaitForScreen(func(lines []string) bool {
 		return strings.Contains(lines[0], "scrollback")
 	}, "scrollback activated after leaving alt-screen", 5*time.Second)
 
-	pio.Write([]byte("q"))
+	nxt.Write([]byte("q"))
 }
 
 // TestScrollbackWheelAltScreen verifies that mouse wheel events are
@@ -316,22 +316,22 @@ func TestScrollbackWheelAltScreen(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()
 
-	pio, frontendCleanup := startFrontend(t, socketPath)
-	defer frontendCleanup()
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
 
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
+	nxt.WaitFor("nxterm$", 10*time.Second)
 
 	// Generate scrollback.
-	pio.Write([]byte("seq 1 200\r"))
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
+	nxt.Write([]byte("seq 1 200\r"))
+	nxt.WaitFor("nxterm$", 10*time.Second)
 
 	// Run mousehelper (enables mouse tracking).
-	pio.Write([]byte("mousehelper\r"))
+	nxt.Write([]byte("mousehelper\r"))
 	time.Sleep(500 * time.Millisecond)
 
 	// Scroll wheel up — should be forwarded to mousehelper, not enter scrollback.
-	pio.Write([]byte(fmt.Sprintf("%c[<64;5;5M", ansi.ESC)))
-	pio.WaitForScreen(t, func(lines []string) bool {
+	nxt.Write([]byte(fmt.Sprintf("%c[<64;5;5M", ansi.ESC)))
+	nxt.WaitForScreen(func(lines []string) bool {
 		for _, line := range lines {
 			if strings.Contains(line, "MOUSE wheelup") {
 				return true
@@ -341,13 +341,13 @@ func TestScrollbackWheelAltScreen(t *testing.T) {
 	}, "wheel forwarded to mousehelper", 5*time.Second)
 
 	// Scrollback should NOT be active.
-	pio.WaitForScreen(t, func(lines []string) bool {
+	nxt.WaitForScreen(func(lines []string) bool {
 		return !strings.Contains(lines[0], "scrollback")
 	}, "scrollback not activated with mouse tracking", 2*time.Second)
 
 	// Quit mousehelper.
-	pio.Write([]byte("q"))
-	pio.WaitFor(t, "nxterm$", 5*time.Second)
+	nxt.Write([]byte("q"))
+	nxt.WaitFor("nxterm$", 5*time.Second)
 }
 
 // TestScrollbackCommandPalette verifies that the scroll-up command works
@@ -357,26 +357,26 @@ func TestScrollbackCommandPalette(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()
 
-	pio, frontendCleanup := startFrontend(t, socketPath)
-	defer frontendCleanup()
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
 
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
+	nxt.WaitFor("nxterm$", 10*time.Second)
 
 	// Generate scrollback.
-	pio.Write([]byte("seq 1 200\r"))
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
+	nxt.Write([]byte("seq 1 200\r"))
+	nxt.WaitFor("nxterm$", 10*time.Second)
 
 	// Open command palette (ctrl+b :).
-	pio.Write([]byte{0x02, ':'})
-	pio.WaitFor(t, "scroll-up", 5*time.Second)
+	nxt.Write([]byte{0x02, ':'})
+	nxt.WaitFor("scroll-up", 5*time.Second)
 
 	// Select scroll-up.
-	pio.Write([]byte("scroll-up\r"))
+	nxt.Write([]byte("scroll-up\r"))
 
 	// Scrollback should be active.
-	pio.WaitForScreen(t, func(lines []string) bool {
+	nxt.WaitForScreen(func(lines []string) bool {
 		return strings.Contains(lines[0], "scrollback")
 	}, "scrollback activated via command palette", 5*time.Second)
 
-	pio.Write([]byte("q"))
+	nxt.Write([]byte("q"))
 }

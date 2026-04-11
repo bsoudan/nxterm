@@ -7,25 +7,26 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"nxtermd/pkg/nxtest"
 )
 
 func TestHelpOverlay(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()
 
-	pio, frontendCleanup := startFrontend(t, socketPath)
-	defer frontendCleanup()
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
 
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
-	pio.WaitForSilence(200 * time.Millisecond)
+	nxt.WaitFor("nxterm$", 10*time.Second)
+	nxt.WaitForSilence(200 * time.Millisecond)
 
 	// Open help overlay: ctrl+b ?
-	pio.Write([]byte{0x02, '?'})
+	nxt.Write([]byte{0x02, '?'})
 
 	// Wait for the help overlay to render with keybinding content.
-	pio.WaitFor(t, "detach", 5*time.Second)
+	nxt.WaitFor("detach", 5*time.Second)
 
-	lines := pio.ScreenLines()
+	lines := nxt.ScreenLines()
 	// First category (main) and its commands should be visible.
 	foundMain := false
 	foundDetach := false
@@ -52,8 +53,8 @@ func TestHelpOverlay(t *testing.T) {
 	}
 
 	// Close with q.
-	pio.Write([]byte("q"))
-	pio.WaitFor(t, "nxterm$", 5*time.Second)
+	nxt.Write([]byte("q"))
+	nxt.WaitFor("nxterm$", 5*time.Second)
 }
 
 func TestLogViewerOverlay(t *testing.T) {
@@ -66,24 +67,24 @@ func TestLogViewerOverlay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start frontend: %v", err)
 	}
-	pio := newPtyIO(ptmx, 80, 24)
+	nxt := nxtest.New(t, nxtest.NewPtyIO(ptmx, 80, 24))
 	frontendCleanup := func() { cmd.Process.Kill(); cmd.Wait(); ptmx.Close() }
 	defer frontendCleanup()
 
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
-	pio.WaitForSilence(500 * time.Millisecond)
-	pio.Write([]byte{0x02, 'l'})
+	nxt.WaitFor("nxterm$", 10*time.Second)
+	nxt.WaitForSilence(500 * time.Millisecond)
+	nxt.Write([]byte{0x02, 'l'})
 
-	lines := pio.WaitForScreen(t, func(lines []string) bool {
-		topRow, _ := findOnScreen(lines, "\u256d")
-		bottomRow, _ := findOnScreen(lines, "\u2570")
-		helpRow, _ := findOnScreen(lines, "q/esc: close")
+	lines := nxt.WaitForScreen(func(lines []string) bool {
+		topRow, _ := nxtest.FindOnScreen(lines, "\u256d")
+		bottomRow, _ := nxtest.FindOnScreen(lines, "\u2570")
+		helpRow, _ := nxtest.FindOnScreen(lines, "q/esc: close")
 		return topRow >= 0 && bottomRow >= 0 && helpRow >= 0
 	}, "overlay with borders and help text", 5*time.Second)
 
-	topRow, topCol := findOnScreen(lines, "\u256d")
-	bottomRow, bottomCol := findOnScreen(lines, "\u2570")
-	helpRow, _ := findOnScreen(lines, "q/esc: close")
+	topRow, topCol := nxtest.FindOnScreen(lines, "\u256d")
+	bottomRow, bottomCol := nxtest.FindOnScreen(lines, "\u2570")
+	helpRow, _ := nxtest.FindOnScreen(lines, "q/esc: close")
 
 	t.Logf("overlay top border: row %d col %d", topRow, topCol)
 	t.Logf("overlay bottom border: row %d col %d", bottomRow, bottomCol)
@@ -110,64 +111,64 @@ func TestLogViewerOverlay(t *testing.T) {
 	t.Logf("overlay: %d rows", overlayHeight)
 
 	// Close and verify overlay disappears
-	pio.Write([]byte("q"))
-	pio.WaitForScreen(t, func(lines []string) bool {
-		row, _ := findOnScreen(lines, "\u256d")
+	nxt.Write([]byte("q"))
+	nxt.WaitForScreen(func(lines []string) bool {
+		row, _ := nxtest.FindOnScreen(lines, "\u256d")
 		return row < 0
 	}, "overlay gone", 10*time.Second)
 
-	pio.WaitFor(t, "nxterm$",10*time.Second)
-	pio.Write([]byte("echo logview_closed\r"))
-	pio.WaitFor(t, "logview_closed", 10*time.Second)
+	nxt.WaitFor("nxterm$",10*time.Second)
+	nxt.Write([]byte("echo logview_closed\r"))
+	nxt.WaitFor("logview_closed", 10*time.Second)
 }
 
 func TestCommandPalette(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()
 
-	pio, frontendCleanup := startFrontend(t, socketPath)
-	defer frontendCleanup()
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
 
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
-	pio.WaitForSilence(200 * time.Millisecond)
+	nxt.WaitFor("nxterm$", 10*time.Second)
+	nxt.WaitForSilence(200 * time.Millisecond)
 
 	// Open command palette: ctrl+b :
-	pio.Write([]byte{0x02, ':'})
+	nxt.Write([]byte{0x02, ':'})
 
 	// Should show the palette with commands listed.
-	pio.WaitFor(t, "detach", 5*time.Second)
+	nxt.WaitFor("detach", 5*time.Second)
 
 	// Type to filter.
-	pio.Write([]byte("det"))
-	pio.WaitFor(t, "detach", 5*time.Second)
+	nxt.Write([]byte("det"))
+	nxt.WaitFor("detach", 5*time.Second)
 
 	// Pressing enter on "detach" should detach.
-	pio.Write([]byte("\r"))
+	nxt.Write([]byte("\r"))
 }
 
 func TestCommandPaletteEsc(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()
 
-	pio, frontendCleanup := startFrontend(t, socketPath)
-	defer frontendCleanup()
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
 
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
-	pio.WaitForSilence(200 * time.Millisecond)
+	nxt.WaitFor("nxterm$", 10*time.Second)
+	nxt.WaitForSilence(200 * time.Millisecond)
 
 	// Open command palette.
-	pio.Write([]byte{0x02, ':'})
-	pio.WaitFor(t, "detach", 5*time.Second)
-	pio.WaitForSilence(200 * time.Millisecond)
+	nxt.Write([]byte{0x02, ':'})
+	nxt.WaitFor("detach", 5*time.Second)
+	nxt.WaitForSilence(200 * time.Millisecond)
 
 	// Ctrl+G should close the palette (unambiguous single byte,
 	// unlike ESC which requires timeout-based disambiguation).
-	pio.Write([]byte{0x07})
+	nxt.Write([]byte{0x07})
 
 	// Should return to normal prompt.
-	pio.WaitFor(t, "nxterm$", 5*time.Second)
+	nxt.WaitFor("nxterm$", 5*time.Second)
 
 	// Verify palette is gone — type something and it should go to the shell.
-	pio.Write([]byte("echo PALETTE_CLOSED\r"))
-	pio.WaitFor(t, "PALETTE_CLOSED", 5*time.Second)
+	nxt.Write([]byte("echo PALETTE_CLOSED\r"))
+	nxt.WaitFor("PALETTE_CLOSED", 5*time.Second)
 }

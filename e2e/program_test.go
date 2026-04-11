@@ -92,10 +92,10 @@ func TestProgramDefaultSession(t *testing.T) {
 	defer cleanup()
 
 	// Connect frontend — the server should auto-spawn the "shell" program
-	pio, frontendCleanup := startFrontend(t, socketPath)
-	defer frontendCleanup()
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
 
-	pio.WaitFor(t, "$", 10*time.Second)
+	nxt.WaitFor("$", 10*time.Second)
 
 	// Verify the region was spawned with the shell program's cmd
 	out := runNxtermctl(t, socketPath, "region", "list")
@@ -116,25 +116,25 @@ func TestProgramPickerMultiple(t *testing.T) {
 	socketPath, cleanup := startServerCustom(t, cfgContent)
 	defer cleanup()
 
-	pio, frontendCleanup := startFrontend(t, socketPath)
-	defer frontendCleanup()
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
 
 	// Wait for initial tab and let the screen settle
-	pio.WaitFor(t, "$", 10*time.Second)
-	pio.WaitForSilence(200 * time.Millisecond)
+	nxt.WaitFor("$", 10*time.Second)
+	nxt.WaitForSilence(200 * time.Millisecond)
 
 	// Press ctrl+b c to request new tab — should show picker
-	pio.Write([]byte{0x02, 'c'})
+	nxt.Write([]byte{0x02, 'c'})
 
 	// Picker should show program names
-	pio.WaitFor(t, "shell2", 5*time.Second)
+	nxt.WaitFor("shell2", 5*time.Second)
 
 	// Press enter to select the first program
-	pio.Write([]byte("\r"))
+	nxt.Write([]byte("\r"))
 
 	// Should get a second tab. Tab 2 becomes active and tab 1
 	// becomes inactive — tab 1's "1:shell" label appears.
-	pio.WaitForScreen(t, func(lines []string) bool {
+	nxt.WaitForScreen(func(lines []string) bool {
 		if len(lines) == 0 {
 			return false
 		}
@@ -146,18 +146,18 @@ func TestProgramPickerSingleAutoSpawn(t *testing.T) {
 	socketPath, cleanup := startServer(t)
 	defer cleanup()
 
-	pio, frontendCleanup := startFrontend(t, socketPath)
-	defer frontendCleanup()
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
 
-	pio.WaitFor(t, "$", 10*time.Second)
+	nxt.WaitFor("$", 10*time.Second)
 
 	// Press ctrl+b c — with only 1 program, should spawn immediately (no picker)
-	pio.Write([]byte{0x02, 'c'})
+	nxt.Write([]byte{0x02, 'c'})
 
 	// Should get a second tab without seeing a picker dialog. Tab 2
 	// becomes active so tab 1 goes inactive — its "1:shell" label
 	// appears in the tab bar.
-	pio.WaitForScreen(t, func(lines []string) bool {
+	nxt.WaitForScreen(func(lines []string) bool {
 		if len(lines) == 0 {
 			return false
 		}

@@ -106,9 +106,9 @@ func TestTermctlClientList(t *testing.T) {
 	defer serverCleanup()
 
 	// Start a frontend so there's a connected client to see
-	pio, frontendCleanup := startFrontend(t, socketPath)
-	defer frontendCleanup()
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
+	nxt.WaitFor("nxterm$", 10*time.Second)
 
 	out := runNxtermctl(t, socketPath, "client", "list")
 	hasNxterm := false
@@ -132,9 +132,9 @@ func TestTermctlClientKill(t *testing.T) {
 	defer serverCleanup()
 
 	// Start a frontend
-	pio, frontendCleanup := startFrontend(t, socketPath)
-	defer frontendCleanup()
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
+	nxt.WaitFor("nxterm$", 10*time.Second)
 
 	// Find the frontend's client ID
 	out := runNxtermctl(t, socketPath, "client", "list")

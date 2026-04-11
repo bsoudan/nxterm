@@ -9,10 +9,11 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/creack/pty"
+	"nxtermd/pkg/nxtest"
 )
 
 // startFrontendWithSession starts an nxterm with the given --session flag.
-func startFrontendWithSession(t *testing.T, socketPath, session string) *frontend {
+func startFrontendWithSession(t *testing.T, socketPath, session string) *nxtest.T {
 	t.Helper()
 
 	args := []string{"--socket", socketPath}
@@ -27,21 +28,21 @@ func startFrontendWithSession(t *testing.T, socketPath, session string) *fronten
 		t.Fatalf("start frontend in pty: %v", err)
 	}
 
-	return &frontend{
-		ptyIO: newPtyIO(ptmx, 80, 24),
-		cmd:   cmd,
-		ptmx:  ptmx,
-	}
+	return nxtest.NewFromFrontend(t, &nxtest.Frontend{
+		PtyIO: nxtest.NewPtyIO(ptmx, 80, 24),
+		Cmd:   cmd,
+		Ptmx:  ptmx,
+	})
 }
 
 func TestSessionConnectDefault(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()
 
-	fe := startFrontendWithSession(t, socketPath, "")
-	defer fe.Kill()
+	nxt := startFrontendWithSession(t, socketPath, "")
+	defer nxt.Kill()
 
-	fe.WaitFor(t, "$", 10*time.Second)
+	nxt.WaitFor("$", 10*time.Second)
 
 	// Verify session was created
 	out := runNxtermctl(t, socketPath, "session", "list")
@@ -60,10 +61,10 @@ func TestSessionConnectNamed(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()
 
-	fe := startFrontendWithSession(t, socketPath, "work")
-	defer fe.Kill()
+	nxt := startFrontendWithSession(t, socketPath, "work")
+	defer nxt.Kill()
 
-	fe.WaitFor(t, "$", 10*time.Second)
+	nxt.WaitFor("$", 10*time.Second)
 
 	out := runNxtermctl(t, socketPath, "session", "list")
 	if !strings.Contains(out, "work") {
@@ -84,13 +85,13 @@ func TestSessionMultiple(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()
 
-	fe1 := startFrontendWithSession(t, socketPath, "")
-	defer fe1.Kill()
-	fe1.WaitFor(t, "$", 10*time.Second)
+	nxt1 := startFrontendWithSession(t, socketPath, "")
+	defer nxt1.Kill()
+	nxt1.WaitFor("$", 10*time.Second)
 
-	fe2 := startFrontendWithSession(t, socketPath, "dev")
-	defer fe2.Kill()
-	fe2.WaitFor(t, "$", 10*time.Second)
+	nxt2 := startFrontendWithSession(t, socketPath, "dev")
+	defer nxt2.Kill()
+	nxt2.WaitFor("$", 10*time.Second)
 
 	// Both sessions exist
 	out := runNxtermctl(t, socketPath, "session", "list")
@@ -128,10 +129,10 @@ func TestSessionReconnect(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()
 
-	fe := startFrontendWithSession(t, socketPath, "persist")
-	defer fe.Kill()
+	nxt := startFrontendWithSession(t, socketPath, "persist")
+	defer nxt.Kill()
 
-	fe.WaitFor(t, "$", 10*time.Second)
+	nxt.WaitFor("$", 10*time.Second)
 
 	// Get the region ID
 	out := runNxtermctl(t, socketPath, "region", "list", "--session", "persist")
@@ -145,7 +146,7 @@ func TestSessionReconnect(t *testing.T) {
 	}
 
 	// Kill the frontend
-	fe.Kill()
+	nxt.Kill()
 
 	// Session and region should still exist
 	out = runNxtermctl(t, socketPath, "session", "list")
@@ -154,10 +155,10 @@ func TestSessionReconnect(t *testing.T) {
 	}
 
 	// Reconnect with same session name — should resume
-	fe2 := startFrontendWithSession(t, socketPath, "persist")
-	defer fe2.Kill()
+	nxt2 := startFrontendWithSession(t, socketPath, "persist")
+	defer nxt2.Kill()
 
-	fe2.WaitFor(t, "$", 10*time.Second)
+	nxt2.WaitFor("$", 10*time.Second)
 
 	// Verify no additional regions were spawned
 	out = runNxtermctl(t, socketPath, "region", "list", "--session", "persist")
@@ -208,9 +209,9 @@ func TestSessionSpawnIntoSession(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()
 
-	fe := startFrontendWithSession(t, socketPath, "")
-	defer fe.Kill()
-	fe.WaitFor(t, "$", 10*time.Second)
+	nxt := startFrontendWithSession(t, socketPath, "")
+	defer nxt.Kill()
+	nxt.WaitFor("$", 10*time.Second)
 
 	// Spawn another region into "main" session via termctl
 	id := runNxtermctl(t, socketPath, "region", "spawn", "--session", "main", "shell")
@@ -233,9 +234,9 @@ func TestSessionClientListShowsSession(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()
 
-	fe := startFrontendWithSession(t, socketPath, "visible")
-	defer fe.Kill()
-	fe.WaitFor(t, "$", 10*time.Second)
+	nxt := startFrontendWithSession(t, socketPath, "visible")
+	defer nxt.Kill()
+	nxt.WaitFor("$", 10*time.Second)
 
 	out := runNxtermctl(t, socketPath, "client", "list")
 
@@ -265,16 +266,16 @@ func TestSessionPersistence(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()
 
-	pio1, cleanup1 := startFrontend(t, socketPath)
+	nxt1 := startFrontend(t, socketPath)
 
-	pio1.WaitFor(t, "nxterm$", 10*time.Second)
+	nxt1.WaitFor("nxterm$", 10*time.Second)
 
 	// Output colored text before detaching
-	pio1.Write([]byte("printf '" +
+	nxt1.Write([]byte("printf '" +
 		shellSGR(ansi.AttrRedForegroundColor) + "COLOR_PERSIST" + shellResetStyle +
 		`\n'` + "\r"))
 
-	pio1.WaitForScreen(t, func(lines []string) bool {
+	nxt1.WaitForScreen(func(lines []string) bool {
 		for _, line := range lines {
 			if strings.HasPrefix(line, "COLOR_PERSIST") {
 				return true
@@ -282,10 +283,10 @@ func TestSessionPersistence(t *testing.T) {
 		}
 		return false
 	}, "output line starting with 'COLOR_PERSIST'", 10*time.Second)
-	pio1.WaitForSilence(200 * time.Millisecond)
+	nxt1.WaitForSilence(200 * time.Millisecond)
 
 	// Verify colors are present before detach
-	cells1 := pio1.ScreenCells()
+	cells1 := nxt1.ScreenCells()
 	for row, line := range cells1 {
 		if len(line) > 0 && line[0].Data == "C" &&
 			len(line) > 12 && line[12].Data == "T" {
@@ -299,15 +300,15 @@ func TestSessionPersistence(t *testing.T) {
 	}
 
 	// Detach
-	pio1.Write([]byte{0x02, 'd'})
+	nxt1.Write([]byte{0x02, 'd'})
 
 	deadline := time.After(10 * time.Second)
 	for {
 		select {
 		case <-deadline:
-			cleanup1()
+			nxt1.Kill()
 			t.Fatal("timeout waiting for first frontend to exit")
-		case _, ok := <-pio1.ch:
+		case _, ok := <-nxt1.Ch():
 			if !ok {
 				goto reconnect
 			}
@@ -315,17 +316,17 @@ func TestSessionPersistence(t *testing.T) {
 	}
 
 reconnect:
-	cleanup1()
+	nxt1.Kill()
 
 	// Reattach
-	pio2, cleanup2 := startFrontend(t, socketPath)
-	defer cleanup2()
+	nxt2 := startFrontend(t, socketPath)
+	defer nxt2.Kill()
 
-	pio2.WaitFor(t, "COLOR_PERSIST", 10*time.Second)
-	pio2.WaitForSilence(200 * time.Millisecond)
+	nxt2.WaitFor("COLOR_PERSIST", 10*time.Second)
+	nxt2.WaitForSilence(200 * time.Millisecond)
 
 	// Verify colors survived reattach
-	cells2 := pio2.ScreenCells()
+	cells2 := nxt2.ScreenCells()
 	found := false
 	for row, line := range cells2 {
 		if len(line) > 0 && line[0].Data == "C" &&
@@ -353,13 +354,13 @@ func TestConnectPicksUpExistingRegions(t *testing.T) {
 	spawnRegion(t, socketPath, "shell")
 
 	// Now start the frontend — it should enumerate both regions as tabs.
-	pio, frontendCleanup := startFrontend(t, socketPath)
-	defer frontendCleanup()
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
 
 	// First tab is active (label " 1 " — no colon), second is
 	// inactive (label " 2:bash "). Either inactive label appearing
 	// proves both tabs exist.
-	pio.WaitForScreen(t, func(lines []string) bool {
+	nxt.WaitForScreen(func(lines []string) bool {
 		if len(lines) == 0 {
 			return false
 		}
@@ -371,29 +372,29 @@ func TestReconnectRestoresTabs(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()
 
-	pio, frontendCleanup := startFrontend(t, socketPath)
-	defer frontendCleanup()
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
 
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
+	nxt.WaitFor("nxterm$", 10*time.Second)
 
 	// Spawn a second region. Tab 1 becomes inactive → "1:bash"
 	// appears in the tab bar (the active tab renders as just " 2 ").
-	pio.Write([]byte("\x02c"))
-	pio.WaitFor(t, "1:bash", 10*time.Second)
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
+	nxt.Write([]byte("\x02c"))
+	nxt.WaitFor("1:bash", 10*time.Second)
+	nxt.WaitFor("nxterm$", 10*time.Second)
 
 	// Kill the client connection to force reconnect
 	clientID := findFrontendClientID(t, socketPath)
 	runNxtermctl(t, socketPath, "client", "kill", clientID)
 
 	// Wait for reconnecting then reconnected
-	pio.WaitFor(t, "reconnecting", 10*time.Second)
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
+	nxt.WaitFor("reconnecting", 10*time.Second)
+	nxt.WaitFor("nxterm$", 10*time.Second)
 
 	// Both tabs should be restored after reconnect. Whichever tab
 	// becomes active again, the other one's "<n>:bash" label should
 	// be visible in the tab bar.
-	pio.WaitForScreen(t, func(lines []string) bool {
+	nxt.WaitForScreen(func(lines []string) bool {
 		if len(lines) == 0 {
 			return false
 		}
@@ -405,22 +406,22 @@ func TestAllRegionsDestroyedShowsNoSession(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()
 
-	pio, frontendCleanup := startFrontend(t, socketPath)
-	defer frontendCleanup()
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
 
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
+	nxt.WaitFor("nxterm$", 10*time.Second)
 
 	// Exit the only shell.
-	pio.Write([]byte("exit\r"))
+	nxt.Write([]byte("exit\r"))
 
 	// Frontend should enter the no-session screen instead of exiting.
-	pio.WaitFor(t, "no session", 10*time.Second)
-	pio.WaitForSilence(200 * time.Millisecond)
+	nxt.WaitFor("no session", 10*time.Second)
+	nxt.WaitForSilence(200 * time.Millisecond)
 
 	// Reconnect from the no-session screen using the connect overlay.
-	connectViaUI(t, pio, socketPath)
+	connectViaUI(t, nxt, socketPath)
 
 	// Verify we're back in a live shell.
-	pio.Write([]byte("echo ALIVE\r"))
-	pio.WaitFor(t, "ALIVE", 10*time.Second)
+	nxt.Write([]byte("echo ALIVE\r"))
+	nxt.WaitFor("ALIVE", 10*time.Second)
 }

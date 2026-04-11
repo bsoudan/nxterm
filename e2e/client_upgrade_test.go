@@ -17,6 +17,7 @@ import (
 	"github.com/creack/pty"
 	"nxtermd/frontend/client"
 	"nxtermd/frontend/protocol"
+	"nxtermd/pkg/nxtest"
 	"nxtermd/transport"
 )
 
@@ -335,36 +336,36 @@ func TestTUIUpgradeE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start frontend: %v", err)
 	}
-	pio := newPtyIO(ptmx, 80, 24)
+	nxt := nxtest.New(t, nxtest.NewPtyIO(ptmx, 80, 24))
 	defer func() { feCmd.Process.Kill(); feCmd.Wait(); ptmx.Close() }()
 
 	// ── Step 1: Wait for shell prompt ──────────────────────────────────
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
+	nxt.WaitFor("nxterm$", 10*time.Second)
 	t.Log("shell prompt visible")
 
 	// ── Step 2: Verify upgrade notification in status bar ──────────────
-	pio.WaitFor(t, "update available", 10*time.Second)
+	nxt.WaitFor("update available", 10*time.Second)
 	t.Log("upgrade notification visible in status bar")
 
 	// ── Step 3: Open upgrade dialog (ctrl+b u) ────────────────────────
-	pio.WaitForSilence(200 * time.Millisecond)
-	pio.Write([]byte{0x02, 'u'})
+	nxt.WaitForSilence(200 * time.Millisecond)
+	nxt.Write([]byte{0x02, 'u'})
 
-	pio.WaitFor(t, "Press enter to upgrade", 5*time.Second)
+	nxt.WaitFor("Press enter to upgrade", 5*time.Second)
 	t.Log("upgrade dialog visible")
 
 	// Verify version info shown in dialog.
-	pio.WaitFor(t, "upgrade-test-v2", 5*time.Second)
+	nxt.WaitFor("upgrade-test-v2", 5*time.Second)
 
 	// Verify status bar shows "upgrade ready".
-	pio.WaitFor(t, "upgrade ready", 5*time.Second)
+	nxt.WaitFor("upgrade ready", 5*time.Second)
 	t.Log("dialog shows version info and ready status")
 
 	// ── Step 4: Press enter to start upgrade ──────────────────────────
-	pio.Write([]byte("\r"))
+	nxt.Write([]byte("\r"))
 
 	// ── Step 5: Monitor server upgrade status ─────────────────────────
-	pio.WaitFor(t, "upgrading server", 10*time.Second)
+	nxt.WaitFor("upgrading server", 10*time.Second)
 	t.Log("server upgrade in progress")
 
 	// Wait for old server process to exit (it gets replaced by SIGUSR2).
@@ -378,7 +379,7 @@ func TestTUIUpgradeE2E(t *testing.T) {
 	}
 
 	// ── Step 6: Monitor client download status ────────────────────────
-	pio.WaitFor(t, "downloading client", 30*time.Second)
+	nxt.WaitFor("downloading client", 30*time.Second)
 	t.Log("client binary download in progress")
 
 	// ── Step 7: Wait for new TUI to start after exec ──────────────────
@@ -386,7 +387,7 @@ func TestTUIUpgradeE2E(t *testing.T) {
 	// the UpgradeLayer dialog. Wait for the dialog to disappear AND
 	// the prompt to appear — this prevents false matches against the
 	// old prompt still visible behind the upgrade dialog.
-	pio.WaitForScreen(t, func(lines []string) bool {
+	nxt.WaitForScreen(func(lines []string) bool {
 		hasPrompt := false
 		for _, line := range lines {
 			if strings.Contains(line, "Upgrade") || strings.Contains(line, "Downloading") {
@@ -401,13 +402,13 @@ func TestTUIUpgradeE2E(t *testing.T) {
 	t.Log("new client connected with shell prompt")
 
 	// ── Step 8: Verify both versions via the status pane ──────────────
-	pio.WaitForSilence(500 * time.Millisecond)
-	pio.Write([]byte{0x02, 's'})
+	nxt.WaitForSilence(500 * time.Millisecond)
+	nxt.Write([]byte{0x02, 's'})
 
 	// The status pane shows both client and server versions.
 	// Both should be upgrade-test-v2. We check the "Version:" label
 	// lines to avoid matching the upgrade dialog text.
-	pio.WaitForScreen(t, func(lines []string) bool {
+	nxt.WaitForScreen(func(lines []string) bool {
 		count := 0
 		for _, line := range lines {
 			if strings.Contains(line, "Version:") && strings.Contains(line, "upgrade-test-v2") {
@@ -419,11 +420,11 @@ func TestTUIUpgradeE2E(t *testing.T) {
 	t.Log("status pane confirms both versions are upgrade-test-v2")
 
 	// Close status pane.
-	pio.Write([]byte("q"))
-	pio.WaitForSilence(200 * time.Millisecond)
+	nxt.Write([]byte("q"))
+	nxt.WaitForSilence(200 * time.Millisecond)
 
 	// ── Step 9: Verify shell is still alive ───────────────────────────
-	pio.Write([]byte("echo POST_UPGRADE_ALIVE\r"))
-	pio.WaitFor(t, "POST_UPGRADE_ALIVE", 10*time.Second)
+	nxt.Write([]byte("echo POST_UPGRADE_ALIVE\r"))
+	nxt.WaitFor("POST_UPGRADE_ALIVE", 10*time.Second)
 	t.Log("shell alive after upgrade")
 }

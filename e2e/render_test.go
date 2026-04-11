@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
+	"nxtermd/pkg/nxtest"
 	"nxtermd/pkg/te"
 )
 
@@ -13,17 +14,17 @@ func TestStartAndRender(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()
 
-	pio, frontendCleanup := startFrontend(t, socketPath)
-	defer frontendCleanup()
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
 
 	// Wait for the shell prompt to render below the tab bar.
-	pio.WaitFor(t, "$", 10*time.Second)
+	nxt.WaitFor("$", 10*time.Second)
 
 	// Verify the tab bar (row 0) shows tab "1" near the start. The
 	// active tab is rendered as " 1 " between bullets ("• 1 •..."),
 	// so "1" should land within the first ~5 columns.
-	lines := pio.ScreenLines()
-	row, col := findOnScreen(lines, "1")
+	lines := nxt.ScreenLines()
+	row, col := nxtest.FindOnScreen(lines, "1")
 	if row != 0 {
 		t.Fatalf("expected tab '1' on row 0, found on row %d", row)
 	}
@@ -36,19 +37,19 @@ func TestCursorPosition(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()
 
-	pio, frontendCleanup := startFrontend(t, socketPath)
-	defer frontendCleanup()
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
 
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
+	nxt.WaitFor("nxterm$", 10*time.Second)
 
-	pio.Write([]byte("xy"))
+	nxt.Write([]byte("xy"))
 
-	lines := pio.WaitForScreen(t, func(lines []string) bool {
-		row, _ := findOnScreen(lines[1:], "xy")
+	lines := nxt.WaitForScreen(func(lines []string) bool {
+		row, _ := nxtest.FindOnScreen(lines[1:], "xy")
 		return row >= 0
 	}, "'xy' adjacent on a content row", 10*time.Second)
 
-	row, col := findOnScreen(lines[1:], "xy")
+	row, col := nxtest.FindOnScreen(lines[1:], "xy")
 	t.Logf("'xy' at content row %d, col %d", row, col)
 
 	// Verify the server also has "xy" via termctl
@@ -65,7 +66,7 @@ func TestCursorPosition(t *testing.T) {
 		t.Fatal("could not find region ID")
 	}
 	view := runNxtermctl(t, socketPath, "region", "view", regionID)
-	viewRow, viewCol := findOnScreen(strings.Split(view, "\n"), "xy")
+	viewRow, viewCol := nxtest.FindOnScreen(strings.Split(view, "\n"), "xy")
 	t.Logf("server view: 'xy' at row %d, col %d", viewRow, viewCol)
 	if viewRow < 0 {
 		t.Fatalf("server region view does not contain 'xy':\n%s", view)
@@ -76,34 +77,34 @@ func TestCursorMovementAfterProgram(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()
 
-	pio, frontendCleanup := startFrontend(t, socketPath)
-	defer frontendCleanup()
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
 
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
+	nxt.WaitFor("nxterm$", 10*time.Second)
 
 	// Type several lines so there's content on screen
-	pio.Write([]byte("echo line_a\r"))
-	pio.WaitFor(t, "line_a", 10*time.Second)
-	pio.WaitFor(t, "nxterm$",10*time.Second)
-	pio.Write([]byte("echo line_b\r"))
-	pio.WaitFor(t, "line_b", 10*time.Second)
-	pio.WaitFor(t, "nxterm$",10*time.Second)
+	nxt.Write([]byte("echo line_a\r"))
+	nxt.WaitFor("line_a", 10*time.Second)
+	nxt.WaitFor("nxterm$",10*time.Second)
+	nxt.Write([]byte("echo line_b\r"))
+	nxt.WaitFor("line_b", 10*time.Second)
+	nxt.WaitFor("nxterm$",10*time.Second)
 
 	// Run a command that writes to many rows (like top does).
 	// Use seq to fill several lines, then echo a unique marker so
 	// we can wait for the prompt that follows it (a bare
 	// WaitFor("nxterm$") would race-match the prompt that's still
 	// on screen from before the seq command).
-	pio.Write([]byte("seq 1 10\r"))
-	pio.WaitFor(t, "10", 10*time.Second)
-	pio.Write([]byte("echo SEQ_DONE\r"))
-	pio.WaitFor(t, "SEQ_DONE", 10*time.Second)
-	pio.WaitForSilence(200 * time.Millisecond)
+	nxt.Write([]byte("seq 1 10\r"))
+	nxt.WaitFor("10", 10*time.Second)
+	nxt.Write([]byte("echo SEQ_DONE\r"))
+	nxt.WaitFor("SEQ_DONE", 10*time.Second)
+	nxt.WaitForSilence(200 * time.Millisecond)
 
 	// The prompt should be on a row AFTER the seq output. Find the
 	// LAST occurrence of "10" (the actual seq output line, not the
 	// command echo) and the LAST prompt.
-	lines := pio.ScreenLines()
+	lines := nxt.ScreenLines()
 	lastSeq := -1
 	for i, line := range lines {
 		trimmed := strings.TrimRight(line, " ")
@@ -134,13 +135,13 @@ func TestColorRendering(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()
 
-	pio, frontendCleanup := startFrontend(t, socketPath)
-	defer frontendCleanup()
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
 
-	pio.WaitFor(t, "nxterm$",10*time.Second)
+	nxt.WaitFor("nxterm$",10*time.Second)
 
 	// Produce colored output via printf using ansi constants converted to shell notation.
-	pio.Write([]byte("printf '" +
+	nxt.Write([]byte("printf '" +
 		shellSGR(ansi.AttrRedForegroundColor) + "RED" + shellResetStyle + " " +
 		shellSGR(ansi.AttrGreenForegroundColor) + "GRN" + shellResetStyle + " " +
 		shellSGR(ansi.AttrBold) + "BLD" + shellResetStyle + " " +
@@ -148,7 +149,7 @@ func TestColorRendering(t *testing.T) {
 		`\n'` + "\r"))
 
 	// Wait for the output line (starts with "RED" at col 0, not the command echo)
-	pio.WaitForScreen(t, func(lines []string) bool {
+	nxt.WaitForScreen(func(lines []string) bool {
 		for _, line := range lines {
 			if strings.HasPrefix(line, "RED") {
 				return true
@@ -156,9 +157,9 @@ func TestColorRendering(t *testing.T) {
 		}
 		return false
 	}, "output line starting with 'RED'", 10*time.Second)
-	pio.WaitForSilence(200 * time.Millisecond)
+	nxt.WaitForSilence(200 * time.Millisecond)
 
-	cells := pio.ScreenCells()
+	cells := nxt.ScreenCells()
 
 	// Find the output line (starts with "RED" at col 0)
 	outputRow := -1
@@ -246,21 +247,21 @@ func TestFaintRendering(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()
 
-	pio, frontendCleanup := startFrontend(t, socketPath)
-	defer frontendCleanup()
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
 
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
+	nxt.WaitFor("nxterm$", 10*time.Second)
 
 	// Mimics statusFaint.Render("• ") + statusBold.Render("BOLD") + statusFaint.Render(" •")
 	// from frontend/ui/model.go:renderStatusBar — what the inner ttui's
 	// status bar produces and what the outer ttui must reproduce faithfully.
-	pio.Write([]byte("printf '" +
+	nxt.Write([]byte("printf '" +
 		shellSGR(ansi.AttrFaint) + "FNT1 " + shellResetStyle +
 		shellSGR(ansi.AttrBold) + "BOLD" + shellResetStyle + " " +
 		shellSGR(ansi.AttrFaint) + "FNT2" + shellResetStyle +
 		`\n'` + "\r"))
 
-	pio.WaitForScreen(t, func(lines []string) bool {
+	nxt.WaitForScreen(func(lines []string) bool {
 		for _, line := range lines {
 			if strings.HasPrefix(line, "FNT1") {
 				return true
@@ -268,9 +269,9 @@ func TestFaintRendering(t *testing.T) {
 		}
 		return false
 	}, "output line starting with 'FNT1'", 10*time.Second)
-	pio.WaitForSilence(200 * time.Millisecond)
+	nxt.WaitForSilence(200 * time.Millisecond)
 
-	cells := pio.ScreenCells()
+	cells := nxt.ScreenCells()
 
 	outputRow := -1
 	for row, line := range cells {
@@ -373,17 +374,17 @@ func TestModifyOtherKeysDoesNotLeakSGR(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()
 
-	pio, frontendCleanup := startFrontend(t, socketPath)
-	defer frontendCleanup()
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
 
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
+	nxt.WaitFor("nxterm$", 10*time.Second)
 
 	// Emit \e[>4;2m (modifyOtherKeys) and then a plain "MARKER" with
 	// no styling. If the parser misinterprets >4;2 as SGR, MARKER
 	// will pick up underline+faint from the contaminated cursor.
-	pio.Write([]byte("printf '\\e[>4;2mMARKER\\n'\r"))
+	nxt.Write([]byte("printf '\\e[>4;2mMARKER\\n'\r"))
 
-	pio.WaitForScreen(t, func(lines []string) bool {
+	nxt.WaitForScreen(func(lines []string) bool {
 		for _, line := range lines {
 			if strings.HasPrefix(line, "MARKER") {
 				return true
@@ -391,9 +392,9 @@ func TestModifyOtherKeysDoesNotLeakSGR(t *testing.T) {
 		}
 		return false
 	}, "output line starting with 'MARKER'", 10*time.Second)
-	pio.WaitForSilence(200 * time.Millisecond)
+	nxt.WaitForSilence(200 * time.Millisecond)
 
-	cells := pio.ScreenCells()
+	cells := nxt.ScreenCells()
 	outputRow := -1
 	for row, line := range cells {
 		if len(line) >= 6 && line[0].Data == "M" && line[1].Data == "A" &&
@@ -432,17 +433,17 @@ func TestKittyKeyboardSequencesDoNotLeakAsText(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()
 
-	pio, frontendCleanup := startFrontend(t, socketPath)
-	defer frontendCleanup()
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
 
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
+	nxt.WaitFor("nxterm$", 10*time.Second)
 
 	// Emit the kitty keyboard push and pop sequences, then a marker
 	// we can locate. If the parser leaks, "0;1u" or "1;1u" appears in
 	// the screen text adjacent to the marker.
-	pio.Write([]byte("printf '\\e[=0;1u\\e[=1;1u\\e[<uMARKER\\n'\r"))
+	nxt.Write([]byte("printf '\\e[=0;1u\\e[=1;1u\\e[<uMARKER\\n'\r"))
 
-	pio.WaitForScreen(t, func(lines []string) bool {
+	nxt.WaitForScreen(func(lines []string) bool {
 		for _, line := range lines {
 			if strings.HasPrefix(line, "MARKER") {
 				return true
@@ -450,9 +451,9 @@ func TestKittyKeyboardSequencesDoNotLeakAsText(t *testing.T) {
 		}
 		return false
 	}, "output line starting with 'MARKER'", 10*time.Second)
-	pio.WaitForSilence(200 * time.Millisecond)
+	nxt.WaitForSilence(200 * time.Millisecond)
 
-	cells := pio.ScreenCells()
+	cells := nxt.ScreenCells()
 	for row, line := range cells {
 		if len(line) == 0 || line[0].Data != "M" {
 			continue
@@ -497,10 +498,10 @@ func TestPTYRegionRespondsToDECRQM(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()
 
-	pio, frontendCleanup := startFrontend(t, socketPath)
-	defer frontendCleanup()
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
 
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
+	nxt.WaitFor("nxterm$", 10*time.Second)
 
 	// Send a DECRQM query (\e[?2026$p) directly to /dev/tty so it
 	// reaches the server's te through the PTY master, then read the
@@ -516,7 +517,7 @@ func TestPTYRegionRespondsToDECRQM(t *testing.T) {
 	// output line — "ANS:${#reply}" — means the echoed command has
 	// "ANS:$" while the output has "ANS:11" (or "ANS:0" on failure),
 	// which we can distinguish.
-	pio.Write([]byte(`printf '\e[?2026$p' > /dev/tty; IFS= read -rsn 16 -t 1 reply < /dev/tty; echo "ANS:${#reply}"` + "\r"))
+	nxt.Write([]byte(`printf '\e[?2026$p' > /dev/tty; IFS= read -rsn 16 -t 1 reply < /dev/tty; echo "ANS:${#reply}"` + "\r"))
 
 	hasNonZeroAns := func(lines []string) bool {
 		for _, line := range lines {
@@ -531,7 +532,7 @@ func TestPTYRegionRespondsToDECRQM(t *testing.T) {
 		}
 		return false
 	}
-	pio.WaitForScreen(t, hasNonZeroAns, `ANS:N where N > 0`, 10*time.Second)
+	nxt.WaitForScreen(hasNonZeroAns, `ANS:N where N > 0`, 10*time.Second)
 }
 
 // TestCursorHiddenByDECTCEM verifies that the frontend honors the
@@ -546,10 +547,10 @@ func TestCursorHiddenByDECTCEM(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()
 
-	pio, frontendCleanup := startFrontend(t, socketPath)
-	defer frontendCleanup()
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
 
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
+	nxt.WaitFor("nxterm$", 10*time.Second)
 
 	// Use `read -rsn 1` to park bash with the cursor in a known
 	// position: hide the cursor, move to row 12 col 20, print 'Z',
@@ -557,21 +558,21 @@ func TestCursorHiddenByDECTCEM(t *testing.T) {
 	// inner cursor sits at (row 12, col 21) with DECTCEM unset. The
 	// outer's renderer must NOT paint a reverse-video phantom cursor
 	// at that cell.
-	pio.Write([]byte(`printf '\e[?25l\e[12;20HZ'; read -rsn 1 dummy` + "\r"))
+	nxt.Write([]byte(`printf '\e[?25l\e[12;20HZ'; read -rsn 1 dummy` + "\r"))
 
 	// Wait for the 'Z' to land. The outer's tab bar occupies row 0
 	// and the status-bar margin (default 1) occupies row 1, so the
 	// inner's row 12 (1-indexed) lands at outer row 13 (0-indexed
 	// inner row 11; +1 for tab bar; +1 for margin).
-	pio.WaitForScreen(t, func(lines []string) bool {
+	nxt.WaitForScreen(func(lines []string) bool {
 		if len(lines) < 14 {
 			return false
 		}
 		return len(lines[13]) > 19 && lines[13][19] == 'Z'
 	}, "'Z' at outer row 13 col 19", 10*time.Second)
-	pio.WaitForSilence(200 * time.Millisecond)
+	nxt.WaitForSilence(200 * time.Millisecond)
 
-	cells := pio.ScreenCells()
+	cells := nxt.ScreenCells()
 
 	// The cell at outer (13, 19) is the 'Z' itself; it should be
 	// plain, not reverse.
@@ -593,27 +594,27 @@ func TestCursorHiddenByDECTCEM(t *testing.T) {
 	}
 
 	// Unblock bash's read so the test can clean up.
-	pio.Write([]byte("\r"))
+	nxt.Write([]byte("\r"))
 }
 
 func TestActiveTabBold(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()
 
-	pio, frontendCleanup := startFrontend(t, socketPath)
-	defer frontendCleanup()
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
 
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
+	nxt.WaitFor("nxterm$", 10*time.Second)
 
 	// Spawn a second region so we have active and inactive tabs.
 	// Tab 2 becomes active (label " 2 "), tab 1 becomes inactive
 	// (label " 1:bash ").
-	pio.Write([]byte("\x02c"))
-	pio.WaitFor(t, "1:bash", 10*time.Second)
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
-	pio.WaitForSilence(200 * time.Millisecond)
+	nxt.Write([]byte("\x02c"))
+	nxt.WaitFor("1:bash", 10*time.Second)
+	nxt.WaitFor("nxterm$", 10*time.Second)
+	nxt.WaitForSilence(200 * time.Millisecond)
 
-	cells := pio.ScreenCells()
+	cells := nxt.ScreenCells()
 	if len(cells) == 0 {
 		t.Fatal("no screen cells")
 	}
@@ -635,11 +636,11 @@ func TestActiveTabBold(t *testing.T) {
 	}
 
 	// Switch to tab 1: tab 1 becomes active (" <1> "), tab 2 inactive (" 2:bash ").
-	pio.Write([]byte("\x021"))
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
-	pio.WaitForSilence(200 * time.Millisecond)
+	nxt.Write([]byte("\x021"))
+	nxt.WaitFor("nxterm$", 10*time.Second)
+	nxt.WaitForSilence(200 * time.Millisecond)
 
-	cells = pio.ScreenCells()
+	cells = nxt.ScreenCells()
 	tabRow = cells[0]
 	tab1Col = findDigitFollowedBy(tabRow, "1", ">") // active
 	tab2Col = findDigitFollowedBy(tabRow, "2", ":") // inactive
@@ -670,18 +671,18 @@ func TestResize(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()
 
-	pio, frontendCleanup := startFrontend(t, socketPath)
-	defer frontendCleanup()
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
 
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
-	pio.Write([]byte("tput cols\r"))
+	nxt.WaitFor("nxterm$", 10*time.Second)
+	nxt.Write([]byte("tput cols\r"))
 
-	lines := pio.WaitForScreen(t, func(lines []string) bool {
-		row, _ := findOnScreen(lines[1:], "80")
+	lines := nxt.WaitForScreen(func(lines []string) bool {
+		row, _ := nxtest.FindOnScreen(lines[1:], "80")
 		return row >= 0
 	}, "'80' on a content row", 10*time.Second)
 
-	row, col := findOnScreen(lines[1:], "80")
+	row, col := nxtest.FindOnScreen(lines[1:], "80")
 	t.Logf("'80' at content row %d, col %d", row, col)
 }
 
@@ -689,14 +690,14 @@ func TestResizeMidSession(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()
 
-	pio, frontendCleanup := startFrontend(t, socketPath)
-	defer frontendCleanup()
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
 
-	pio.WaitFor(t, "nxterm$",10*time.Second)
+	nxt.WaitFor("nxterm$",10*time.Second)
 
 	// Verify initial 80 columns
-	pio.Write([]byte("tput cols\r"))
-	pio.WaitForScreen(t, func(lines []string) bool {
+	nxt.Write([]byte("tput cols\r"))
+	nxt.WaitForScreen(func(lines []string) bool {
 		for i := 1; i < len(lines); i++ {
 			if strings.HasPrefix(lines[i], "80") {
 				return true
@@ -705,15 +706,15 @@ func TestResizeMidSession(t *testing.T) {
 		return false
 	}, "'80' at col 0 on a content row", 10*time.Second)
 
-	pio.WaitFor(t, "nxterm$",10*time.Second)
+	nxt.WaitFor("nxterm$",10*time.Second)
 
 	// Resize to 120x40
-	pio.Resize(120, 40)
-	pio.WaitForSilence(200 * time.Millisecond)
+	nxt.Resize(120, 40)
+	nxt.WaitForSilence(200 * time.Millisecond)
 
 	// Verify new column count
-	pio.Write([]byte("tput cols\r"))
-	pio.WaitForScreen(t, func(lines []string) bool {
+	nxt.Write([]byte("tput cols\r"))
+	nxt.WaitForScreen(func(lines []string) bool {
 		for i := 1; i < len(lines); i++ {
 			if strings.HasPrefix(lines[i], "120") {
 				return true
@@ -723,9 +724,9 @@ func TestResizeMidSession(t *testing.T) {
 	}, "'120' at col 0 on a content row", 10*time.Second)
 
 	// Verify new row count (40 - 1 for tab bar - 1 for status-bar margin = 38)
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
-	pio.Write([]byte("tput lines\r"))
-	pio.WaitForScreen(t, func(lines []string) bool {
+	nxt.WaitFor("nxterm$", 10*time.Second)
+	nxt.Write([]byte("tput lines\r"))
+	nxt.WaitForScreen(func(lines []string) bool {
 		for i := 1; i < len(lines); i++ {
 			if strings.HasPrefix(lines[i], "38") {
 				return true
@@ -794,19 +795,19 @@ func TestScreenSyncAfterTop(t *testing.T) {
 	socketPath, serverCleanup := startServer(t)
 	defer serverCleanup()
 
-	pio, frontendCleanup := startFrontend(t, socketPath)
-	defer frontendCleanup()
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
 
-	pio.WaitFor(t, "nxterm$",10*time.Second)
+	nxt.WaitFor("nxterm$",10*time.Second)
 
 	// Run top briefly then quit
-	pio.Write([]byte("top\r"))
+	nxt.Write([]byte("top\r"))
 	time.Sleep(2 * time.Second)
-	pio.Write([]byte("q"))
+	nxt.Write([]byte("q"))
 
 	// Wait for prompt to reappear
-	pio.WaitFor(t, "nxterm$",10*time.Second)
-	pio.WaitForSilence(500 * time.Millisecond)
+	nxt.WaitFor("nxterm$",10*time.Second)
+	nxt.WaitForSilence(500 * time.Millisecond)
 
 	// Get server screen via termctl
 	out := runNxtermctl(t, socketPath, "region", "list")
@@ -835,7 +836,7 @@ func TestScreenSyncAfterTop(t *testing.T) {
 
 	// Find prompt row on frontend (row 0 is tab bar, row 1 is the
 	// status-bar margin, content starts at row 2 by default).
-	frontendLines := pio.ScreenLines()
+	frontendLines := nxt.ScreenLines()
 	frontendPromptRow := -1
 	for i := len(frontendLines) - 1; i >= 0; i-- {
 		if strings.Contains(frontendLines[i], "nxterm$") {

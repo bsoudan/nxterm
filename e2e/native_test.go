@@ -14,43 +14,43 @@ func TestNativeOverlayRender(t *testing.T) {
 	socketPath, cleanup := startServer(t)
 	defer cleanup()
 
-	pio, feCleanup := startFrontend(t, socketPath)
-	defer feCleanup()
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
 
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
+	nxt.WaitFor("nxterm$", 10*time.Second)
 
 	// Run the overlay app from the shell.
-	pio.Write([]byte("nativeapp\r"))
+	nxt.Write([]byte("nativeapp\r"))
 
 	// The overlay should composite "NATIVE" on top of the shell.
-	pio.WaitFor(t, "NATIVE", 10*time.Second)
+	nxt.WaitFor("NATIVE", 10*time.Second)
 }
 
 func TestNativeOverlayInput(t *testing.T) {
 	socketPath, cleanup := startServer(t)
 	defer cleanup()
 
-	pio, feCleanup := startFrontend(t, socketPath)
-	defer feCleanup()
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
 
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
+	nxt.WaitFor("nxterm$", 10*time.Second)
 
-	pio.Write([]byte("nativeapp\r"))
-	pio.WaitFor(t, "NATIVE", 10*time.Second)
+	nxt.Write([]byte("nativeapp\r"))
+	nxt.WaitFor("NATIVE", 10*time.Second)
 
 	// Type some characters — nativeapp echoes them as "INPUT:hello".
-	pio.Write([]byte("hello"))
-	pio.WaitFor(t, "INPUT:hello", 10*time.Second)
+	nxt.Write([]byte("hello"))
+	nxt.WaitFor("INPUT:hello", 10*time.Second)
 }
 
 func TestNativeOverlayGetScreen(t *testing.T) {
 	socketPath, cleanup := startServer(t)
 	defer cleanup()
 
-	pio, feCleanup := startFrontend(t, socketPath)
-	defer feCleanup()
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
 
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
+	nxt.WaitFor("nxterm$", 10*time.Second)
 
 	// Get the region ID.
 	out := runNxtermctl(t, socketPath, "region", "list")
@@ -61,13 +61,13 @@ func TestNativeOverlayGetScreen(t *testing.T) {
 	regionID := strings.Fields(lines[1])[0]
 
 	// Run the overlay app.
-	pio.Write([]byte("nativeapp\r"))
-	pio.WaitFor(t, "NATIVE", 10*time.Second)
+	nxt.Write([]byte("nativeapp\r"))
+	nxt.WaitFor("NATIVE", 10*time.Second)
 
 	// Mouse click before refresh — row 3 in outer terminal = row 2 in child
 	// (tab bar occupies row 0). Left click at col 10, row 3.
-	pio.Write([]byte(fmt.Sprintf("%c[<0;10;3M", ansi.ESC)))
-	pio.WaitFor(t, "MOUSE:press:0:9:1", 10*time.Second)
+	nxt.Write([]byte(fmt.Sprintf("%c[<0;10;3M", ansi.ESC)))
+	nxt.WaitFor("MOUSE:press:0:9:1", 10*time.Second)
 
 	// nxtermctl region view uses get_screen_request — overlay must be included.
 	deadline := time.Now().Add(10 * time.Second)
@@ -83,29 +83,29 @@ func TestNativeOverlayGetScreen(t *testing.T) {
 	}
 
 	// After get_screen, keyboard input must still work (modes survived refresh).
-	pio.Write([]byte("world"))
-	pio.WaitFor(t, "INPUT:world", 10*time.Second)
+	nxt.Write([]byte("world"))
+	nxt.WaitFor("INPUT:world", 10*time.Second)
 
 	// Mouse click after refresh — modes must still be active.
-	pio.Write([]byte(fmt.Sprintf("%c[<0;20;4M", ansi.ESC)))
-	pio.WaitFor(t, "MOUSE:press:0:19:2", 10*time.Second)
+	nxt.Write([]byte(fmt.Sprintf("%c[<0;20;4M", ansi.ESC)))
+	nxt.WaitFor("MOUSE:press:0:19:2", 10*time.Second)
 }
 
 func TestNativeOverlayExit(t *testing.T) {
 	socketPath, cleanup := startServer(t)
 	defer cleanup()
 
-	pio, feCleanup := startFrontend(t, socketPath)
-	defer feCleanup()
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
 
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
+	nxt.WaitFor("nxterm$", 10*time.Second)
 
-	pio.Write([]byte("nativeapp\r"))
-	pio.WaitFor(t, "NATIVE", 10*time.Second)
+	nxt.Write([]byte("nativeapp\r"))
+	nxt.WaitFor("NATIVE", 10*time.Second)
 
 	// Ctrl-C to kill nativeapp — overlay should be removed.
-	pio.Write([]byte{3}) // Ctrl-C
-	pio.WaitForScreen(t, func(screen []string) bool {
+	nxt.Write([]byte{3}) // Ctrl-C
+	nxt.WaitForScreen(func(screen []string) bool {
 		for _, line := range screen {
 			if strings.Contains(line, "NATIVE") {
 				return false
@@ -115,5 +115,5 @@ func TestNativeOverlayExit(t *testing.T) {
 	}, "NATIVE gone from screen after Ctrl-C", 10*time.Second)
 
 	// Shell prompt should reappear.
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
+	nxt.WaitFor("nxterm$", 10*time.Second)
 }

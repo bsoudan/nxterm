@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"nxtermd/pkg/nxtest"
 )
 
 // ── Configuration ───────────────────────────────────────────────────────────
@@ -96,8 +97,8 @@ const opTimeout = 10 * time.Second
 type tuiClient struct {
 	id         int
 	name       string
-	fe         *frontend
-	mu         sync.RWMutex // protects fe during restart; snapshot goroutine takes RLock
+	nxt        *nxtest.T
+	mu         sync.RWMutex // protects nxt during restart; snapshot goroutine takes RLock
 	socketPath string
 	session    string // "home" session for reconnection after restart
 	rng        *rand.Rand
@@ -150,7 +151,7 @@ func (tc *tuiClient) pickOp() (string, func(*tuiClient)) {
 func (tc *tuiClient) tryWaitFor(needle string, timeout time.Duration) bool {
 	deadline := time.After(timeout)
 	for {
-		lines := tc.fe.ScreenLines()
+		lines := tc.nxt.ScreenLines()
 		for _, line := range lines {
 			if strings.Contains(line, needle) {
 				return true
@@ -159,9 +160,9 @@ func (tc *tuiClient) tryWaitFor(needle string, timeout time.Duration) bool {
 		select {
 		case <-deadline:
 			return false
-		case _, ok := <-tc.fe.ch:
+		case _, ok := <-tc.nxt.Ch():
 			if !ok {
-				for _, line := range tc.fe.ScreenLines() {
+				for _, line := range tc.nxt.ScreenLines() {
 					if strings.Contains(line, needle) {
 						return true
 					}
@@ -175,7 +176,7 @@ func (tc *tuiClient) tryWaitFor(needle string, timeout time.Duration) bool {
 // estimateTabCount reads the tab bar (row 0) to count tabs.
 // Inactive tabs are "n:name", active tabs are "<n>".
 func (tc *tuiClient) estimateTabCount() int {
-	lines := tc.fe.ScreenLines()
+	lines := tc.nxt.ScreenLines()
 	if len(lines) == 0 {
 		return 1
 	}
@@ -197,19 +198,19 @@ func (tc *tuiClient) estimateTabCount() int {
 // a timeout or unexpected condition.
 func (tc *tuiClient) tryRecover() {
 	for i := 0; i < 3; i++ {
-		tc.fe.Write([]byte{0x1b})
+		tc.nxt.Write([]byte{0x1b})
 		time.Sleep(30 * time.Millisecond)
 	}
-	tc.fe.Write([]byte("q"))
-	tc.fe.Write([]byte{0x03})
-	tc.fe.WaitForSilence(300 * time.Millisecond)
+	tc.nxt.Write([]byte("q"))
+	tc.nxt.Write([]byte{0x03})
+	tc.nxt.WaitForSilence(300 * time.Millisecond)
 }
 
 // hasSession returns true when the TUI has an active session (not in
 // "no session" state). Operations that need a session should check
 // this first.
 func (tc *tuiClient) hasSession() bool {
-	for _, line := range tc.fe.ScreenLines() {
+	for _, line := range tc.nxt.ScreenLines() {
 		if strings.Contains(line, "no session") {
 			return false
 		}
@@ -227,20 +228,20 @@ func (tc *tuiClient) ensureSession() bool {
 	if !tc.tryWaitFor("type a server address", 5*time.Second) {
 		return false
 	}
-	tc.fe.WaitForSilence(200 * time.Millisecond)
-	tc.fe.Write([]byte(tc.session + "@" + tc.socketPath))
+	tc.nxt.WaitForSilence(200 * time.Millisecond)
+	tc.nxt.Write([]byte(tc.session + "@" + tc.socketPath))
 	time.Sleep(100 * time.Millisecond)
-	tc.fe.Write([]byte("\r"))
+	tc.nxt.Write([]byte("\r"))
 	if !tc.tryWaitFor("$", 10*time.Second) {
 		return false
 	}
-	tc.fe.WaitForSilence(200 * time.Millisecond)
+	tc.nxt.WaitForSilence(200 * time.Millisecond)
 	tc.sessionCount = 1
 	return true
 }
 
 func (tc *tuiClient) ctrlB(keys ...byte) {
-	tc.fe.Write(append([]byte{0x02}, keys...))
+	tc.nxt.Write(append([]byte{0x02}, keys...))
 }
 
 func (tc *tuiClient) run(ctx context.Context) {
@@ -277,7 +278,7 @@ func (tc *tuiClient) run(ctx context.Context) {
 
 // tryStartFrontend starts an nxterm in a PTY, returning an error instead
 // of calling t.Fatal. Used for mid-test restarts from goroutines.
-func tryStartFrontend(t *testing.T, socketPath, session string) (*frontend, error) {
+func tryStartFrontend(t *testing.T, socketPath, session string) (*nxtest.T, error) {
 	args := []string{"--socket", socketPath}
 	if session != "" {
 		args = append(args, "--session", session)
@@ -288,31 +289,31 @@ func tryStartFrontend(t *testing.T, socketPath, session string) (*frontend, erro
 	if err != nil {
 		return nil, fmt.Errorf("start frontend: %w", err)
 	}
-	return &frontend{
-		ptyIO: newPtyIO(ptmx, 80, 24),
-		cmd:   cmd,
-		ptmx:  ptmx,
-	}, nil
+	return nxtest.NewFromFrontend(t, &nxtest.Frontend{
+		PtyIO: nxtest.NewPtyIO(ptmx, 80, 24),
+		Cmd:   cmd,
+		Ptmx:  ptmx,
+	}), nil
 }
 
 func (tc *tuiClient) restart() {
-	tc.fe.ptmx.Close()
+	tc.nxt.Frontend.Ptmx.Close()
 
-	fe, err := tryStartFrontend(tc.t, tc.socketPath, tc.session)
+	nxt, err := tryStartFrontend(tc.t, tc.socketPath, tc.session)
 	if err != nil {
 		tc.errs.add("[%s] restart failed: %v", tc.name, err)
 		return
 	}
 
 	tc.mu.Lock()
-	tc.fe = fe
+	tc.nxt = nxt
 	tc.mu.Unlock()
 
 	if !tc.tryWaitFor("$", 10*time.Second) {
 		tc.errs.add("[%s] restart: prompt never appeared", tc.name)
 		tc.tryRecover()
 	}
-	tc.fe.WaitForSilence(200 * time.Millisecond)
+	tc.nxt.WaitForSilence(200 * time.Millisecond)
 	tc.t.Logf("[%s] restarted", tc.name)
 }
 
@@ -335,8 +336,8 @@ func (tc *tuiClient) opTypeCommand() {
 	if strings.Contains(cmd, "%d") {
 		cmd = fmt.Sprintf(cmd, tc.id, tc.cmdCounter)
 	}
-	tc.fe.Write([]byte(cmd + "\r"))
-	tc.fe.WaitForSilence(500 * time.Millisecond)
+	tc.nxt.Write([]byte(cmd + "\r"))
+	tc.nxt.WaitForSilence(500 * time.Millisecond)
 }
 
 func (tc *tuiClient) opSpawnRegion() {
@@ -363,7 +364,7 @@ func (tc *tuiClient) opSwitchTab() {
 	}
 	tab := byte('1') + byte(tc.rng.IntN(count))
 	tc.ctrlB(tab)
-	tc.fe.WaitForSilence(200 * time.Millisecond)
+	tc.nxt.WaitForSilence(200 * time.Millisecond)
 }
 
 func (tc *tuiClient) opCloseTab() {
@@ -371,49 +372,49 @@ func (tc *tuiClient) opCloseTab() {
 		return
 	}
 	tc.ctrlB('x')
-	tc.fe.WaitForSilence(500 * time.Millisecond)
+	tc.nxt.WaitForSilence(500 * time.Millisecond)
 }
 
 func (tc *tuiClient) opEnterScrollback() {
 	tc.ctrlB('[')
 	time.Sleep(200 * time.Millisecond)
 	for i := 0; i < tc.rng.IntN(5)+1; i++ {
-		tc.fe.Write([]byte{0x1b, '[', 'A'}) // up arrow
+		tc.nxt.Write([]byte{0x1b, '[', 'A'}) // up arrow
 		time.Sleep(50 * time.Millisecond)
 	}
-	tc.fe.Write([]byte("q"))
-	tc.fe.WaitForSilence(200 * time.Millisecond)
+	tc.nxt.Write([]byte("q"))
+	tc.nxt.WaitForSilence(200 * time.Millisecond)
 }
 
 func (tc *tuiClient) opResize() {
 	cols := uint16(tc.rng.IntN(81) + 40)
 	rows := uint16(tc.rng.IntN(31) + 10)
-	tc.fe.Resize(cols, rows)
-	tc.fe.WaitForSilence(200 * time.Millisecond)
+	tc.nxt.Resize(cols, rows)
+	tc.nxt.WaitForSilence(200 * time.Millisecond)
 }
 
 func (tc *tuiClient) opRefreshScreen() {
 	tc.ctrlB('r')
-	tc.fe.WaitForSilence(200 * time.Millisecond)
+	tc.nxt.WaitForSilence(200 * time.Millisecond)
 }
 
 func (tc *tuiClient) opOpenStatus() {
 	tc.ctrlB('s')
 	time.Sleep(300 * time.Millisecond)
-	tc.fe.Write([]byte{0x1b})
-	tc.fe.WaitForSilence(200 * time.Millisecond)
+	tc.nxt.Write([]byte{0x1b})
+	tc.nxt.WaitForSilence(200 * time.Millisecond)
 }
 
 func (tc *tuiClient) opOpenLogViewer() {
 	tc.ctrlB('l')
 	time.Sleep(300 * time.Millisecond)
-	tc.fe.Write([]byte{0x1b})
-	tc.fe.WaitForSilence(200 * time.Millisecond)
+	tc.nxt.Write([]byte{0x1b})
+	tc.nxt.WaitForSilence(200 * time.Millisecond)
 }
 
 func (tc *tuiClient) opSendLiteralCtrlB() {
 	tc.ctrlB('b')
-	tc.fe.WaitForSilence(200 * time.Millisecond)
+	tc.nxt.WaitForSilence(200 * time.Millisecond)
 }
 
 func (tc *tuiClient) opCreateSession() {
@@ -423,12 +424,12 @@ func (tc *tuiClient) opCreateSession() {
 		tc.tryRecover()
 		return
 	}
-	tc.fe.WaitForSilence(200 * time.Millisecond)
+	tc.nxt.WaitForSilence(200 * time.Millisecond)
 	name := fmt.Sprintf("s%d-%d", tc.id, tc.cmdCounter)
 	tc.cmdCounter++
-	tc.fe.Write([]byte(name + "@" + tc.socketPath))
+	tc.nxt.Write([]byte(name + "@" + tc.socketPath))
 	time.Sleep(100 * time.Millisecond)
-	tc.fe.Write([]byte("\r"))
+	tc.nxt.Write([]byte("\r"))
 	if tc.tryWaitFor("$", opTimeout) {
 		tc.sessionCount++
 	} else {
@@ -443,8 +444,8 @@ func (tc *tuiClient) opSwitchSession() {
 	}
 	tc.ctrlB('w')
 	time.Sleep(300 * time.Millisecond)
-	tc.fe.Write([]byte("\r"))
-	tc.fe.WaitForSilence(500 * time.Millisecond)
+	tc.nxt.Write([]byte("\r"))
+	tc.nxt.WaitForSilence(500 * time.Millisecond)
 }
 
 func (tc *tuiClient) opKillSession() {
@@ -452,21 +453,21 @@ func (tc *tuiClient) opKillSession() {
 		return
 	}
 	tc.ctrlB('S', 'c')
-	tc.fe.WaitForSilence(500 * time.Millisecond)
+	tc.nxt.WaitForSilence(500 * time.Millisecond)
 	tc.sessionCount--
 }
 
 func (tc *tuiClient) opDetach() {
 	tc.ctrlB('d')
-	if err := tc.fe.Wait(5 * time.Second); err != nil {
+	if err := tc.nxt.Wait(5 * time.Second); err != nil {
 		tc.errs.add("[%s] detach: %v", tc.name, err)
 	}
 	tc.restart()
 }
 
 func (tc *tuiClient) opKillRestart() {
-	tc.fe.cmd.Process.Signal(syscall.SIGINT)
-	err := tc.fe.Wait(5 * time.Second)
+	tc.nxt.Frontend.Cmd.Process.Signal(syscall.SIGINT)
+	err := tc.nxt.Wait(5 * time.Second)
 	// Non-zero exit status is expected after SIGINT; only report
 	// timeout errors (process didn't exit within the deadline).
 	if err != nil && strings.Contains(err.Error(), "did not exit") {
@@ -479,11 +480,11 @@ func (tc *tuiClient) opKillRestart() {
 // the server (exercising the server's write-buffer and drop-detection),
 // then SIGCONT to resume.
 func (tc *tuiClient) opPauseResume() {
-	tc.fe.cmd.Process.Signal(syscall.SIGSTOP)
+	tc.nxt.Frontend.Cmd.Process.Signal(syscall.SIGSTOP)
 	d := time.Duration(tc.rng.IntN(2000)+500) * time.Millisecond
 	time.Sleep(d)
-	tc.fe.cmd.Process.Signal(syscall.SIGCONT)
-	tc.fe.WaitForSilence(500 * time.Millisecond)
+	tc.nxt.Frontend.Cmd.Process.Signal(syscall.SIGCONT)
+	tc.nxt.WaitForSilence(500 * time.Millisecond)
 }
 
 // ── Raw Protocol Stress Client ─────────────────────────────────────────────
@@ -775,7 +776,7 @@ func snapshotAll(t *testing.T, dir string, clients []*tuiClient, seq int) {
 	ts := time.Now().Format("150405")
 	for _, tc := range clients {
 		tc.mu.RLock()
-		lines := tc.fe.ScreenLines()
+		lines := tc.nxt.ScreenLines()
 		tc.mu.RUnlock()
 		name := fmt.Sprintf("%s_%03d_%s.txt", tc.name, seq, ts)
 		path := filepath.Join(dir, name)
@@ -820,14 +821,14 @@ func TestStress(t *testing.T) {
 		rng := rand.New(rand.NewPCG(uint64(cfg.seed), uint64(i)))
 		name := fmt.Sprintf("tui-%d", i)
 
-		fe := startFrontendFull(t, socketPath)
-		defer fe.Kill()
+		nxt := startFrontend(t, socketPath)
+		defer nxt.Kill()
 
 		sessName := fmt.Sprintf("stress-%d", i)
 		tc := &tuiClient{
 			id:           i,
 			name:         name,
-			fe:           fe,
+			nxt:          nxt,
 			socketPath:   socketPath,
 			session:      sessName,
 			rng:          rng,
@@ -840,20 +841,20 @@ func TestStress(t *testing.T) {
 		if !tc.tryWaitFor("$", 10*time.Second) {
 			t.Fatalf("[%s] initial prompt never appeared", name)
 		}
-		tc.fe.WaitForSilence(200 * time.Millisecond)
+		tc.nxt.WaitForSilence(200 * time.Millisecond)
 
 		tc.ctrlB('S', 'o')
 		if !tc.tryWaitFor("type a server address", 5*time.Second) {
 			t.Fatalf("[%s] connect overlay never appeared", name)
 		}
-		tc.fe.WaitForSilence(200 * time.Millisecond)
-		tc.fe.Write([]byte(sessName + "@" + socketPath))
+		tc.nxt.WaitForSilence(200 * time.Millisecond)
+		tc.nxt.Write([]byte(sessName + "@" + socketPath))
 		time.Sleep(100 * time.Millisecond)
-		tc.fe.Write([]byte("\r"))
+		tc.nxt.Write([]byte("\r"))
 		if !tc.tryWaitFor("$", 10*time.Second) {
 			t.Fatalf("[%s] prompt after session create never appeared", name)
 		}
-		tc.fe.WaitForSilence(200 * time.Millisecond)
+		tc.nxt.WaitForSilence(200 * time.Millisecond)
 		tc.sessionCount = 2 // "main" + the new one
 
 		t.Logf("[%s] ready on session %q", name, sessName)
@@ -912,7 +913,7 @@ func TestStress(t *testing.T) {
 
 	// Kill current frontends (covers any that were restarted mid-test)
 	for _, tc := range tuiClients {
-		tc.fe.Kill()
+		tc.nxt.Kill()
 	}
 
 	// Final health check

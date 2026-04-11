@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+
+	"nxtermd/pkg/nxtest"
 )
 
 func TestTCPTransport(t *testing.T) {
@@ -20,28 +22,28 @@ func TestTCPTransport(t *testing.T) {
 	_ = runNxtermctl(t, socketPath, "region", "spawn", "shell")
 
 	// Connect frontend via TCP
-	cmd := exec.Command("nxterm", "--socket", "tcp:"+tcpAddr, )
+	cmd := exec.Command("nxterm", "--socket", "tcp:"+tcpAddr)
 	cmd.Env = append(testEnv(t), "TERM=dumb")
 
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 80})
 	if err != nil {
 		t.Fatalf("start frontend via TCP: %v", err)
 	}
-	pio := newPtyIO(ptmx, 80, 24)
+	nxt := nxtest.New(t, nxtest.NewPtyIO(ptmx, 80, 24))
 	defer func() { cmd.Process.Kill(); cmd.Wait(); ptmx.Close() }()
 
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
+	nxt.WaitFor("nxterm$", 10*time.Second)
 
 	// Verify the tab bar shows the TCP endpoint
-	lines := pio.ScreenLines()
+	lines := nxt.ScreenLines()
 	row0 := lines[0]
 	if !strings.Contains(row0, tcpAddr) {
 		t.Errorf("tab bar should show TCP addr %q, got: %q", tcpAddr, row0)
 	}
 
 	// Type a command and verify round-trip works
-	pio.Write([]byte("echo tcp_works\r"))
-	pio.WaitFor(t, "tcp_works", 10*time.Second)
+	nxt.Write([]byte("echo tcp_works\r"))
+	nxt.WaitFor("tcp_works", 10*time.Second)
 }
 
 func TestWebSocketTransport(t *testing.T) {
@@ -60,19 +62,19 @@ func TestWebSocketTransport(t *testing.T) {
 	_ = runNxtermctl(t, socketPath, "region", "spawn", "shell")
 
 	// Connect frontend via WebSocket
-	cmd := exec.Command("nxterm", "--socket", "ws://"+wsAddr, )
+	cmd := exec.Command("nxterm", "--socket", "ws://"+wsAddr)
 	cmd.Env = append(testEnv(t), "TERM=dumb")
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 80})
 	if err != nil {
 		t.Fatalf("start frontend via WS: %v", err)
 	}
-	pio := newPtyIO(ptmx, 80, 24)
+	nxt := nxtest.New(t, nxtest.NewPtyIO(ptmx, 80, 24))
 	defer func() { cmd.Process.Kill(); cmd.Wait(); ptmx.Close() }()
 
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
+	nxt.WaitFor("nxterm$", 10*time.Second)
 
-	pio.Write([]byte("echo ws_works\r"))
-	pio.WaitFor(t, "ws_works", 10*time.Second)
+	nxt.Write([]byte("echo ws_works\r"))
+	nxt.WaitFor("ws_works", 10*time.Second)
 }
 
 func TestSSHTransport(t *testing.T) {
@@ -142,13 +144,13 @@ func TestSSHTransport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start frontend via SSH: %v", err)
 	}
-	pio := newPtyIO(ptmx, 80, 24)
+	nxt := nxtest.New(t, nxtest.NewPtyIO(ptmx, 80, 24))
 	defer func() { feCmd.Process.Kill(); feCmd.Wait(); ptmx.Close() }()
 
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
+	nxt.WaitFor("nxterm$", 10*time.Second)
 
-	pio.Write([]byte("echo ssh_works\r"))
-	pio.WaitFor(t, "ssh_works", 10*time.Second)
+	nxt.Write([]byte("echo ssh_works\r"))
+	nxt.WaitFor("ssh_works", 10*time.Second)
 }
 
 // TestSSHExecTransport exercises the ssh:// transport (system ssh
@@ -208,16 +210,16 @@ eval "$1"
 	if err != nil {
 		t.Fatalf("start frontend via ssh-exec: %v", err)
 	}
-	pio := newPtyIO(ptmx, 80, 24)
+	nxt := nxtest.New(t, nxtest.NewPtyIO(ptmx, 80, 24))
 	defer func() { cmd.Process.Kill(); cmd.Wait(); ptmx.Close() }()
 
 	// The active tab no longer renders the program name (commit
 	// 98da964) so the historical WaitFor("bash") here can't be used;
 	// wait for the bash prompt directly.
-	pio.WaitFor(t, "nxterm$", 10*time.Second)
+	nxt.WaitFor("nxterm$", 10*time.Second)
 
-	pio.Write([]byte("echo ssh_exec_works\r"))
-	pio.WaitFor(t, "ssh_exec_works", 10*time.Second)
+	nxt.Write([]byte("echo ssh_exec_works\r"))
+	nxt.WaitFor("ssh_exec_works", 10*time.Second)
 }
 
 func TestMultiTransportSharedRegion(t *testing.T) {
@@ -225,32 +227,32 @@ func TestMultiTransportSharedRegion(t *testing.T) {
 	defer serverCleanup()
 
 	// Start frontend 1 via Unix socket
-	pio1, cleanup1 := startFrontend(t, socketPath)
-	defer cleanup1()
+	nxt1 := startFrontend(t, socketPath)
+	defer nxt1.Kill()
 
-	pio1.WaitFor(t, "nxterm$",10*time.Second)
+	nxt1.WaitFor("nxterm$", 10*time.Second)
 
 	// Type a marker in frontend 1
-	pio1.Write([]byte("echo multi_transport_marker\r"))
-	pio1.WaitFor(t, "multi_transport_marker", 10*time.Second)
+	nxt1.Write([]byte("echo multi_transport_marker\r"))
+	nxt1.WaitFor("multi_transport_marker", 10*time.Second)
 
 	// Start frontend 2 via TCP (subscribes to the same region)
-	cmd := exec.Command("nxterm", "--socket", "tcp:"+tcpAddr, )
+	cmd := exec.Command("nxterm", "--socket", "tcp:"+tcpAddr)
 	cmd.Env = append(testEnv(t), "TERM=dumb")
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 80})
 	if err != nil {
 		t.Fatalf("start frontend 2 via TCP: %v", err)
 	}
-	pio2 := newPtyIO(ptmx, 80, 24)
+	nxt2 := nxtest.New(t, nxtest.NewPtyIO(ptmx, 80, 24))
 	defer func() { cmd.Process.Kill(); cmd.Wait(); ptmx.Close() }()
 
 	// Frontend 2 should see the marker (it gets the screen snapshot on subscribe)
-	pio2.WaitFor(t, "multi_transport_marker", 10*time.Second)
+	nxt2.WaitFor("multi_transport_marker", 10*time.Second)
 
 	// Type in frontend 2, verify frontend 1 sees it
-	pio2.WaitFor(t, "nxterm$",10*time.Second)
-	pio2.Write([]byte("echo from_tcp_client\r"))
-	pio1.WaitFor(t, "from_tcp_client", 10*time.Second)
+	nxt2.WaitFor("nxterm$", 10*time.Second)
+	nxt2.Write([]byte("echo from_tcp_client\r"))
+	nxt1.WaitFor("from_tcp_client", 10*time.Second)
 }
 
 // findFrontendClientID returns the client ID of the nxterm process.

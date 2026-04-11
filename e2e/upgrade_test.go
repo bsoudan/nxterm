@@ -15,6 +15,7 @@ import (
 
 	"github.com/creack/pty"
 	"nxtermd/frontend/protocol"
+	"nxtermd/pkg/nxtest"
 )
 
 // TestLiveUpgrade starts a server with Unix, TCP, WebSocket, and SSH
@@ -114,25 +115,25 @@ func TestLiveUpgrade(t *testing.T) {
 	// Start 4 frontends, one per transport.
 	type feEntry struct {
 		name string
-		pio  *ptyIO
+		nxt  *nxtest.T
 		kill func()
 	}
 	var frontends []feEntry
 
 	// Unix
 	{
-		fe := startFrontendWithEnv(t, socketPath, env)
-		frontends = append(frontends, feEntry{"unix", fe.ptyIO, fe.Kill})
+		nxt := startFrontendWithEnv(t, socketPath, env)
+		frontends = append(frontends, feEntry{"unix", nxt, nxt.Kill})
 	}
 	// TCP
 	{
-		fe := startFrontendWithEnv(t, "tcp://"+tcpAddr, env)
-		frontends = append(frontends, feEntry{"tcp", fe.ptyIO, fe.Kill})
+		nxt := startFrontendWithEnv(t, "tcp://"+tcpAddr, env)
+		frontends = append(frontends, feEntry{"tcp", nxt, nxt.Kill})
 	}
 	// WebSocket
 	{
-		fe := startFrontendWithEnv(t, "ws://"+wsAddr, env)
-		frontends = append(frontends, feEntry{"ws", fe.ptyIO, fe.Kill})
+		nxt := startFrontendWithEnv(t, "ws://"+wsAddr, env)
+		frontends = append(frontends, feEntry{"ws", nxt, nxt.Kill})
 	}
 	// SSH — clear SSH_AUTH_SOCK so the client doesn't try to contact
 	// a real agent (which adds latency and is unnecessary with --ssh-no-auth).
@@ -143,8 +144,8 @@ func TestLiveUpgrade(t *testing.T) {
 		if err != nil {
 			t.Fatalf("start SSH frontend: %v", err)
 		}
-		pio := newPtyIO(ptmx, 80, 24)
-		frontends = append(frontends, feEntry{"ssh", pio, func() {
+		nxt := nxtest.New(t, nxtest.NewPtyIO(ptmx, 80, 24))
+		frontends = append(frontends, feEntry{"ssh", nxt, func() {
 			feCmd.Process.Kill(); feCmd.Wait(); ptmx.Close()
 		}})
 	}
@@ -154,16 +155,16 @@ func TestLiveUpgrade(t *testing.T) {
 
 	// Wait for all frontends to see the prompt.
 	for _, fe := range frontends {
-		fe.pio.WaitFor(t, "nxterm$", 10*time.Second)
+		fe.nxt.WaitFor("nxterm$", 10*time.Second)
 	}
 
 	// Type a unique marker in the Unix frontend's shell.
-	frontends[0].pio.Write([]byte("echo UPGRADE_MARKER_42\r"))
-	frontends[0].pio.WaitFor(t, "UPGRADE_MARKER_42", 10*time.Second)
+	frontends[0].nxt.Write([]byte("echo UPGRADE_MARKER_42\r"))
+	frontends[0].nxt.WaitFor("UPGRADE_MARKER_42", 10*time.Second)
 
 	// Let all frontends settle before triggering upgrade.
 	for _, fe := range frontends {
-		fe.pio.WaitForSilence(200 * time.Millisecond)
+		fe.nxt.WaitForSilence(200 * time.Millisecond)
 	}
 
 	// Trigger live upgrade.
@@ -175,19 +176,19 @@ func TestLiveUpgrade(t *testing.T) {
 	// All frontends should reconnect.
 	for _, fe := range frontends {
 		t.Logf("waiting for %s frontend to reconnect...", fe.name)
-		fe.pio.WaitFor(t, "$", 20*time.Second)
+		fe.nxt.WaitFor("$", 20*time.Second)
 	}
 
 	// Let frontends settle after reconnection.
 	for _, fe := range frontends {
-		fe.pio.WaitForSilence(200 * time.Millisecond)
+		fe.nxt.WaitForSilence(200 * time.Millisecond)
 	}
 
 	// Type in each frontend to verify the shells are alive.
 	for i, fe := range frontends {
 		marker := fmt.Sprintf("ALIVE_%s_%d", fe.name, i)
-		fe.pio.Write([]byte("echo " + marker + "\r"))
-		fe.pio.WaitFor(t, marker, 15*time.Second)
+		fe.nxt.Write([]byte("echo " + marker + "\r"))
+		fe.nxt.WaitFor(marker, 15*time.Second)
 		t.Logf("%s frontend: shell alive", fe.name)
 	}
 }
@@ -223,17 +224,17 @@ func TestLiveUpgradeSimple(t *testing.T) {
 	}
 
 	// Start a frontend and wait for the shell prompt.
-	fe := startFrontendWithEnv(t, socketPath, env)
-	defer fe.Kill()
-	fe.WaitFor(t, "nxterm$", 10*time.Second)
+	nxt := startFrontendWithEnv(t, socketPath, env)
+	defer nxt.Kill()
+	nxt.WaitFor("nxterm$", 10*time.Second)
 
 	oldPID := cmd.Process.Pid
 	t.Logf("old server PID: %d", oldPID)
 
 	// Type a marker so we can verify the shell survives.
-	fe.Write([]byte("echo PRE_UPGRADE_OK\r"))
-	fe.WaitFor(t, "PRE_UPGRADE_OK", 10*time.Second)
-	fe.WaitForSilence(200 * time.Millisecond)
+	nxt.Write([]byte("echo PRE_UPGRADE_OK\r"))
+	nxt.WaitFor("PRE_UPGRADE_OK", 10*time.Second)
+	nxt.WaitForSilence(200 * time.Millisecond)
 
 	// Trigger live upgrade.
 	t.Log("sending SIGUSR2...")
@@ -242,8 +243,8 @@ func TestLiveUpgradeSimple(t *testing.T) {
 	}
 
 	// Frontend should reconnect.
-	fe.WaitFor(t, "$", 20*time.Second)
-	fe.WaitForSilence(200 * time.Millisecond)
+	nxt.WaitFor("$", 20*time.Second)
+	nxt.WaitForSilence(200 * time.Millisecond)
 
 	// Wait for the old server process to exit. Because we started it with
 	// cmd.Start(), we must call cmd.Wait() to reap it — otherwise it stays
@@ -258,15 +259,15 @@ func TestLiveUpgradeSimple(t *testing.T) {
 	t.Logf("old server PID %d has exited", oldPID)
 
 	// Verify new server has a different PID via the status pane.
-	newPID := getStatusPID(t, fe)
+	newPID := getStatusPID(t, nxt)
 	if newPID == oldPID {
 		t.Fatalf("new server PID %d matches old PID", newPID)
 	}
 	t.Logf("new server PID: %d", newPID)
 
 	// Verify the shell is still alive.
-	fe.Write([]byte("echo POST_UPGRADE_OK\r"))
-	fe.WaitFor(t, "POST_UPGRADE_OK", 15*time.Second)
+	nxt.Write([]byte("echo POST_UPGRADE_OK\r"))
+	nxt.WaitFor("POST_UPGRADE_OK", 15*time.Second)
 	t.Log("shell survived upgrade")
 }
 
@@ -373,9 +374,9 @@ func TestLiveUpgradeNoDataLoss(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	fe := startFrontendWithEnv(t, socketPath, env)
-	defer fe.Kill()
-	fe.WaitFor(t, "nxterm$", 10*time.Second)
+	nxt := startFrontendWithEnv(t, socketPath, env)
+	defer nxt.Kill()
+	nxt.WaitFor("nxterm$", 10*time.Second)
 
 	// Start a high-rate awk loop that continuously emits "i=NNN i=NNN
 	// i=NNN..." tokens. The token-per-iteration rate is high enough
@@ -384,10 +385,10 @@ func TestLiveUpgradeNoDataLoss(t *testing.T) {
 	// Without the StopReadLoop fix, the OLD readLoop drains bytes
 	// after the snapshot was taken; those bytes never make it to the
 	// new process and show up as a gap in the counter sequence.
-	fe.Write([]byte(`awk 'BEGIN { for (i=1; i<=20000; i++) printf "i=%d ", i; printf "\nDONE\n" }'` + "\r"))
+	nxt.Write([]byte(`awk 'BEGIN { for (i=1; i<=20000; i++) printf "i=%d ", i; printf "\nDONE\n" }'` + "\r"))
 
 	// Wait until output is actively flowing.
-	fe.WaitFor(t, "i=10", 10*time.Second)
+	nxt.WaitFor("i=10", 10*time.Second)
 
 	// Trigger live upgrade mid-stream.
 	if err := syscall.Kill(cmd.Process.Pid, syscall.SIGUSR2); err != nil {
@@ -395,18 +396,18 @@ func TestLiveUpgradeNoDataLoss(t *testing.T) {
 	}
 
 	// Wait for the loop to finish.
-	fe.WaitFor(t, "DONE", 60*time.Second)
-	fe.WaitFor(t, "nxterm$", 30*time.Second)
-	fe.WaitForSilence(500 * time.Millisecond)
+	nxt.WaitFor("DONE", 60*time.Second)
+	nxt.WaitFor("nxterm$", 30*time.Second)
+	nxt.WaitForSilence(500 * time.Millisecond)
 
 	// Walk the visible screen and pull out every "i=NNN" token, then
 	// check the sequence is contiguous. Concatenate all rows into one
 	// string first, then strip the line-wrap whitespace, so tokens
 	// that wrap across rows (e.g. "i=198" + "00") survive intact.
-	lines := fe.ScreenLines()
+	screenLines := nxt.ScreenLines()
 	var joined strings.Builder
-	for i := 1; i < len(lines); i++ { // skip tab bar at row 0
-		joined.WriteString(strings.TrimRight(lines[i], " "))
+	for i := 1; i < len(screenLines); i++ { // skip tab bar at row 0
+		joined.WriteString(strings.TrimRight(screenLines[i], " "))
 	}
 	flat := joined.String()
 
@@ -433,12 +434,12 @@ func TestLiveUpgradeNoDataLoss(t *testing.T) {
 
 	if len(seen) < 5 {
 		t.Fatalf("not enough counter values on screen: %v\nlines:\n%s",
-			seen, strings.Join(lines, "\n"))
+			seen, strings.Join(screenLines, "\n"))
 	}
 	for i := 1; i < len(seen); i++ {
 		if seen[i] != seen[i-1]+1 {
 			t.Fatalf("counter discontinuity at index %d: %d → %d\nfull sequence: %v\nlines:\n%s",
-				i, seen[i-1], seen[i], seen, strings.Join(lines, "\n"))
+				i, seen[i-1], seen[i], seen, strings.Join(screenLines, "\n"))
 		}
 	}
 	t.Logf("counter contiguous over %d values: %d..%d", len(seen), seen[0], seen[len(seen)-1])
@@ -446,17 +447,17 @@ func TestLiveUpgradeNoDataLoss(t *testing.T) {
 
 // getStatusPID opens the TUI status pane (ctrl+b s), extracts the server
 // PID from the "PID:" line, closes the pane (q), and returns the PID.
-func getStatusPID(t *testing.T, fe *frontend) int {
+func getStatusPID(t *testing.T, nxt *nxtest.T) int {
 	t.Helper()
 	// Let the TUI settle before sending keys.
-	fe.WaitForSilence(200 * time.Millisecond)
+	nxt.WaitForSilence(200 * time.Millisecond)
 	// Open status pane: ctrl+b s
-	fe.Write([]byte{0x02, 's'})
+	nxt.Write([]byte{0x02, 's'})
 
 	// Wait for the PID line to appear on screen. The line looks like
 	// "│   PID:       12345                           │" with border chars.
 	var pid int
-	fe.WaitForScreen(t, func(lines []string) bool {
+	nxt.WaitForScreen(func(lines []string) bool {
 		for _, line := range lines {
 			if idx := strings.Index(line, "PID:"); idx >= 0 {
 				after := line[idx+len("PID:"):]
@@ -473,13 +474,13 @@ func getStatusPID(t *testing.T, fe *frontend) int {
 	}, "status pane with PID", 10*time.Second)
 
 	// Close the status pane.
-	fe.Write([]byte("q"))
-	fe.WaitForSilence(200 * time.Millisecond)
+	nxt.Write([]byte("q"))
+	nxt.WaitForSilence(200 * time.Millisecond)
 	return pid
 }
 
 // startFrontendWithSpec starts a frontend connected to any transport spec.
-func startFrontendWithSpec(t *testing.T, spec string, env []string) *frontend {
+func startFrontendWithSpec(t *testing.T, spec string, env []string) *nxtest.T {
 	t.Helper()
 	cmd := exec.Command("nxterm", "--socket", spec)
 	cmd.Env = append(env, "TERM=dumb")
@@ -487,9 +488,9 @@ func startFrontendWithSpec(t *testing.T, spec string, env []string) *frontend {
 	if err != nil {
 		t.Fatalf("start frontend %s: %v", spec, err)
 	}
-	return &frontend{
-		ptyIO: newPtyIO(ptmx, 80, 24),
-		cmd:   cmd,
-		ptmx:  ptmx,
-	}
+	return nxtest.NewFromFrontend(t, &nxtest.Frontend{
+		PtyIO: nxtest.NewPtyIO(ptmx, 80, 24),
+		Cmd:   cmd,
+		Ptmx:  ptmx,
+	})
 }
