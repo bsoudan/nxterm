@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -24,6 +23,7 @@ type SessionLayer struct {
 	server    *Server
 	requestFn RequestFunc
 	registry  *Registry
+	treeStore *TreeStore
 
 	programs []protocol.ProgramInfo
 
@@ -77,37 +77,65 @@ func (s *SessionLayer) findTabIndex(regionID string) int {
 	return -1
 }
 
-// syncTabs reconciles the local tab list with the server's region list.
-// New regions get tabs appended; tabs whose regions no longer exist are
-// removed. The active tab is preserved if its region still exists,
-// otherwise it falls back to the first tab. After syncing, the active
-// tab's region is subscribed.
-func (s *SessionLayer) syncTabs(regions []protocol.RegionInfo) {
-	// Build a set of server region IDs for quick lookup.
-	serverIDs := make(map[string]bool, len(regions))
-	for _, r := range regions {
-		serverIDs[r.RegionID] = true
+// syncFromTree reconciles the local tab list and programs with the
+// server's object tree. Called on every TreeChangedMsg.
+func (s *SessionLayer) syncFromTree(tree protocol.Tree) {
+	sess, ok := tree.Sessions[s.sessionName]
+	if !ok {
+		if s.sessionName == "" {
+			return // session name not yet known
+		}
+		// Session was removed from the tree (all regions destroyed).
+		if len(s.tabs) > 0 {
+			s.tabs = s.tabs[:0]
+			s.status = "no regions"
+		}
+		return
 	}
 
-	// Remove tabs whose regions no longer exist on the server.
+	// Derive programs from tree.
+	s.programs = s.programs[:0]
+	for _, p := range tree.Programs {
+		s.programs = append(s.programs, protocol.ProgramInfo{Name: p.Name, Cmd: p.Cmd})
+	}
+
+	// Build set of region IDs in this session.
+	serverIDs := make(map[string]bool, len(sess.RegionIDs))
+	for _, id := range sess.RegionIDs {
+		serverIDs[id] = true
+	}
+
 	prevActiveID := s.activeRegionID()
+	hadTabs := len(s.tabs) > 0
+
+	// Remove tabs whose regions no longer exist.
 	n := 0
 	for _, t := range s.tabs {
 		if serverIDs[t.regionID] {
+			if r, ok := tree.Regions[t.regionID]; ok {
+				t.regionName = r.Name
+				if t.term != nil {
+					t.term.regionName = r.Name
+				}
+			}
 			s.tabs[n] = t
 			n++
 		}
 	}
 	s.tabs = s.tabs[:n]
 
-	// Add tabs for regions not already tracked.
-	for _, r := range regions {
-		if s.findTabIndex(r.RegionID) < 0 {
-			s.tabs = append(s.tabs, tab{regionID: r.RegionID, regionName: r.Name})
+	// Add tabs for new regions in session order.
+	for _, id := range sess.RegionIDs {
+		if s.findTabIndex(id) < 0 {
+			name := ""
+			if r, ok := tree.Regions[id]; ok {
+				name = r.Name
+			}
+			s.tabs = append(s.tabs, tab{regionID: id, regionName: name})
 		}
 	}
 
-	// Restore active tab to the previously active region if still present.
+	// Restore active tab.
 	if prevActiveID != "" {
 		if idx := s.findTabIndex(prevActiveID); idx >= 0 {
 			s.activeTab = idx
@@ -117,12 +145,23 @@ func (s *SessionLayer) syncTabs(regions []protocol.RegionInfo) {
 		s.activeTab = max(len(s.tabs)-1, 0)
 	}
 
+	// Handle state transitions.
+	if len(s.tabs) == 0 && hadTabs {
+		s.status = "no regions"
+	} else if len(s.tabs) > 0 {
+		s.status = ""
+		// Subscribe if the active region changed or we just got tabs.
+		newActiveID := s.activeRegionID()
+		if newActiveID != prevActiveID || !hadTabs {
+			s.Activate()
+		}
+	}
 }
 
 // NewSessionLayer creates a session layer with the given dependencies.
 func NewSessionLayer(
 	server *Server, requestFn RequestFunc, registry *Registry,
-	logRing *LogRingBuffer,
+	treeStore *TreeStore, logRing *LogRingBuffer,
 	endpoint, version, changelog, hostname, sessionName string,
 	statusBarMargin int,
 ) *SessionLayer {
@@ -130,6 +169,7 @@ func NewSessionLayer(
 		server:          server,
 		requestFn:       requestFn,
 		registry:        registry,
+		treeStore:       treeStore,
 		endpoint:        endpoint,
 		version:         version,
 		changelog:       changelog,
@@ -251,24 +291,22 @@ func (s *SessionLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 		}
 		return nil, nil, true
 
+	case TreeChangedMsg:
+		s.syncFromTree(msg.Tree)
+		return nil, nil, true
+
 	case protocol.SessionConnectResponse:
 		if msg.Error {
 			s.err = "session connect failed: " + msg.Message
 			return nil, nil, true
 		}
 		s.sessionName = msg.Session
-		s.programs = msg.Programs
-		s.syncTabs(msg.Regions)
-		s.Activate()
-		return nil, nil, true
-
-	case protocol.ListRegionsResponse:
-		if msg.Error {
-			s.err = "list regions failed: " + msg.Message
-			return nil, nil, true
+		// The session name is now known; re-derive tabs from the tree.
+		// Tree data may have arrived before the response (via tree_events)
+		// but syncFromTree couldn't match the session with an empty name.
+		if s.treeStore != nil && s.treeStore.Valid() {
+			s.syncFromTree(s.treeStore.Tree())
 		}
-		s.syncTabs(msg.Regions)
-		s.Activate()
 		return nil, nil, true
 
 	case protocol.SpawnResponse:
@@ -345,33 +383,6 @@ func (s *SessionLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 		if t := s.activeTerm(); t != nil {
 			_, _, _ = t.Update(msg)
 		}
-		return nil, nil, true
-
-	case protocol.RegionCreated:
-		idx := s.findTabIndex(msg.RegionID)
-		if idx >= 0 {
-			s.tabs[idx].regionName = msg.Name
-			if s.tabs[idx].term != nil {
-				s.tabs[idx].term.regionName = msg.Name
-			}
-		}
-		return nil, nil, true
-
-	case protocol.RegionDestroyed:
-		idx := s.findTabIndex(msg.RegionID)
-		if idx < 0 {
-			return nil, nil, true
-		}
-		s.tabs = slices.Delete(s.tabs, idx, idx+1)
-		if len(s.tabs) == 0 {
-			// No regions left — MainLayer will handle this via View showing error
-			s.status = "no regions"
-			return nil, nil, true
-		}
-		if s.activeTab >= len(s.tabs) {
-			s.activeTab = len(s.tabs) - 1
-		}
-		s.Activate()
 		return nil, nil, true
 
 	case tea.MouseMsg:

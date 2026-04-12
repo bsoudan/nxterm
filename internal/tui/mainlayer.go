@@ -44,7 +44,8 @@ type MainLayer struct {
 	upgradeClientAvail  bool
 	upgradeClientVer    string
 
-	tasks *layer.TaskRunner[RenderState]
+	treeStore *TreeStore
+	tasks     *layer.TaskRunner[RenderState]
 
 	termWidth  int
 	termHeight int
@@ -92,7 +93,7 @@ func NewMainLayer(
 	}
 	if endpoint != "" {
 		// Connected mode: create initial session immediately.
-		session := NewSessionLayer(server, requestFn, registry, logRing, endpoint, version, changelog, hostname, sessionName, statusBarMargin)
+		session := NewSessionLayer(server, requestFn, registry, nil, logRing, endpoint, version, changelog, hostname, sessionName, statusBarMargin)
 		m.sessions = []*SessionLayer{session}
 	}
 	return m
@@ -285,7 +286,7 @@ func (m *MainLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 		if msg.Session != "" {
 			m.sessionName = msg.Session
 		}
-		session := NewSessionLayer(m.server, m.requestFn, m.registry, m.logRing, m.endpoint, m.version, m.changelog, m.localHostname, m.sessionName, m.statusBarMargin)
+		session := NewSessionLayer(m.server, m.requestFn, m.registry, m.treeStore, m.logRing, m.endpoint, m.version, m.changelog, m.localHostname, m.sessionName, m.statusBarMargin)
 		session.termWidth = m.termWidth
 		session.termHeight = m.termHeight
 		m.sessions = []*SessionLayer{session}
@@ -323,6 +324,10 @@ func (m *MainLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 		}
 		for _, s := range m.sessions {
 			s.Reconnect()
+		}
+		// Force resubscribe — the old subscription died with the connection.
+		if s := m.activeSessionLayer(); s != nil {
+			s.Activate()
 		}
 		m.checkForUpgrades()
 		return nil, nil, true

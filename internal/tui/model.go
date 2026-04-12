@@ -22,7 +22,7 @@ type Model struct {
 	registry  *Registry
 	req       *requestState
 	Tasks     *layer.TaskRunner[RenderState]
-	treeStore TreeStore
+	treeStore *TreeStore
 	server    *Server
 	Detached  bool
 }
@@ -44,12 +44,21 @@ func NewModel(s *Server, pipeW io.Writer, registry *Registry, ring *LogRingBuffe
 	tasks := layer.NewTaskRunner[RenderState]()
 	main.tasks = tasks
 	stack := layer.NewStack[RenderState](main)
+	ts := &TreeStore{}
+	// Wire up treeStore reference so MainLayer and its SessionLayers
+	// can read the tree on demand (e.g., when SessionConnectResponse
+	// arrives and the session name becomes known).
+	main.treeStore = ts
+	for _, s := range main.sessions {
+		s.treeStore = ts
+	}
 	return Model{
-		stack:    stack,
-		registry: registry,
-		req:      req,
-		Tasks:    tasks,
-		server:   s,
+		stack:     stack,
+		registry:  registry,
+		req:       req,
+		Tasks:     tasks,
+		treeStore: ts,
+		server:    s,
 	}
 }
 
