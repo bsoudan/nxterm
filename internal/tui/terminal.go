@@ -151,7 +151,18 @@ func (t *TerminalLayer) handleScreenUpdate(lines []string, cells [][]protocol.Sc
 	t.lines = lines
 	t.cursorRow = int(cursorRow)
 	t.cursorCol = int(cursorCol)
+	// Preserve scrollback history across screen resets. A screen_update
+	// (e.g., from synchronized output mode 2026) replaces the screen but
+	// the scrollback lines accumulated by the client — including any
+	// prepended from a server sync — should survive.
+	var prevHistory [][]te.Cell
+	if t.hscreen != nil {
+		prevHistory = t.hscreen.History()
+	}
 	t.hscreen = te.NewHistoryScreen(width, height, 10000)
+	if len(prevHistory) > 0 {
+		t.hscreen.PrependHistory(prevHistory)
+	}
 	if len(cells) > 0 {
 		initScreenFromCells(t.hscreen.Screen, cells)
 	} else {
