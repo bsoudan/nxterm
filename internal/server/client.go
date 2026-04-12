@@ -427,13 +427,8 @@ func (c *Client) handleSpawn(msg protocol.SpawnRequest, reply func(any)) {
 		Error:    false,
 		Message:  "",
 	})
-
-	c.server.Broadcast(protocol.RegionCreated{
-		Type:     "region_created",
-		RegionID: region.ID(),
-		Name:     region.Name(),
-		Session:  sessionName,
-	})
+	// Note: region_created broadcast removed — clients are notified
+	// via tree_events from the spawnRegionReq handler in the event loop.
 }
 
 func (c *Client) handleSubscribe(msg protocol.SubscribeRequest, reply func(any)) {

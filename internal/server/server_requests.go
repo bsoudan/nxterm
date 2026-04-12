@@ -48,10 +48,6 @@ type findRegionReq struct {
 	resp     chan Region
 }
 
-type getClientsReq struct {
-	resp chan []*Client
-}
-
 type killRegionReq struct {
 	regionID string
 	resp     chan Region
@@ -382,13 +378,6 @@ func (s *Server) eventLoop() {
 
 			case findRegionReq:
 				r.resp <- regions[r.regionID]
-
-			case getClientsReq:
-				list := make([]*Client, 0, len(clients))
-				for _, c := range clients {
-					list = append(list, c)
-				}
-				r.resp <- list
 
 			case killRegionReq:
 				r.resp <- regions[r.regionID]

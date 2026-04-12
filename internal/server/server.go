@@ -237,13 +237,8 @@ func (s *Server) destroyRegion(regionID string) {
 	if !result.found {
 		return
 	}
-
-	for _, c := range result.subscribers {
-		c.SendMessage(protocol.RegionDestroyed{
-			Type:     "region_destroyed",
-			RegionID: regionID,
-		})
-	}
+	// Note: region_destroyed broadcast removed — clients are notified
+	// via tree_events from the destroyRegionReq handler in the event loop.
 
 	slog.Info("destroyed region", "region_id", regionID, "session", result.region.Session())
 	result.region.Close()
@@ -269,15 +264,6 @@ func (s *Server) RouteInput(regionID string) (Region, *Client) {
 	return result.region, result.overlayClient
 }
 
-func (s *Server) Broadcast(msg any) {
-	resp := make(chan []*Client, 1)
-	if !s.send(getClientsReq{resp: resp}) {
-		return
-	}
-	for _, c := range <-resp {
-		c.SendMessage(msg)
-	}
-}
 
 func (s *Server) KillRegion(regionID string) bool {
 	resp := make(chan Region, 1)
