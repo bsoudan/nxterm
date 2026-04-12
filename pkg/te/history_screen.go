@@ -714,9 +714,26 @@ func (h *HistoryScreen) History() [][]Cell {
 	return append([][]Cell(nil), h.history.Top.items...)
 }
 
-// Scrollback scrolls the screen back.
+// Scrollback returns the number of lines in the scrollback buffer.
 func (h *HistoryScreen) Scrollback() int {
 	return len(h.history.Top.items)
+}
+
+// PrependHistory inserts lines at the beginning of the scrollback buffer.
+// Used to sync older history from the server that the client missed.
+// Lines are inserted in order: lines[0] becomes the oldest line.
+func (h *HistoryScreen) PrependHistory(lines [][]Cell) {
+	if len(lines) == 0 {
+		return
+	}
+	// Prepend to Top.items, respecting the max capacity.
+	combined := make([][]Cell, 0, len(lines)+len(h.history.Top.items))
+	combined = append(combined, lines...)
+	combined = append(combined, h.history.Top.items...)
+	if len(combined) > h.history.Top.max {
+		combined = combined[len(combined)-h.history.Top.max:]
+	}
+	h.history.Top.items = combined
 }
 
 func (h *HistoryScreen) resetHistory() {

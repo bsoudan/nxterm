@@ -311,9 +311,13 @@ func (t *TerminalLayer) ScrollbackActive() bool { return t.scrollbackLayer != ni
 
 // EnterScrollback activates scrollback mode. Scrollback data comes from
 // the client's local HistoryScreen which accumulates lines as terminal
-// events are replayed.
+// events are replayed. If the server has more history than the client
+// (e.g., from before the client connected), a sync request is sent to
+// fetch the older lines.
 func (t *TerminalLayer) EnterScrollback(offset int) {
 	t.scrollbackLayer = newScrollbackLayer(t, offset)
+	// Request server scrollback so we can sync any lines the client missed.
+	t.server.Send(protocol.GetScrollbackRequest{RegionID: t.regionID})
 }
 
 // ExitScrollback deactivates scrollback mode.

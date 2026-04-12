@@ -7,6 +7,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	te "nxtermd/pkg/te"
+	"nxtermd/internal/protocol"
 )
 
 // ScrollbackLayer is a layer pushed onto TerminalLayer's inner stack
@@ -15,9 +16,15 @@ import (
 // navigation input. Because the HistoryScreen accumulates lines as
 // terminal events are replayed, the scrollback stays in sync with
 // new output that arrives while the user is viewing scrollback.
+//
+// On entry, a GetScrollbackRequest is sent to the server. When the
+// response arrives, any lines the server has that the client doesn't
+// (from before the client connected) are prepended to the local history.
 type ScrollbackLayer struct {
-	offset int           // lines scrolled back from bottom (0 = live)
-	term   *TerminalLayer // reference to the terminal for history + screen
+	offset   int            // lines scrolled back from bottom (0 = live)
+	term     *TerminalLayer // reference to the terminal for history + screen
+	synced   bool           // true once server sync is complete
+	syncBuf  [][]te.Cell    // accumulates server chunks during sync
 }
 
 func newScrollbackLayer(term *TerminalLayer, offset int) *ScrollbackLayer {
@@ -39,8 +46,58 @@ func (s *ScrollbackLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 			return s.handleWheel(wheel.Button)
 		}
 		return nil, nil, true // absorb other mouse events
+	case protocol.GetScrollbackResponse:
+		if !s.synced {
+			s.handleSyncChunk(msg)
+		}
+		return nil, nil, true
 	}
 	return nil, nil, false // pass through (terminal events, etc.)
+}
+
+// handleSyncChunk processes a scrollback chunk from the server and
+// prepends any lines the client is missing to the local history.
+func (s *ScrollbackLayer) handleSyncChunk(msg protocol.GetScrollbackResponse) {
+	if msg.Error {
+		s.synced = true
+		return
+	}
+
+	// Convert protocol cells to te.Cell and accumulate.
+	for _, row := range msg.Lines {
+		cells := make([]te.Cell, len(row))
+		for i, c := range row {
+			cells[i].Data = c.Char
+			cells[i].Attr.Fg = specToColor(c.Fg)
+			cells[i].Attr.Bg = specToColor(c.Bg)
+			cells[i].Attr.Bold = c.A&1 != 0
+			cells[i].Attr.Italics = c.A&2 != 0
+			cells[i].Attr.Underline = c.A&4 != 0
+			cells[i].Attr.Strikethrough = c.A&8 != 0
+			cells[i].Attr.Reverse = c.A&16 != 0
+			cells[i].Attr.Blink = c.A&32 != 0
+			cells[i].Attr.Conceal = c.A&64 != 0
+		}
+		s.syncBuf = append(s.syncBuf, cells)
+	}
+
+	if !msg.Done {
+		return
+	}
+
+	// All chunks received. The server sent its full scrollback history.
+	// The client already has some local history (from terminal events
+	// since connecting). The server's lines include both the older
+	// lines the client missed AND the newer lines the client already
+	// has. We only need to prepend the older portion.
+	localCount := s.term.hscreen.Scrollback()
+	serverCount := len(s.syncBuf)
+	gap := serverCount - localCount
+	if gap > 0 {
+		s.term.hscreen.PrependHistory(s.syncBuf[:gap])
+	}
+	s.syncBuf = nil
+	s.synced = true
 }
 
 // scrollbackTotal returns the number of history lines available.

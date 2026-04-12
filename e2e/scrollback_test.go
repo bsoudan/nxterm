@@ -382,6 +382,60 @@ func TestScrollbackLiveUpdate(t *testing.T) {
 	nxt.WaitFor("nxterm$", 10*time.Second)
 }
 
+// TestScrollbackAfterReconnect verifies that scrollback history from before
+// a disconnect is available after the client reconnects. The server keeps
+// the full scrollback; the client must sync the gap on reconnect.
+func TestScrollbackAfterReconnect(t *testing.T) {
+	socketPath, serverCleanup := startServer(t)
+	defer serverCleanup()
+
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
+
+	nxt.WaitFor("nxterm$", 10*time.Second)
+
+	// Generate output that will go into scrollback.
+	nxt.Write([]byte("for i in $(seq 1 100); do echo \"BEFORE_$i\"; done\r"))
+	nxt.WaitFor("nxterm$", 10*time.Second)
+	nxt.WaitForSilence(200 * time.Millisecond)
+
+	// Kill the client connection to force a reconnect.
+	clientID := findFrontendClientID(t, socketPath)
+	runNxtermctl(t, socketPath, "client", "kill", clientID)
+
+	nxt.WaitFor("reconnecting", 10*time.Second)
+	nxt.WaitFor("nxterm$", 10*time.Second)
+	nxt.WaitForSilence(200 * time.Millisecond)
+
+	// Enter scrollback and scroll to the top.
+	nxt.Write([]byte{0x02, '['})
+	nxt.WaitForScreen(func(lines []string) bool {
+		return strings.Contains(lines[0], "scrollback")
+	}, "scrollback active after reconnect", 5*time.Second)
+
+	for range 15 {
+		nxt.Write([]byte{0x15}) // ctrl+u = page up
+		time.Sleep(30 * time.Millisecond)
+	}
+
+	// The pre-disconnect early lines should be visible. Use BEFORE_5
+	// which is definitely in scrollback (not on the 24-line screen
+	// which shows the tail end of the output). Match exactly to
+	// avoid matching BEFORE_50, BEFORE_55, etc.
+	nxt.WaitForScreen(func(lines []string) bool {
+		for _, line := range lines[1:] {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "BEFORE_5" || strings.HasPrefix(trimmed, "BEFORE_5 ") {
+				return true
+			}
+		}
+		return false
+	}, "BEFORE_5 visible in scrollback after reconnect", 5*time.Second)
+
+	nxt.Write([]byte("q"))
+	nxt.WaitFor("nxterm$", 5*time.Second)
+}
+
 // TestScrollbackPageUpAltScreen verifies that pgup/pgdown are forwarded to
 // the terminal when the child is in alt-screen mode (less, vim, etc.)
 // and enter scrollback only when back in normal screen mode.
