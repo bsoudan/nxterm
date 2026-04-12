@@ -7,36 +7,17 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	te "nxtermd/pkg/te"
-	"nxtermd/internal/protocol"
 )
-
-// protocolCellsToTe converts protocol ScreenCell data to te.Cell for rendering.
-func protocolCellsToTe(cells []protocol.ScreenCell) []te.Cell {
-	row := make([]te.Cell, len(cells))
-	for i, c := range cells {
-		row[i].Data = c.Char
-		row[i].Attr.Fg = specToColor(c.Fg)
-		row[i].Attr.Bg = specToColor(c.Bg)
-		row[i].Attr.Bold = c.A&1 != 0
-		row[i].Attr.Italics = c.A&2 != 0
-		row[i].Attr.Underline = c.A&4 != 0
-		row[i].Attr.Strikethrough = c.A&8 != 0
-		row[i].Attr.Reverse = c.A&16 != 0
-		row[i].Attr.Blink = c.A&32 != 0
-		row[i].Attr.Conceal = c.A&64 != 0
-	}
-	return row
-}
 
 // ScrollbackLayer is a layer pushed onto TerminalLayer's inner stack
 // when scrollback mode is active. It renders the combined scrollback +
-// screen buffer and handles navigation input.
+// screen buffer from the client's local HistoryScreen and handles
+// navigation input. Because the HistoryScreen accumulates lines as
+// terminal events are replayed, the scrollback stays in sync with
+// new output that arrives while the user is viewing scrollback.
 type ScrollbackLayer struct {
-	offset int                    // lines scrolled back from bottom (0 = live)
-	cells  [][]protocol.ScreenCell // server-side scrollback buffer (accumulated chunks)
-	total  int                    // total scrollback lines reported by server
-	loaded bool                   // true once all chunks have arrived
-	term   *TerminalLayer         // reference to the terminal for screen cells and dimensions
+	offset int           // lines scrolled back from bottom (0 = live)
+	term   *TerminalLayer // reference to the terminal for history + screen
 }
 
 func newScrollbackLayer(term *TerminalLayer, offset int) *ScrollbackLayer {
@@ -58,17 +39,17 @@ func (s *ScrollbackLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 			return s.handleWheel(wheel.Button)
 		}
 		return nil, nil, true // absorb other mouse events
-	case protocol.GetScrollbackResponse:
-		s.cells = append(s.cells, msg.Lines...)
-		s.total = msg.Total
-		s.loaded = msg.Done
-		return nil, nil, true
 	}
 	return nil, nil, false // pass through (terminal events, etc.)
 }
 
+// scrollbackTotal returns the number of history lines available.
+func (s *ScrollbackLayer) scrollbackTotal() int {
+	return len(s.term.ScrollbackLines())
+}
+
 func (s *ScrollbackLayer) handleKey(msg tea.KeyPressMsg) (tea.Msg, tea.Cmd, bool) {
-	maxOffset := s.total
+	maxOffset := s.scrollbackTotal()
 	halfPage := s.term.contentHeight() / 2
 	if halfPage < 1 {
 		halfPage = 1
@@ -152,18 +133,17 @@ func scrollbarGeometry(height, totalLines, offset int) (thumbStart, thumbLen int
 }
 
 func (s *ScrollbackLayer) View(width, height int, rs *RenderState) []*lipgloss.Layer {
+	history := s.term.ScrollbackLines()
 	screenCells := s.term.ScreenCells()
 
+	histLen := len(history)
+	totalLines := histLen + len(screenCells)
+
 	offset := s.offset
-	if offset > s.total {
-		offset = s.total
+	if offset > histLen {
+		offset = histLen
 	}
 
-	// Full content layout: loaded scrollback | gap | screen.
-	// Gap rows are not-yet-loaded scrollback lines.
-	loadedEnd := len(s.cells)
-	gapEnd := s.total
-	totalLines := s.total + len(screenCells)
 	startIdx := totalLines - height - offset
 	if startIdx < 0 {
 		startIdx = 0
@@ -173,50 +153,30 @@ func (s *ScrollbackLayer) View(width, height int, rs *RenderState) []*lipgloss.L
 	var sb strings.Builder
 	for i := range height {
 		idx := startIdx + i
-		if idx < loadedEnd {
-			row := protocolCellsToTe(s.cells[idx])
-			renderCellLine(&sb, row, width, i, -1, -1, false, false, false)
-		} else if idx < gapEnd {
-			// Not-yet-loaded: alternating x marks with row/column spacing.
-			for col := range width {
-				if idx%2 == 0 && col%2 == 0 {
-					sb.WriteByte('x')
-				} else {
-					sb.WriteByte(' ')
-				}
-			}
+		var row []te.Cell
+		if idx < histLen {
+			row = history[idx]
 		} else {
-			screenIdx := idx - gapEnd
-			var row []te.Cell
+			screenIdx := idx - histLen
 			if screenIdx >= 0 && screenIdx < len(screenCells) {
 				row = screenCells[screenIdx]
 			}
-			renderCellLine(&sb, row, width, i, -1, -1, false, false, false)
 		}
+		renderCellLine(&sb, row, width, i, -1, -1, false, false, false)
 		if i < height-1 {
 			sb.WriteByte('\n')
 		}
 	}
 
-	// Don't render the scrollbar until the first chunk arrives.
-	if s.total == 0 && len(s.cells) == 0 {
+	if totalLines == 0 {
 		return []*lipgloss.Layer{lipgloss.NewLayer(sb.String())}
 	}
 
-	// Use server-reported total for scrollbar so it reflects the full
-	// extent even while chunks are still streaming.
-	scrollbarTotal := s.total + len(screenCells)
-
 	// Scrollbar layer — single column overlaid on the right edge.
-	// Track uses microdots for loaded content and spaces for the gap
-	// where chunks haven't arrived yet.
-	thumbStart, thumbLen := scrollbarGeometry(height, scrollbarTotal, offset)
+	thumbStart, thumbLen := scrollbarGeometry(height, totalLines, offset)
 	thumbEnd := thumbStart + thumbLen
-	atTop := offset >= s.total
+	atTop := offset >= histLen
 	atBottom := offset <= 0
-
-	// Map scrollbar rows to content regions for track styling.
-	// Reuses loadedEnd/gapEnd from above.
 
 	var bar strings.Builder
 	for i := range height {
@@ -229,13 +189,7 @@ func (s *ScrollbackLayer) View(width, height int, rs *RenderState) []*lipgloss.L
 				bar.WriteString(scrollbarThumbStyle.Render(scrollbarThumb))
 			}
 		} else {
-			// Map scrollbar row to content position.
-			contentPos := i * scrollbarTotal / height
-			if contentPos < loadedEnd || contentPos >= gapEnd {
-				bar.WriteString(scrollbarTrackStyle.Render(scrollbarTrack))
-			} else {
-				bar.WriteByte(' ')
-			}
+			bar.WriteString(scrollbarTrackStyle.Render(scrollbarTrack))
 		}
 		if i < height-1 {
 			bar.WriteByte('\n')
@@ -251,10 +205,7 @@ func (s *ScrollbackLayer) View(width, height int, rs *RenderState) []*lipgloss.L
 func (s *ScrollbackLayer) WantsKeyboardInput() *KeyboardFilter { return allKeysFilter }
 
 func (s *ScrollbackLayer) Status(rs *RenderState) (string, lipgloss.Style) {
-	if s.total == 0 && len(s.cells) == 0 {
-		return "scrollback [...]", scrollbackStatusStyle
-	}
-	total := s.total
+	total := s.scrollbackTotal()
 	offset := s.offset
 	if offset > total {
 		offset = total

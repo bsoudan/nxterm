@@ -19,11 +19,11 @@ func TestTerminalLayerModes(t *testing.T) {
 	})
 
 	t.Run("known DEC private modes", func(t *testing.T) {
-		s := te.NewScreen(80, 24)
+		hs := te.NewHistoryScreen(80, 24, 0)
 		// NewScreen sets DECAWM (7) and DECTCEM (25) by default.
 		// Add bracketed paste (2004).
-		s.SetMode([]int{2004}, true)
-		tl := &TerminalLayer{screen: s}
+		hs.SetMode([]int{2004}, true)
+		tl := &TerminalLayer{hscreen: hs}
 		got := tl.Modes()
 		for _, want := range []string{"DECAWM(autowrap)(7)", "DECTCEM(cursor-visible)(25)", "bracketed-paste(2004)"} {
 			if !strings.Contains(got, want) {
@@ -33,9 +33,9 @@ func TestTerminalLayerModes(t *testing.T) {
 	})
 
 	t.Run("cursor hidden does not include DECTCEM", func(t *testing.T) {
-		s := te.NewScreen(80, 24)
-		s.ResetMode([]int{25}, true)
-		tl := &TerminalLayer{screen: s}
+		hs := te.NewHistoryScreen(80, 24, 0)
+		hs.ResetMode([]int{25}, true)
+		tl := &TerminalLayer{hscreen: hs}
 		got := tl.Modes()
 		if strings.Contains(got, "DECTCEM") {
 			t.Errorf("after \\e[?25l: Modes() = %q, must not contain DECTCEM", got)
@@ -43,9 +43,9 @@ func TestTerminalLayerModes(t *testing.T) {
 	})
 
 	t.Run("unknown private mode", func(t *testing.T) {
-		s := te.NewScreen(80, 24)
-		s.SetMode([]int{9999}, true)
-		tl := &TerminalLayer{screen: s}
+		hs := te.NewHistoryScreen(80, 24, 0)
+		hs.SetMode([]int{9999}, true)
+		tl := &TerminalLayer{hscreen: hs}
 		got := tl.Modes()
 		if !strings.Contains(got, "?(9999)") {
 			t.Errorf("Modes() = %q, want it to contain ?(9999)", got)

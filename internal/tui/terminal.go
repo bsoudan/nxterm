@@ -27,7 +27,7 @@ func privateModeKey(mode int) int {
 // for a single terminal region. Scrollback is handled by pushing a
 // ScrollbackLayer onto the inner stack.
 type TerminalLayer struct {
-	screen       *te.Screen
+	hscreen      *te.HistoryScreen
 	lines        []string
 	cursorRow    int
 	cursorCol    int
@@ -151,29 +151,29 @@ func (t *TerminalLayer) handleScreenUpdate(lines []string, cells [][]protocol.Sc
 	t.lines = lines
 	t.cursorRow = int(cursorRow)
 	t.cursorCol = int(cursorCol)
-	t.screen = te.NewScreen(width, height)
+	t.hscreen = te.NewHistoryScreen(width, height, 10000)
 	if len(cells) > 0 {
-		initScreenFromCells(t.screen, cells)
+		initScreenFromCells(t.hscreen.Screen, cells)
 	} else {
 		for i, line := range lines {
 			if i > 0 {
-				t.screen.LineFeed()
-				t.screen.CarriageReturn()
+				t.hscreen.LineFeed()
+				t.hscreen.CarriageReturn()
 			}
-			t.screen.Draw(line)
+			t.hscreen.Draw(line)
 		}
 	}
-	t.screen.CursorPosition(int(cursorRow)+1, int(cursorCol)+1)
-	t.screen.Title = title
-	t.screen.IconName = iconName
+	t.hscreen.CursorPosition(int(cursorRow)+1, int(cursorCol)+1)
+	t.hscreen.Title = title
+	t.hscreen.IconName = iconName
 	// Replace the mode set entirely rather than merging — a missing
 	// key in the snapshot means "unset" on the server, and merging
 	// would silently keep stale modes alive (most importantly DECTCEM,
 	// the cursor visibility flag).
-	t.screen.Mode = make(map[int]struct{}, len(modes))
+	t.hscreen.Mode = make(map[int]struct{}, len(modes))
 	for k, v := range modes {
 		if v {
-			t.screen.Mode[k] = struct{}{}
+			t.hscreen.Mode[k] = struct{}{}
 		}
 	}
 
@@ -185,12 +185,12 @@ func (t *TerminalLayer) handleScreenUpdate(lines []string, cells [][]protocol.Sc
 }
 
 func (t *TerminalLayer) handleTerminalEvents(events []protocol.TerminalEvent) tea.Cmd {
-	if t.screen == nil {
+	if t.hscreen == nil {
 		return nil
 	}
-	needsClear := replayEvents(t.screen, events)
-	t.cursorRow = t.screen.Cursor.Row
-	t.cursorCol = t.screen.Cursor.Col
+	needsClear := replayEvents(t.hscreen, events)
+	t.cursorRow = t.hscreen.Cursor.Row
+	t.cursorCol = t.hscreen.Cursor.Col
 	if needsClear {
 		return func() tea.Msg { return tea.ClearScreen() }
 	}
@@ -213,8 +213,8 @@ func (t *TerminalLayer) View(width, height int, rs *RenderState) []*lipgloss.Lay
 	// reverse-video cell on top of theirs (which would otherwise show
 	// up as a doubled cursor in nested sessions or a stray cursor at
 	// the bottom-left in claude code).
-	if t.screen != nil {
-		if _, ok := t.screen.Mode[privateModeKey(25)]; !ok {
+	if t.hscreen != nil {
+		if _, ok := t.hscreen.Mode[privateModeKey(25)]; !ok {
 			showCursor = false
 		}
 	}
@@ -224,8 +224,8 @@ func (t *TerminalLayer) View(width, height int, rs *RenderState) []*lipgloss.Lay
 	if dim {
 		sb.WriteString("\x1b[2m")
 	}
-	if t.screen != nil {
-		cells := t.screen.LinesCells()
+	if t.hscreen != nil {
+		cells := t.hscreen.LinesCells()
 		for i := range height {
 			var row []te.Cell
 			if i < len(cells) {
@@ -285,8 +285,8 @@ func (t *TerminalLayer) View(width, height int, rs *RenderState) []*lipgloss.Lay
 // title. The PTY-set title (OSC 0/2) takes precedence; if none has been
 // set, the server-assigned region name is used as a fallback.
 func (t *TerminalLayer) Title() string {
-	if t.screen != nil && t.screen.Title != "" {
-		return t.screen.Title
+	if t.hscreen != nil && t.hscreen.Title != "" {
+		return t.hscreen.Title
 	}
 	return t.regionName
 }
@@ -309,10 +309,11 @@ func (t *TerminalLayer) WantsKeyboardInput() *KeyboardFilter {
 // ScrollbackActive returns whether scrollback mode is active.
 func (t *TerminalLayer) ScrollbackActive() bool { return t.scrollbackLayer != nil }
 
-// EnterScrollback activates scrollback mode and requests data from the server.
+// EnterScrollback activates scrollback mode. Scrollback data comes from
+// the client's local HistoryScreen which accumulates lines as terminal
+// events are replayed.
 func (t *TerminalLayer) EnterScrollback(offset int) {
 	t.scrollbackLayer = newScrollbackLayer(t, offset)
-	t.server.Send(protocol.GetScrollbackRequest{RegionID: t.regionID})
 }
 
 // ExitScrollback deactivates scrollback mode.
@@ -339,29 +340,29 @@ func (t *TerminalLayer) ForwardMouse(msg tea.MouseMsg) {
 
 // IsAltScreen reports whether the child's alternate screen buffer is active.
 func (t *TerminalLayer) IsAltScreen() bool {
-	if t.screen == nil {
+	if t.hscreen == nil {
 		return false
 	}
-	return t.screen.IsAltScreenActive()
+	return t.hscreen.IsAltScreenActive()
 }
 
 // ChildWantsMouse checks if the child application has mouse mode enabled.
 func (t *TerminalLayer) ChildWantsMouse() bool {
-	if t.screen == nil {
+	if t.hscreen == nil {
 		return false
 	}
-	_, m1000 := t.screen.Mode[privateModeKey(ansi.ModeMouseNormal.Mode())]
-	_, m1002 := t.screen.Mode[privateModeKey(ansi.ModeMouseButtonEvent.Mode())]
-	_, m1003 := t.screen.Mode[privateModeKey(ansi.ModeMouseAnyEvent.Mode())]
+	_, m1000 := t.hscreen.Mode[privateModeKey(ansi.ModeMouseNormal.Mode())]
+	_, m1002 := t.hscreen.Mode[privateModeKey(ansi.ModeMouseButtonEvent.Mode())]
+	_, m1003 := t.hscreen.Mode[privateModeKey(ansi.ModeMouseAnyEvent.Mode())]
 	return m1000 || m1002 || m1003
 }
 
 // MouseMode returns the bubbletea mouse mode based on the child's mode state.
 func (t *TerminalLayer) MouseMode() int {
-	if t.screen == nil {
+	if t.hscreen == nil {
 		return 0
 	}
-	_, m1003 := t.screen.Mode[privateModeKey(ansi.ModeMouseAnyEvent.Mode())]
+	_, m1003 := t.hscreen.Mode[privateModeKey(ansi.ModeMouseAnyEvent.Mode())]
 	if m1003 {
 		return 2 // AllMotion
 	}
@@ -370,10 +371,18 @@ func (t *TerminalLayer) MouseMode() int {
 
 // ScreenCells returns the current cell data for rendering.
 func (t *TerminalLayer) ScreenCells() [][]te.Cell {
-	if t.screen == nil {
+	if t.hscreen == nil {
 		return nil
 	}
-	return t.screen.LinesCells()
+	return t.hscreen.LinesCells()
+}
+
+// ScrollbackLines returns the local scrollback history as cell rows.
+func (t *TerminalLayer) ScrollbackLines() [][]te.Cell {
+	if t.hscreen == nil {
+		return nil
+	}
+	return t.hscreen.History()
 }
 
 // RegionID returns the terminal's region ID.
@@ -395,7 +404,12 @@ func (t *TerminalLayer) BgDark() *bool { return t.bgDark }
 func (t *TerminalLayer) TermEnv() map[string]string { return t.termEnv }
 
 // Screen returns the underlying te.Screen (for status caps mouse mode detection).
-func (t *TerminalLayer) Screen() *te.Screen { return t.screen }
+func (t *TerminalLayer) Screen() *te.Screen {
+	if t.hscreen == nil {
+		return nil
+	}
+	return t.hscreen.Screen
+}
 
 // MouseModes returns a human-readable mouse mode string for status display.
 // decPrivateModeNames maps DEC private mode numbers to short
@@ -446,7 +460,7 @@ var ansiModeNames = map[int]string{
 // mode is shown with its friendly name and decimal number; unknown
 // modes appear as "?(N)".
 func (t *TerminalLayer) Modes() string {
-	if t.screen == nil || len(t.screen.Mode) == 0 {
+	if t.hscreen == nil || len(t.hscreen.Mode) == 0 {
 		return ""
 	}
 	// Collect set modes as (number, isPrivate) pairs so we can sort.
@@ -455,7 +469,7 @@ func (t *TerminalLayer) Modes() string {
 		private bool
 	}
 	var entries []entry
-	for k := range t.screen.Mode {
+	for k := range t.hscreen.Mode {
 		if k >= 32 {
 			// DEC private mode keys are stored shifted left by 5.
 			entries = append(entries, entry{num: k >> 5, private: true})
@@ -490,20 +504,20 @@ func (t *TerminalLayer) Modes() string {
 }
 
 func (t *TerminalLayer) MouseModes() string {
-	if t.screen == nil {
+	if t.hscreen == nil {
 		return ""
 	}
 	var modes []string
-	if _, ok := t.screen.Mode[privateModeKey(ansi.ModeMouseNormal.Mode())]; ok {
+	if _, ok := t.hscreen.Mode[privateModeKey(ansi.ModeMouseNormal.Mode())]; ok {
 		modes = append(modes, "normal(1000)")
 	}
-	if _, ok := t.screen.Mode[privateModeKey(ansi.ModeMouseButtonEvent.Mode())]; ok {
+	if _, ok := t.hscreen.Mode[privateModeKey(ansi.ModeMouseButtonEvent.Mode())]; ok {
 		modes = append(modes, "button(1002)")
 	}
-	if _, ok := t.screen.Mode[privateModeKey(ansi.ModeMouseAnyEvent.Mode())]; ok {
+	if _, ok := t.hscreen.Mode[privateModeKey(ansi.ModeMouseAnyEvent.Mode())]; ok {
 		modes = append(modes, "any(1003)")
 	}
-	if _, ok := t.screen.Mode[privateModeKey(ansi.ModeMouseExtSgr.Mode())]; ok {
+	if _, ok := t.hscreen.Mode[privateModeKey(ansi.ModeMouseExtSgr.Mode())]; ok {
 		modes = append(modes, "sgr(1006)")
 	}
 	if len(modes) > 0 {
@@ -700,11 +714,11 @@ func teColorAttrs(c te.Color, isBg bool) []ansi.Attr {
 // ── Screen helpers ──────────────────────────────────────────────────────────
 
 // ReplayEvents replays terminal events on a screen. Exported for server tests.
-func ReplayEvents(screen *te.Screen, events []protocol.TerminalEvent) bool {
+func ReplayEvents(screen te.EventHandler, events []protocol.TerminalEvent) bool {
 	return replayEvents(screen, events)
 }
 
-func replayEvents(screen *te.Screen, events []protocol.TerminalEvent) bool {
+func replayEvents(screen te.EventHandler, events []protocol.TerminalEvent) bool {
 	needsClear := false
 	for _, ev := range events {
 		switch ev.Op {
@@ -853,11 +867,19 @@ func replayEvents(screen *te.Screen, events []protocol.TerminalEvent) bool {
 			screen.SetTitleMode(ev.Params, false)
 		case "decscusr":
 			if len(ev.Params) > 0 {
-				screen.SetCursorStyle(ev.Params[0])
+				if s, ok := screen.(*te.Screen); ok {
+					s.SetCursorStyle(ev.Params[0])
+				} else if h, ok := screen.(*te.HistoryScreen); ok {
+					h.Screen.SetCursorStyle(ev.Params[0])
+				}
 			}
 		case "decsasd":
 			if len(ev.Params) > 0 {
-				screen.SetActiveStatusDisplay(ev.Params[0])
+				if s, ok := screen.(*te.Screen); ok {
+					s.SetActiveStatusDisplay(ev.Params[0])
+				} else if h, ok := screen.(*te.HistoryScreen); ok {
+					h.Screen.SetActiveStatusDisplay(ev.Params[0])
+				}
 			}
 		case "reset":
 			screen.Reset()
