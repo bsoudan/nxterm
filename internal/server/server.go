@@ -176,15 +176,16 @@ func (s *Server) acceptClient(conn net.Conn) {
 	id := s.nextClientID.Add(1) - 1
 	client := NewClient(conn, s, id)
 
-	resp := make(chan struct{}, 1)
+	resp := make(chan addClientResult, 1)
 	if !s.send(addClientReq{client: client, resp: resp}) {
 		client.Close()
 		return
 	}
-	<-resp
+	result := <-resp
 
 	slog.Debug("client connected", "id", id)
 	client.sendIdentify()
+	client.SendMessage(result.treeSnapshot)
 	go client.ReadLoop()
 }
 

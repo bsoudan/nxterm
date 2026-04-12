@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"maps"
 	"sort"
+	"strconv"
 
 	"nxtermd/internal/config"
 	"nxtermd/internal/protocol"
@@ -14,7 +15,11 @@ import (
 
 type addClientReq struct {
 	client *Client
-	resp   chan struct{}
+	resp   chan addClientResult
+}
+
+type addClientResult struct {
+	treeSnapshot protocol.TreeSnapshot
 }
 
 type removeClientReq struct {
@@ -224,6 +229,10 @@ func (s *Server) eventLoop() {
 	clientSessions := make(map[uint32]string)          // clientID → sessionName
 	overlays := make(map[string]*overlayState)         // regionID → overlay
 
+	// Object tree: structural/metadata state synchronized to clients.
+	tree := buildTreeFromMaps(regions, sessions, programs, s.version, s.startTime.Unix(), s.listenerAddrs())
+	var treeVersion uint64
+
 	// notifySessionsChanged dispatches the SetSessionsChanged callback
 	// (if any) with a sorted snapshot of session names. Called after any
 	// session create or destroy from inside the event loop. The callback
@@ -247,8 +256,23 @@ func (s *Server) eventLoop() {
 			switch r := req.(type) {
 
 			case addClientReq:
+				// Broadcast the client-added patch to existing clients
+				// BEFORE adding the new client, so it doesn't receive
+				// tree_events before its own identify + tree_snapshot.
+				cid := strconv.FormatUint(uint64(r.client.id), 10)
+				cnode := protocol.ClientNode{ID: cid}
+				tree.Clients[cid] = cnode
+				var pb patchBuilder
+				pb.Set("/clients/"+cid, cnode)
+				broadcastTreeEvents(&pb, &treeVersion, clients)
+				// Now add the client and prepare its snapshot.
 				clients[r.client.id] = r.client
-				r.resp <- struct{}{}
+				snap := protocol.TreeSnapshot{
+					Type:    "tree_snapshot",
+					Version: treeVersion,
+					Tree:    deepCopyTree(tree),
+				}
+				r.resp <- addClientResult{treeSnapshot: snap}
 
 			case removeClientReq:
 				if rid, ok := subscriptions[r.clientID]; ok {
@@ -278,9 +302,15 @@ func (s *Server) eventLoop() {
 				}
 				delete(clients, r.clientID)
 				delete(clientSessions, r.clientID)
+				cid := strconv.FormatUint(uint64(r.clientID), 10)
+				delete(tree.Clients, cid)
+				var pb patchBuilder
+				pb.Delete("/clients/" + cid)
+				broadcastTreeEvents(&pb, &treeVersion, clients)
 				slog.Debug("client disconnected", "id", r.clientID)
 
 			case spawnRegionReq:
+				var pb patchBuilder
 				regions[r.region.ID()] = r.region
 				sess := sessions[r.sessionName]
 				created := false
@@ -288,9 +318,20 @@ func (s *Server) eventLoop() {
 					sess = NewSession(r.sessionName)
 					sessions[r.sessionName] = sess
 					created = true
+					snode := protocol.SessionNode{Name: r.sessionName, RegionIDs: []string{}}
+					tree.Sessions[r.sessionName] = snode
+					pb.Set("/sessions/"+r.sessionName, snode)
 				}
 				sess.regions[r.region.ID()] = r.region
 				r.region.SetSession(r.sessionName)
+				rnode := regionToNode(r.region)
+				tree.Regions[r.region.ID()] = rnode
+				pb.Set("/regions/"+r.region.ID(), rnode)
+				snode := tree.Sessions[r.sessionName]
+				snode.RegionIDs = append(snode.RegionIDs, r.region.ID())
+				tree.Sessions[r.sessionName] = snode
+				pb.Add("/sessions/"+r.sessionName+"/region_ids", r.region.ID())
+				broadcastTreeEvents(&pb, &treeVersion, clients)
 				r.resp <- struct{}{}
 				if created {
 					notifySessionsChanged()
@@ -302,15 +343,25 @@ func (s *Server) eventLoop() {
 					r.resp <- destroyResult{found: false}
 					break
 				}
+				var pb patchBuilder
 				delete(regions, r.regionID)
 				delete(overlays, r.regionID)
+				delete(tree.Regions, r.regionID)
+				pb.Delete("/regions/" + r.regionID)
+				sessionName := region.Session()
 				sessionRemoved := false
-				if sess := sessions[region.Session()]; sess != nil {
+				if sess := sessions[sessionName]; sess != nil {
 					delete(sess.regions, r.regionID)
+					snode := tree.Sessions[sessionName]
+					snode.RegionIDs = removeString(snode.RegionIDs, r.regionID)
+					tree.Sessions[sessionName] = snode
+					pb.Remove("/sessions/"+sessionName+"/region_ids", r.regionID)
 					if len(sess.regions) == 0 {
-						delete(sessions, region.Session())
+						delete(sessions, sessionName)
+						delete(tree.Sessions, sessionName)
+						pb.Delete("/sessions/" + sessionName)
 						sessionRemoved = true
-						slog.Info("removed empty session", "session", region.Session())
+						slog.Info("removed empty session", "session", sessionName)
 					}
 				}
 				var subscribers []*Client
@@ -323,6 +374,7 @@ func (s *Server) eventLoop() {
 					}
 					delete(regionSubs, r.regionID)
 				}
+				broadcastTreeEvents(&pb, &treeVersion, clients)
 				r.resp <- destroyResult{region: region, subscribers: subscribers, found: true}
 				if sessionRemoved {
 					notifySessionsChanged()
@@ -417,6 +469,11 @@ func (s *Server) eventLoop() {
 					r.resp <- fmt.Errorf("program %q already exists", r.prog.Name)
 				} else {
 					programs[r.prog.Name] = r.prog
+					pnode := programToNode(r.prog.Name, r.prog)
+					tree.Programs[r.prog.Name] = pnode
+					var pb patchBuilder
+					pb.Set("/programs/"+r.prog.Name, pnode)
+					broadcastTreeEvents(&pb, &treeVersion, clients)
 					r.resp <- nil
 				}
 
@@ -425,6 +482,10 @@ func (s *Server) eventLoop() {
 					r.resp <- fmt.Errorf("program %q not found", r.name)
 				} else {
 					delete(programs, r.name)
+					delete(tree.Programs, r.name)
+					var pb patchBuilder
+					pb.Delete("/programs/" + r.name)
+					broadcastTreeEvents(&pb, &treeVersion, clients)
 					r.resp <- nil
 				}
 
@@ -520,6 +581,15 @@ func (s *Server) eventLoop() {
 					regionSubs[r.regionID] = make(map[uint32]struct{})
 				}
 				regionSubs[r.regionID][r.clientID] = struct{}{}
+				// Update tree: client subscription changed.
+				cid := strconv.FormatUint(uint64(r.clientID), 10)
+				if cn, ok := tree.Clients[cid]; ok {
+					cn.SubscribedRegionID = r.regionID
+					tree.Clients[cid] = cn
+					var pb patchBuilder
+					pb.Set("/clients/"+cid, cn)
+					broadcastTreeEvents(&pb, &treeVersion, clients)
+				}
 				r.resp <- &subscribeResult{region: region, snapshot: snap}
 
 			case unsubscribeReq:
@@ -532,9 +602,25 @@ func (s *Server) eventLoop() {
 						}
 					}
 				}
+				cid := strconv.FormatUint(uint64(r.clientID), 10)
+				if cn, ok := tree.Clients[cid]; ok && cn.SubscribedRegionID != "" {
+					cn.SubscribedRegionID = ""
+					tree.Clients[cid] = cn
+					var pb patchBuilder
+					pb.Set("/clients/"+cid, cn)
+					broadcastTreeEvents(&pb, &treeVersion, clients)
+				}
 
 			case setClientSessionReq:
 				clientSessions[r.clientID] = r.sessionName
+				cid := strconv.FormatUint(uint64(r.clientID), 10)
+				if cn, ok := tree.Clients[cid]; ok {
+					cn.Session = r.sessionName
+					tree.Clients[cid] = cn
+					var pb patchBuilder
+					pb.Set("/clients/"+cid, cn)
+					broadcastTreeEvents(&pb, &treeVersion, clients)
+				}
 
 			case getClientSessionReq:
 				r.resp <- clientSessions[r.clientID]
@@ -548,6 +634,30 @@ func (s *Server) eventLoop() {
 					})
 				}
 				r.resp <- infos
+
+			// --- Tree support ---
+
+			case identifyReq:
+				cid := strconv.FormatUint(uint64(r.clientID), 10)
+				if cn, ok := tree.Clients[cid]; ok {
+					cn.Hostname = r.identity.hostname
+					cn.Username = r.identity.username
+					cn.Pid = r.identity.pid
+					cn.Process = r.identity.process
+					tree.Clients[cid] = cn
+					var pb patchBuilder
+					pb.Set("/clients/"+cid, cn)
+					broadcastTreeEvents(&pb, &treeVersion, clients)
+				}
+
+			case treeSnapshotReq:
+				if c, ok := clients[r.clientID]; ok {
+					c.SendMessage(protocol.TreeSnapshot{
+						Type:    "tree_snapshot",
+						Version: treeVersion,
+						Tree:    deepCopyTree(tree),
+					})
+				}
 
 			// --- Overlay support ---
 
@@ -655,6 +765,7 @@ func (s *Server) eventLoop() {
 				// No-op; handled by the pause select in upgradeReq above.
 
 			case restoreRegionReq:
+				var pb patchBuilder
 				regions[r.region.ID()] = r.region
 				sess, ok := sessions[r.session]
 				created := false
@@ -662,9 +773,20 @@ func (s *Server) eventLoop() {
 					sess = &Session{name: r.session, regions: make(map[string]Region)}
 					sessions[r.session] = sess
 					created = true
+					snode := protocol.SessionNode{Name: r.session, RegionIDs: []string{}}
+					tree.Sessions[r.session] = snode
+					pb.Set("/sessions/"+r.session, snode)
 				}
 				sess.regions[r.region.ID()] = r.region
 				r.region.SetSession(r.session)
+				rnode := regionToNode(r.region)
+				tree.Regions[r.region.ID()] = rnode
+				pb.Set("/regions/"+r.region.ID(), rnode)
+				snode := tree.Sessions[r.session]
+				snode.RegionIDs = append(snode.RegionIDs, r.region.ID())
+				tree.Sessions[r.session] = snode
+				pb.Add("/sessions/"+r.session+"/region_ids", r.region.ID())
+				broadcastTreeEvents(&pb, &treeVersion, clients)
 				go s.watchRegion(r.region)
 				r.resp <- struct{}{}
 				if created {

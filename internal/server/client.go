@@ -319,6 +319,8 @@ func (c *Client) handleMessage(line []byte) {
 		if json.Unmarshal(line, &msg) == nil {
 			c.handleOverlayClear(msg)
 		}
+	case "tree_resync_request":
+		c.server.send(treeSnapshotReq{clientID: c.id})
 	case "disconnect":
 		slog.Info("client disconnecting gracefully", "client_id", c.id)
 		c.Close()
@@ -376,12 +378,16 @@ func (c *Client) sendIdentify() {
 }
 
 func (c *Client) handleIdentify(msg protocol.Identify) {
-	c.identity.Store(&clientIdentity{
+	ident := clientIdentity{
 		hostname: msg.Hostname,
 		username: msg.Username,
 		pid:      msg.Pid,
 		process:  msg.Process,
-	})
+	}
+	c.identity.Store(&ident)
+
+	// Route through event loop so the tree's client node is updated.
+	c.server.send(identifyReq{clientID: c.id, identity: ident})
 
 	slog.Debug("client identified", "client_id", c.id,
 		"hostname", msg.Hostname, "username", msg.Username,

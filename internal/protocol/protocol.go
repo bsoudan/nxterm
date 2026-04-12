@@ -552,6 +552,15 @@ func parsePayload(typ string, line []byte) (any, error) {
 	case "overlay_input":
 		var msg OverlayInput
 		return msg, json.Unmarshal(line, &msg)
+	case "tree_snapshot":
+		var msg TreeSnapshot
+		return msg, json.Unmarshal(line, &msg)
+	case "tree_events":
+		var msg TreeEvents
+		return msg, json.Unmarshal(line, &msg)
+	case "tree_resync_request":
+		var msg TreeResyncRequest
+		return msg, json.Unmarshal(line, &msg)
 	default:
 		return nil, fmt.Errorf("unknown message type: %s", typ)
 	}
@@ -669,6 +678,12 @@ func typeTag(msg any) string {
 		return "overlay_render"
 	case OverlayClear:
 		return "overlay_clear"
+	case TreeSnapshot:
+		return "tree_snapshot"
+	case TreeEvents:
+		return "tree_events"
+	case TreeResyncRequest:
+		return "tree_resync_request"
 	default:
 		return ""
 	}
