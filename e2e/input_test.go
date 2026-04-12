@@ -11,10 +11,7 @@ import (
 )
 
 func TestInputRoundTrip(t *testing.T) {
-	socketPath, serverCleanup := startServer(t)
-	defer serverCleanup()
-
-	nxt := startFrontend(t, socketPath)
+	nxt := startFrontendShared(t)
 	defer nxt.Kill()
 
 	nxt.WaitFor("nxterm$", 10*time.Second)
@@ -47,10 +44,7 @@ func TestInputRoundTrip(t *testing.T) {
 }
 
 func TestRawInputPassthrough(t *testing.T) {
-	socketPath, serverCleanup := startServer(t)
-	defer serverCleanup()
-
-	nxt := startFrontend(t, socketPath)
+	nxt := startFrontendShared(t)
 	defer nxt.Kill()
 
 	nxt.WaitFor("nxterm$", 10*time.Second)
@@ -68,10 +62,7 @@ func TestRawInputPassthrough(t *testing.T) {
 }
 
 func TestMousePassthrough(t *testing.T) {
-	socketPath, serverCleanup := startServer(t)
-	defer serverCleanup()
-
-	nxt := startFrontend(t, socketPath)
+	nxt := startFrontendShared(t)
 	defer nxt.Kill()
 
 	nxt.WaitFor("nxterm$",10*time.Second)
@@ -141,10 +132,7 @@ func TestMousePassthrough(t *testing.T) {
 }
 
 func TestMouseAfterTabSwitch(t *testing.T) {
-	socketPath, serverCleanup := startServer(t)
-	defer serverCleanup()
-
-	nxt := startFrontend(t, socketPath)
+	nxt := startFrontendShared(t)
 	defer nxt.Kill()
 
 	nxt.WaitFor("nxterm$", 10*time.Second)
@@ -178,10 +166,7 @@ func TestMouseAfterTabSwitch(t *testing.T) {
 }
 
 func TestInputIsolation(t *testing.T) {
-	socketPath, serverCleanup := startServer(t)
-	defer serverCleanup()
-
-	nxt := startFrontend(t, socketPath)
+	nxt := startFrontendShared(t)
 	defer nxt.Kill()
 
 	nxt.WaitFor("nxterm$", 10*time.Second)

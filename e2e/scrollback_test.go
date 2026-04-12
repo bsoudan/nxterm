@@ -70,10 +70,7 @@ func TestScrollbackBuffer(t *testing.T) {
 }
 
 func TestScrollbackNavigation(t *testing.T) {
-	socketPath, serverCleanup := startServer(t)
-	defer serverCleanup()
-
-	nxt := startFrontend(t, socketPath)
+	nxt := startFrontendShared(t)
 	defer nxt.Kill()
 
 	nxt.WaitFor("nxterm$",10*time.Second)
@@ -129,10 +126,7 @@ func TestScrollbackNavigation(t *testing.T) {
 // TestScrollbackPageUpDown verifies that PageUp and PageDown keys activate
 // scrollback mode directly from the terminal (without the prefix key).
 func TestScrollbackPageUpDown(t *testing.T) {
-	socketPath, serverCleanup := startServer(t)
-	defer serverCleanup()
-
-	nxt := startFrontend(t, socketPath)
+	nxt := startFrontendShared(t)
 	defer nxt.Kill()
 
 	nxt.WaitFor("nxterm$", 10*time.Second)
@@ -199,10 +193,7 @@ func TestScrollbackPageUpDown(t *testing.T) {
 }
 
 func TestScrollbackScrollWheel(t *testing.T) {
-	socketPath, serverCleanup := startServer(t)
-	defer serverCleanup()
-
-	nxt := startFrontend(t, socketPath)
+	nxt := startFrontendShared(t)
 	defer nxt.Kill()
 
 	nxt.WaitFor("nxterm$",10*time.Second)
@@ -268,10 +259,7 @@ func TestScrollbackScrollWheel(t *testing.T) {
 // on entry and never updates it. Once the client uses a local
 // HistoryScreen, new lines should appear automatically.
 func TestScrollbackLiveUpdate(t *testing.T) {
-	socketPath, serverCleanup := startServer(t)
-	defer serverCleanup()
-
-	nxt := startFrontend(t, socketPath)
+	nxt := startFrontendShared(t)
 	defer nxt.Kill()
 
 	nxt.WaitFor("nxterm$", 10*time.Second)
@@ -503,10 +491,7 @@ func TestScrollbackAfterReconnectLarge(t *testing.T) {
 // the terminal when the child is in alt-screen mode (less, vim, etc.)
 // and enter scrollback only when back in normal screen mode.
 func TestScrollbackPageUpAltScreen(t *testing.T) {
-	socketPath, serverCleanup := startServer(t)
-	defer serverCleanup()
-
-	nxt := startFrontend(t, socketPath)
+	nxt := startFrontendShared(t)
 	defer nxt.Kill()
 
 	nxt.WaitFor("nxterm$", 10*time.Second)
@@ -552,10 +537,7 @@ func TestScrollbackPageUpAltScreen(t *testing.T) {
 // forwarded to the child when it has requested mouse tracking, rather
 // than entering scrollback.
 func TestScrollbackWheelAltScreen(t *testing.T) {
-	socketPath, serverCleanup := startServer(t)
-	defer serverCleanup()
-
-	nxt := startFrontend(t, socketPath)
+	nxt := startFrontendShared(t)
 	defer nxt.Kill()
 
 	nxt.WaitFor("nxterm$", 10*time.Second)
@@ -593,10 +575,7 @@ func TestScrollbackWheelAltScreen(t *testing.T) {
 // from the command palette regardless of screen mode (the condition is
 // on the key binding, not the command).
 func TestScrollbackCommandPalette(t *testing.T) {
-	socketPath, serverCleanup := startServer(t)
-	defer serverCleanup()
-
-	nxt := startFrontend(t, socketPath)
+	nxt := startFrontendShared(t)
 	defer nxt.Kill()
 
 	nxt.WaitFor("nxterm$", 10*time.Second)

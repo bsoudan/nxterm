@@ -18,8 +18,10 @@ type Frontend struct {
 
 // StartFrontend starts nxterm connected to socketPath inside a PTY.
 // env should include TERM=dumb to avoid bubbletea query timeouts.
-func StartFrontend(socketPath string, env []string, cols, rows uint16) (*Frontend, error) {
-	cmd := exec.Command("nxterm", "--socket", socketPath)
+// Extra args are appended to the nxterm command line.
+func StartFrontend(socketPath string, env []string, cols, rows uint16, extraArgs ...string) (*Frontend, error) {
+	args := append([]string{"--socket", socketPath}, extraArgs...)
+	cmd := exec.Command("nxterm", args...)
 	cmd.Env = append(env, "TERM=dumb")
 
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: rows, Cols: cols})

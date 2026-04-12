@@ -7,10 +7,7 @@ import (
 )
 
 func TestSpawnSecondRegion(t *testing.T) {
-	socketPath, serverCleanup := startServer(t)
-	defer serverCleanup()
-
-	nxt := startFrontend(t, socketPath)
+	nxt := startFrontendShared(t)
 	defer nxt.Kill()
 
 	// Wait for initial tab and prompt. The active tab renders as
@@ -32,10 +29,7 @@ func TestSpawnSecondRegion(t *testing.T) {
 }
 
 func TestSwitchTabs(t *testing.T) {
-	socketPath, serverCleanup := startServer(t)
-	defer serverCleanup()
-
-	nxt := startFrontend(t, socketPath)
+	nxt := startFrontendShared(t)
 	defer nxt.Kill()
 
 	nxt.WaitFor("nxterm$", 10*time.Second)
@@ -71,10 +65,7 @@ func TestSwitchTabs(t *testing.T) {
 }
 
 func TestRegionDestroyedRemovesTab(t *testing.T) {
-	socketPath, serverCleanup := startServer(t)
-	defer serverCleanup()
-
-	nxt := startFrontend(t, socketPath)
+	nxt := startFrontendShared(t)
 	defer nxt.Kill()
 
 	nxt.WaitFor("nxterm$", 10*time.Second)
@@ -104,10 +95,7 @@ func TestRegionDestroyedRemovesTab(t *testing.T) {
 }
 
 func TestCloseTab(t *testing.T) {
-	socketPath, serverCleanup := startServer(t)
-	defer serverCleanup()
-
-	nxt := startFrontend(t, socketPath)
+	nxt := startFrontendShared(t)
 	defer nxt.Kill()
 
 	nxt.WaitFor("nxterm$", 10*time.Second)

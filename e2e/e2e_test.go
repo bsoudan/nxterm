@@ -37,10 +37,7 @@ func TestRegionKilledExternally(t *testing.T) {
 }
 
 func TestExit(t *testing.T) {
-	socketPath, serverCleanup := startServer(t)
-	defer serverCleanup()
-
-	nxt := startFrontend(t, socketPath)
+	nxt := startFrontendShared(t)
 	defer nxt.Kill()
 
 	nxt.WaitFor("nxterm$", 10*time.Second)

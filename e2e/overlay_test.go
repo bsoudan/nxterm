@@ -11,10 +11,7 @@ import (
 )
 
 func TestHelpOverlay(t *testing.T) {
-	socketPath, serverCleanup := startServer(t)
-	defer serverCleanup()
-
-	nxt := startFrontend(t, socketPath)
+	nxt := startFrontendShared(t)
 	defer nxt.Kill()
 
 	nxt.WaitFor("nxterm$", 10*time.Second)
@@ -123,10 +120,7 @@ func TestLogViewerOverlay(t *testing.T) {
 }
 
 func TestCommandPalette(t *testing.T) {
-	socketPath, serverCleanup := startServer(t)
-	defer serverCleanup()
-
-	nxt := startFrontend(t, socketPath)
+	nxt := startFrontendShared(t)
 	defer nxt.Kill()
 
 	nxt.WaitFor("nxterm$", 10*time.Second)
@@ -147,10 +141,7 @@ func TestCommandPalette(t *testing.T) {
 }
 
 func TestCommandPaletteEsc(t *testing.T) {
-	socketPath, serverCleanup := startServer(t)
-	defer serverCleanup()
-
-	nxt := startFrontend(t, socketPath)
+	nxt := startFrontendShared(t)
 	defer nxt.Kill()
 
 	nxt.WaitFor("nxterm$", 10*time.Second)

@@ -1,8 +1,11 @@
 package e2e
 
 import (
+	"fmt"
+	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/charmbracelet/x/ansi"
@@ -19,6 +22,76 @@ var shellResetStyle = strings.ReplaceAll(ansi.ResetStyle, "\x1b", `\e`)
 func testEnv(t *testing.T) []string {
 	t.Helper()
 	return nxtest.TestEnv(t.TempDir())
+}
+
+// sharedServer returns the socket path of a lazily started server with
+// default config. The first call spawns the server; subsequent calls
+// reuse it. The server is stopped in TestMain after all tests complete.
+//
+// Tests that need custom server config (keybinds, programs, transports)
+// should continue using startServer / startServerCustom.
+var (
+	sharedOnce   sync.Once
+	sharedSocket string
+	sharedStop   func()
+	sharedErr    error
+)
+
+func sharedServer(t *testing.T) string {
+	t.Helper()
+	sharedOnce.Do(func() {
+		tmpDir, err := os.MkdirTemp("", "e2e-shared-*")
+		if err != nil {
+			sharedErr = err
+			return
+		}
+		env := nxtest.TestEnv(tmpDir)
+		if err := nxtest.WriteServerConfig(env); err != nil {
+			sharedErr = err
+			return
+		}
+		srvDir, err := os.MkdirTemp("", "e2e-shared-srv-*")
+		if err != nil {
+			sharedErr = err
+			return
+		}
+		srv, err := nxtest.StartServer(srvDir, env)
+		if err != nil {
+			sharedErr = err
+			return
+		}
+		sharedSocket = srv.SocketPath
+		sharedStop = func() {
+			srv.Stop()
+			os.RemoveAll(tmpDir)
+			os.RemoveAll(srvDir)
+		}
+	})
+	if sharedErr != nil {
+		t.Fatalf("shared server failed to start: %v", sharedErr)
+	}
+	return sharedSocket
+}
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if sharedStop != nil {
+		sharedStop()
+	}
+	os.Exit(code)
+}
+
+// uniqueSession returns a session name safe for use with the shared
+// server. Each test gets its own session so they don't interfere.
+var sessionCounter uint64
+var sessionMu sync.Mutex
+
+func uniqueSession() string {
+	sessionMu.Lock()
+	sessionCounter++
+	n := sessionCounter
+	sessionMu.Unlock()
+	return fmt.Sprintf("s%d", n)
 }
 
 func startServer(t *testing.T) (string, func()) {
@@ -101,6 +174,19 @@ func startServerWithTCP(t *testing.T) (socketPath, tcpAddr string, cleanup func(
 func startFrontend(t *testing.T, socketPath string) *nxtest.T {
 	t.Helper()
 	return startFrontendWithEnv(t, socketPath, testEnv(t))
+}
+
+// startFrontendShared starts a frontend connected to the shared server
+// using a unique session name so tests don't interfere with each other.
+func startFrontendShared(t *testing.T) *nxtest.T {
+	t.Helper()
+	socketPath := sharedServer(t)
+	env := testEnv(t)
+	fe, err := nxtest.StartFrontend(socketPath, env, 80, 24, "--session", uniqueSession())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return nxtest.NewFromFrontend(t, fe)
 }
 
 func startFrontendWithEnv(t *testing.T, socketPath string, env []string) *nxtest.T {

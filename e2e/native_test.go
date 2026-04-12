@@ -11,10 +11,7 @@ import (
 )
 
 func TestNativeOverlayRender(t *testing.T) {
-	socketPath, cleanup := startServer(t)
-	defer cleanup()
-
-	nxt := startFrontend(t, socketPath)
+	nxt := startFrontendShared(t)
 	defer nxt.Kill()
 
 	nxt.WaitFor("nxterm$", 10*time.Second)
@@ -27,10 +24,7 @@ func TestNativeOverlayRender(t *testing.T) {
 }
 
 func TestNativeOverlayInput(t *testing.T) {
-	socketPath, cleanup := startServer(t)
-	defer cleanup()
-
-	nxt := startFrontend(t, socketPath)
+	nxt := startFrontendShared(t)
 	defer nxt.Kill()
 
 	nxt.WaitFor("nxterm$", 10*time.Second)
@@ -92,10 +86,7 @@ func TestNativeOverlayGetScreen(t *testing.T) {
 }
 
 func TestNativeOverlayExit(t *testing.T) {
-	socketPath, cleanup := startServer(t)
-	defer cleanup()
-
-	nxt := startFrontend(t, socketPath)
+	nxt := startFrontendShared(t)
 	defer nxt.Kill()
 
 	nxt.WaitFor("nxterm$", 10*time.Second)

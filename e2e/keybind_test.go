@@ -8,10 +8,7 @@ import (
 )
 
 func TestPrefixKeyDetach(t *testing.T) {
-	socketPath, serverCleanup := startServer(t)
-	defer serverCleanup()
-
-	nxt := startFrontend(t, socketPath)
+	nxt := startFrontendShared(t)
 	defer nxt.Kill()
 
 	nxt.WaitFor("nxterm$", 10*time.Second)
@@ -25,10 +22,7 @@ func TestPrefixKeyDetach(t *testing.T) {
 }
 
 func TestPrefixKeyLiteralCtrlB(t *testing.T) {
-	socketPath, serverCleanup := startServer(t)
-	defer serverCleanup()
-
-	nxt := startFrontend(t, socketPath)
+	nxt := startFrontendShared(t)
 	defer nxt.Kill()
 
 	nxt.WaitFor("nxterm$",10*time.Second)
@@ -54,10 +48,7 @@ func TestPrefixKeyLiteralCtrlB(t *testing.T) {
 }
 
 func TestPrefixKeyStatusIndicator(t *testing.T) {
-	socketPath, serverCleanup := startServer(t)
-	defer serverCleanup()
-
-	nxt := startFrontend(t, socketPath)
+	nxt := startFrontendShared(t)
 	defer nxt.Kill()
 
 	nxt.WaitFor("nxterm$", 10*time.Second)
@@ -85,10 +76,7 @@ func TestPrefixKeyStatusIndicator(t *testing.T) {
 }
 
 func TestKeybindNativeNextPrevTab(t *testing.T) {
-	socketPath, serverCleanup := startServer(t)
-	defer serverCleanup()
-
-	nxt := startFrontend(t, socketPath)
+	nxt := startFrontendShared(t)
 	defer nxt.Kill()
 
 	nxt.WaitFor("nxterm$", 10*time.Second)
