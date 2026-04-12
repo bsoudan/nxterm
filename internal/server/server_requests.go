@@ -38,9 +38,8 @@ type destroyRegionReq struct {
 }
 
 type destroyResult struct {
-	region      Region
-	subscribers []*Client
-	found       bool
+	region Region
+	found  bool
 }
 
 type findRegionReq struct {
@@ -360,18 +359,14 @@ func (s *Server) eventLoop() {
 						slog.Info("removed empty session", "session", sessionName)
 					}
 				}
-				var subscribers []*Client
 				if subs := regionSubs[r.regionID]; subs != nil {
 					for clientID := range subs {
 						delete(subscriptions, clientID)
-						if c, ok := clients[clientID]; ok {
-							subscribers = append(subscribers, c)
-						}
 					}
 					delete(regionSubs, r.regionID)
 				}
 				broadcastTreeEvents(&pb, &treeVersion, clients)
-				r.resp <- destroyResult{region: region, subscribers: subscribers, found: true}
+				r.resp <- destroyResult{region: region, found: true}
 				if sessionRemoved {
 					notifySessionsChanged()
 				}
