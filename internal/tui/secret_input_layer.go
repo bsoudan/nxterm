@@ -48,7 +48,7 @@ func NewSecretInputLayer(prompt string, result chan<- SecretInputResult) *Secret
 func (l *SecretInputLayer) Activate() tea.Cmd { return nil }
 func (l *SecretInputLayer) Deactivate()       {}
 
-func (l *SecretInputLayer) WantsKeyboardInput() *KeyboardFilter { return allKeysFilter }
+func (l *SecretInputLayer) WantsKeyboardInput() bool { return true }
 
 func (l *SecretInputLayer) Status(rs *RenderState) (string, lipgloss.Style) {
 	return "secret input", lipgloss.Style{}

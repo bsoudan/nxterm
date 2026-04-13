@@ -142,6 +142,7 @@ func (p *CommandPaletteLayer) updateMatches() {
 func fuzzyScore(query, candidate string) (int, bool) {
 	qi := 0
 	score := 0
+	lastMatch := -2 // position of previous matched character
 	for i := 0; i < len(candidate) && qi < len(query); i++ {
 		if candidate[i] == query[qi] {
 			qi++
@@ -149,6 +150,10 @@ func fuzzyScore(query, candidate string) (int, bool) {
 			if i == 0 || candidate[i-1] == '-' || candidate[i-1] == ' ' {
 				score += 10 // word boundary bonus
 			}
+			if i == lastMatch+1 {
+				score += 5 // consecutive character bonus
+			}
+			lastMatch = i
 		}
 	}
 	if qi < len(query) {
@@ -308,7 +313,7 @@ func (p *CommandPaletteLayer) buildContent(overlayW, height int) string {
 	return content
 }
 
-func (p *CommandPaletteLayer) WantsKeyboardInput() *KeyboardFilter { return allKeysFilter }
+func (p *CommandPaletteLayer) WantsKeyboardInput() bool { return true }
 
 func (p *CommandPaletteLayer) Status(rs *RenderState) (string, lipgloss.Style) {
 	return "run command", lipgloss.Style{}

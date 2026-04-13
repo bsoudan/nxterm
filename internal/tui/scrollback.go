@@ -304,7 +304,7 @@ func (s *ScrollbackLayer) View(width, height int, rs *RenderState) []*lipgloss.L
 	}
 }
 
-func (s *ScrollbackLayer) WantsKeyboardInput() *KeyboardFilter { return allKeysFilter }
+func (s *ScrollbackLayer) WantsKeyboardInput() bool { return true }
 
 func (s *ScrollbackLayer) Status(rs *RenderState) (string, lipgloss.Style) {
 	total := s.scrollbackTotal()

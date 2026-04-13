@@ -165,5 +165,5 @@ func (h *HelpLayer) View(width, height int, rs *RenderState) []*lipgloss.Layer {
 	return overlayLayers(dialogLines, x, y, 1)
 }
 
-func (h *HelpLayer) WantsKeyboardInput() *KeyboardFilter { return allKeysFilter }
+func (h *HelpLayer) WantsKeyboardInput() bool { return true }
 func (h *HelpLayer) Status(rs *RenderState) (string, lipgloss.Style) { return "help", lipgloss.Style{} }

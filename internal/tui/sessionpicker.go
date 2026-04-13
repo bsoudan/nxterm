@@ -113,7 +113,7 @@ func (p *SessionPickerLayer) View(width, height int, rs *RenderState) []*lipglos
 	return overlayLayers(dialog, x, y, 1)
 }
 
-func (p *SessionPickerLayer) WantsKeyboardInput() *KeyboardFilter { return allKeysFilter }
+func (p *SessionPickerLayer) WantsKeyboardInput() bool { return true }
 
 func (p *SessionPickerLayer) Status(rs *RenderState) (string, lipgloss.Style) {
 	return "switch session", lipgloss.Style{}

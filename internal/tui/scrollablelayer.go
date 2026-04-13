@@ -147,5 +147,5 @@ func (l *ScrollableLayer) View(width, height int, rs *RenderState) []*lipgloss.L
 	return overlayLayers(dialog, x, y, 1)
 }
 
-func (l *ScrollableLayer) WantsKeyboardInput() *KeyboardFilter { return allKeysFilter }
+func (l *ScrollableLayer) WantsKeyboardInput() bool { return true }
 func (l *ScrollableLayer) Status(rs *RenderState) (string, lipgloss.Style) { return l.label, lipgloss.Style{} }

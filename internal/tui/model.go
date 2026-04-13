@@ -88,7 +88,7 @@ func (m teaModel) View() tea.View {
 					statusStyle = s
 				}
 			}
-			if i > 0 && tl.WantsKeyboardInput() != nil {
+			if i > 0 && tl.WantsKeyboardInput() {
 				rs.HasOverlay = true
 			}
 		}

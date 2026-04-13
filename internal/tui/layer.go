@@ -5,25 +5,15 @@ import (
 	"nxtermd/pkg/layer"
 )
 
-// KeyboardFilter specifies what keyboard input a layer wants routed
-// through bubbletea's key parser rather than forwarded raw to the server.
-type KeyboardFilter struct {
-	All  bool     // intercept all keyboard input
-	Keys [][]byte // intercept only these specific raw byte sequences
-}
-
-// allKeysFilter is returned by layers that want all keyboard input.
-var allKeysFilter = &KeyboardFilter{All: true}
-
 // TermdLayer extends layer.Layer with nxtermd-specific capabilities.
 // All nxtermd layers implement this interface.
 type TermdLayer interface {
 	layer.Layer[RenderState]
 
-	// WantsKeyboardInput returns a filter describing which keys this
-	// layer wants routed through bubbletea's key parser. Returns nil
-	// if the layer doesn't need any keyboard input.
-	WantsKeyboardInput() *KeyboardFilter
+	// WantsKeyboardInput returns true if this layer wants all keyboard
+	// input routed through bubbletea's key parser rather than forwarded
+	// raw to the server.
+	WantsKeyboardInput() bool
 
 	// Status returns text and style for the status bar. Layers may
 	// also set fields on the render state to contribute shared flags.
@@ -57,25 +47,10 @@ type requestState struct {
 func needsFocusRouting(stack *layer.Stack[RenderState]) bool {
 	for _, l := range stack.Layers() {
 		if tl, ok := l.(TermdLayer); ok {
-			if f := tl.WantsKeyboardInput(); f != nil && f.All {
+			if tl.WantsKeyboardInput() {
 				return true
 			}
 		}
 	}
 	return false
 }
-
-// collectKeyFilters gathers specific raw byte sequences that layers
-// want intercepted from raw input and delivered through bubbletea.
-func collectKeyFilters(stack *layer.Stack[RenderState]) [][]byte {
-	var keys [][]byte
-	for _, l := range stack.Layers() {
-		if tl, ok := l.(TermdLayer); ok {
-			if f := tl.WantsKeyboardInput(); f != nil && !f.All {
-				keys = append(keys, f.Keys...)
-			}
-		}
-	}
-	return keys
-}
-

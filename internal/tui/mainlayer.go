@@ -85,6 +85,12 @@ type MainLayer struct {
 	program       *tea.Program
 	rawCh         <-chan RawInputMsg
 	quitRequested bool
+
+	// focusBuf holds raw input buffered for one-at-a-time sequence
+	// processing when a focus-routing layer is active. Between each
+	// sequence the main loop runs a priority drain so server and
+	// bubbletea messages are never starved by a burst of keystrokes.
+	focusBuf []byte
 }
 
 func NewMainLayer(
@@ -679,11 +685,8 @@ func (m *MainLayer) Status(rs *RenderState) (string, lipgloss.Style) {
 	return text, style
 }
 
-func (m *MainLayer) WantsKeyboardInput() *KeyboardFilter {
-	if t := m.ActiveTerm(); t != nil && t.ScrollbackActive() {
-		return allKeysFilter
-	}
-	return nil
+func (m *MainLayer) WantsKeyboardInput() bool {
+	return m.ActiveTerm() != nil && m.ActiveTerm().ScrollbackActive()
 }
 
 // UpgradeAvailable reports whether any upgrade is available.
@@ -731,6 +734,54 @@ func (m *MainLayer) Run(p *tea.Program, rawCh <-chan RawInputMsg,
 
 	for {
 		srv := m.server
+
+		// Priority phase: handle bubbletea, server, and lifecycle
+		// messages before touching raw input. Non-blocking — falls
+		// through to the blocking select when nothing is ready.
+		select {
+		case msg := <-p.Msgs():
+			if _, err := p.Handle(msg); err != nil {
+				p.Stop(nil)
+				return nil
+			}
+			continue
+		case msg := <-srv.Inbound:
+			m.processServerMsg(msg)
+			p.Render()
+			continue
+		case msg := <-srv.Lifecycle:
+			switch msg := msg.(type) {
+			case DisconnectedMsg:
+				m.reconnectLoop(msg)
+			}
+			continue
+		case <-p.Context().Done():
+			p.Stop(nil)
+			return nil
+		default:
+		}
+
+		// Check quit after priority drain — a bubbletea message
+		// (e.g. detach via command palette) may have set it.
+		if m.quitRequested {
+			p.Stop(nil)
+			return nil
+		}
+
+		// Process one buffered focus-mode sequence before blocking
+		// for new input, so priority channels get checked between
+		// every keystroke.
+		if len(m.focusBuf) > 0 {
+			m.stepFocusSequence()
+			if m.quitRequested {
+				p.Stop(nil)
+				return nil
+			}
+			p.Render()
+			continue
+		}
+
+		// Nothing pending — block on all channels including raw input.
 		select {
 		case msg := <-p.Msgs():
 			if _, err := p.Handle(msg); err != nil {
@@ -763,49 +814,50 @@ func (m *MainLayer) Run(p *tea.Program, rawCh <-chan RawInputMsg,
 	}
 }
 
-// writeToPipeAndDrain sends raw input through pipeW one sequence at a
-// time, draining the bubbletea message queue after each write so all
-// side effects (layer pops, state changes) settle before returning.
-//
-// pipeW is a synchronous io.Pipe — writes block until bubbletea's
-// input reader consumes the data. Since we're inside the main loop,
-// we write from a goroutine and drain p.Msgs() here.
-func (m *MainLayer) writeToPipeAndDrain(data []byte) {
-	buf := data
-	for len(buf) > 0 {
-		_, _, n, _ := ansi.DecodeSequence(buf, ansi.NormalState, nil)
-		if n <= 0 {
-			n = len(buf)
+// stepFocusSequence consumes one ANSI sequence from focusBuf and
+// sends it through pipeW. If focus routing is no longer active (a
+// layer was popped by a previous keystroke), the remaining buffer is
+// re-processed as normal raw input.
+func (m *MainLayer) stepFocusSequence() {
+	if !needsFocusRouting(m.stack) {
+		rest := m.focusBuf
+		m.focusBuf = nil
+		if len(rest) > 0 {
+			m.processRawInput(RawInputMsg(rest))
 		}
-		seq := make([]byte, n)
-		copy(seq, buf[:n])
-		buf = buf[n:]
+		return
+	}
 
-		// Write one sequence. The goroutine unblocks once bubbletea
-		// reads from pipeR.
-		go m.pipeW.Write(seq)
+	_, _, n, _ := ansi.DecodeSequence(m.focusBuf, ansi.NormalState, nil)
+	if n <= 0 {
+		n = len(m.focusBuf)
+	}
+	seq := make([]byte, n)
+	copy(seq, m.focusBuf[:n])
+	m.focusBuf = m.focusBuf[n:]
 
-		// Block for the first message (the key event from this write).
-		// Then drain any follow-on messages (cmds that produce new
-		// messages like layer pops) with a short timeout so side
-		// effects settle before the next sequence.
-		msg := <-m.program.Msgs()
-		if _, err := m.program.Handle(msg); err != nil {
-			m.quitRequested = true
+	// pipeW is a synchronous io.Pipe — the goroutine write blocks
+	// until bubbletea reads from pipeR and queues a message.
+	// We drain p.Msgs() to consume the key event and any follow-on
+	// side effects. A short timeout is needed because p.msgs is
+	// shared with timers and other async sources — the first message
+	// we read may not be the key event from this write.
+	go m.pipeW.Write(seq)
+	msg := <-m.program.Msgs()
+	if _, err := m.program.Handle(msg); err != nil {
+		m.quitRequested = true
+		return
+	}
+	for {
+		select {
+		case msg := <-m.program.Msgs():
+			if _, err := m.program.Handle(msg); err != nil {
+				m.quitRequested = true
+				return
+			}
+		case <-time.After(time.Millisecond):
 			return
 		}
-		for {
-			select {
-			case msg := <-m.program.Msgs():
-				if _, err := m.program.Handle(msg); err != nil {
-					m.quitRequested = true
-					return
-				}
-			case <-time.After(5 * time.Millisecond):
-				goto nextSeq
-			}
-		}
-	nextSeq:
 	}
 }
 
@@ -817,7 +869,9 @@ func (m *MainLayer) processRawInput(raw RawInputMsg) {
 		return
 	}
 	if needsFocusRouting(m.stack) {
-		m.writeToPipeAndDrain([]byte(raw))
+		// Buffer for one-at-a-time processing — the main loop
+		// drains priority channels between each sequence.
+		m.focusBuf = append(m.focusBuf, raw...)
 		return
 	}
 	if idx := bytes.IndexByte([]byte(raw), m.registry.PrefixKey); idx >= 0 {
@@ -830,11 +884,6 @@ func (m *MainLayer) processRawInput(raw RawInputMsg) {
 		}
 		return
 	}
-	if filters := collectKeyFilters(m.stack); len(filters) > 0 {
-		if m.handleFilteredInput(raw, filters) {
-			return
-		}
-	}
 	// Normal mode — forward to active session.
 	if s := m.activeSessionLayer(); s != nil {
 		_, cmd := s.handleRawInput([]byte(raw))
@@ -842,34 +891,6 @@ func (m *MainLayer) processRawInput(raw RawInputMsg) {
 			m.execCmdSync(cmd)
 		}
 	}
-}
-
-// handleFilteredInput scans raw input for sequences matching key
-// filters. Returns true if a filter matched.
-func (m *MainLayer) handleFilteredInput(raw RawInputMsg, filters [][]byte) bool {
-	buf := []byte(raw)
-	pos := 0
-	for pos < len(buf) {
-		_, _, n, _ := ansi.DecodeSequence(buf[pos:], ansi.NormalState, nil)
-		if n == 0 {
-			break
-		}
-		seq := buf[pos : pos+n]
-		for _, f := range filters {
-			if bytes.Equal(seq, f) {
-				if pos > 0 {
-					m.sendRawToServer(buf[:pos])
-				}
-				m.writeToPipeAndDrain(seq)
-				if rest := buf[pos+n:]; len(rest) > 0 {
-					m.processRawInput(RawInputMsg(rest))
-				}
-				return true
-			}
-		}
-		pos += n
-	}
-	return false
 }
 
 // execCmdSync executes a tea.Cmd synchronously. Handles RawInputMsg

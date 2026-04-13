@@ -52,7 +52,7 @@ var logoBorder = lipgloss.NewStyle().
 	BorderForeground(lipgloss.Color("14")).
 	Padding(0, 1)
 
-func (h *HintLayer) WantsKeyboardInput() *KeyboardFilter { return nil }
+func (h *HintLayer) WantsKeyboardInput() bool { return false }
 
 func (h *HintLayer) Status(rs *RenderState) (string, lipgloss.Style) {
 	rs.HasHint = true

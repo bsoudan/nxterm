@@ -89,7 +89,7 @@ func (o *Overlay) View(width, height int, rs *RenderState) []*lipgloss.Layer {
 	return overlayLayers(dialogFull, x, y, 1)
 }
 
-func (o *Overlay) WantsKeyboardInput() *KeyboardFilter { return allKeysFilter }
+func (o *Overlay) WantsKeyboardInput() bool { return true }
 
 func (o *Overlay) Status(rs *RenderState) (string, lipgloss.Style) {
 	if o.StatusText != "" {

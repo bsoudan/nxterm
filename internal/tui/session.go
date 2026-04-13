@@ -619,7 +619,7 @@ func truncateTitle(s string, max int) string {
 	return string(r[:max-1]) + "…"
 }
 
-func (s *SessionLayer) WantsKeyboardInput() *KeyboardFilter { return nil }
+func (s *SessionLayer) WantsKeyboardInput() bool { return false }
 
 func (s *SessionLayer) Status(rs *RenderState) (string, lipgloss.Style) {
 	if t := s.activeTerm(); t != nil && t.ScrollbackActive() {
