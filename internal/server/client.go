@@ -41,7 +41,7 @@ type Client struct {
 	// nextByteIndex tracks the byte offset for drop detection.
 	// Only accessed by goroutines that call SendMessage/sendReply,
 	// but multiple goroutines can call SendMessage concurrently
-	// (watchRegion goroutines, broadcast), so we use atomic.
+	// (region actor goroutines, broadcast), so we use atomic.
 	nextByteIndex atomic.Uint64
 }
 
@@ -288,7 +288,7 @@ func (c *Client) handleMessage(line []byte) {
 
 func (c *Client) handleOverlayRegister(msg protocol.OverlayRegisterRequest, reply func(any)) {
 	resp := make(chan overlayRegisterResult, 1)
-	if !c.server.send(overlayRegisterReq{clientID: c.id, regionID: msg.RegionID, resp: resp}) {
+	if !c.server.send(overlayRegisterReq{client: c, regionID: msg.RegionID, resp: resp}) {
 		return
 	}
 	result := <-resp
@@ -310,14 +310,11 @@ func (c *Client) handleOverlayRegister(msg protocol.OverlayRegisterRequest, repl
 }
 
 func (c *Client) handleOverlayRender(msg protocol.OverlayRender) {
-	c.server.send(overlayRenderReq{
-		clientID:  c.id,
-		regionID:  msg.RegionID,
-		cells:     msg.Cells,
-		cursorRow: msg.CursorRow,
-		cursorCol: msg.CursorCol,
-		modes:     msg.Modes,
-	})
+	region := c.server.FindRegion(msg.RegionID)
+	if region == nil {
+		return
+	}
+	region.RenderOverlay(c.id, msg.Cells, msg.CursorRow, msg.CursorCol, msg.Modes)
 }
 
 func (c *Client) handleOverlayClear(msg protocol.OverlayClear) {
@@ -556,9 +553,6 @@ func (c *Client) handleGetScreen(msg protocol.GetScreenRequest, reply func(any))
 	}
 
 	snap := region.Snapshot()
-	if ov := c.server.GetOverlay(msg.RegionID); ov != nil {
-		snap = compositeSnapshot(snap, ov)
-	}
 	reply(protocol.GetScreenResponse{
 		Type:          "get_screen_response",
 		RegionID:      region.ID(),

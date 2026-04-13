@@ -25,10 +25,10 @@ type eventLoopState struct {
 	clients        map[uint32]*Client
 	sessions       map[string]*Session
 	programs       map[string]config.ProgramConfig
-	subscriptions  map[uint32]string              // clientID → regionID
-	regionSubs     map[string]map[uint32]struct{} // regionID → set of clientIDs
-	clientSessions map[uint32]string              // clientID → sessionName
-	overlays       map[string]*overlayState       // regionID → overlay
+	subscriptions  map[uint32]string  // clientID → regionID
+	clientSessions map[uint32]string  // clientID → sessionName
+	clientOverlays map[uint32]string  // clientID → regionID for overlay cleanup
+	regionOverlays map[string]uint32  // regionID → overlay clientID for input routing
 	tree           protocol.Tree
 	treeVersion    uint64
 	exit           bool // set by upgrade handler to exit the event loop
@@ -95,11 +95,6 @@ type killRegionReq struct {
 type killClientReq struct {
 	clientID uint32
 	resp     chan *Client
-}
-
-type getSubscribersReq struct {
-	regionID string
-	resp     chan subscribersData
 }
 
 type statusCounts struct {
@@ -199,7 +194,7 @@ type overlayState struct {
 }
 
 type overlayRegisterReq struct {
-	clientID uint32
+	client *Client
 	regionID string
 	resp     chan overlayRegisterResult
 }
@@ -210,23 +205,9 @@ type overlayRegisterResult struct {
 	err    string
 }
 
-type overlayRenderReq struct {
-	clientID  uint32
-	regionID  string
-	cells     [][]protocol.ScreenCell
-	cursorRow uint16
-	cursorCol uint16
-	modes     map[int]bool
-}
-
 type overlayClearReq struct {
 	clientID uint32
 	regionID string
-}
-
-type getOverlayReq struct {
-	regionID string
-	resp     chan *overlayState
 }
 
 type inputRouteResult struct {
@@ -239,12 +220,6 @@ type inputRouteReq struct {
 	resp     chan inputRouteResult
 }
 
-// subscribersData is returned by getSubscribersReq, including any active overlay.
-type subscribersData struct {
-	clients []*Client
-	overlay *overlayState
-}
-
 // ── Event loop ───────────────────────────────────────────────────────────────
 
 func (s *Server) eventLoop() {
@@ -255,9 +230,9 @@ func (s *Server) eventLoop() {
 		sessions:       s.initSessions,
 		programs:       s.initPrograms,
 		subscriptions:  make(map[uint32]string),
-		regionSubs:     make(map[string]map[uint32]struct{}),
 		clientSessions: make(map[uint32]string),
-		overlays:       make(map[string]*overlayState),
+		clientOverlays: make(map[uint32]string),
+		regionOverlays: make(map[string]uint32),
 		tree:           buildTreeFromMaps(s.initRegions, s.initSessions, s.initPrograms, s.version, s.startTime.Unix(), s.listenerAddrs()),
 	}
 
@@ -314,28 +289,17 @@ func (r addClientReq) handle(st *eventLoopState) {
 func (r removeClientReq) handle(st *eventLoopState) {
 	if rid, ok := st.subscriptions[r.clientID]; ok {
 		delete(st.subscriptions, r.clientID)
-		if s := st.regionSubs[rid]; s != nil {
-			delete(s, r.clientID)
-			if len(s) == 0 {
-				delete(st.regionSubs, rid)
-			}
+		if region, ok := st.regions[rid]; ok {
+			region.RemoveSubscriber(r.clientID)
 		}
 	}
 	// Clean up any overlay owned by this client.
-	for rid, ov := range st.overlays {
-		if ov.clientID == r.clientID {
-			delete(st.overlays, rid)
-			// Restore PTY terminal attributes and re-send plain snapshot.
-			if region, ok := st.regions[rid]; ok {
-				region.RestoreTermios()
-				snapMsg := newScreenUpdate(rid, region.Snapshot())
-				for cid := range st.regionSubs[rid] {
-					if c, ok := st.clients[cid]; ok {
-						c.SendMessage(snapMsg)
-					}
-				}
-			}
+	if rid, ok := st.clientOverlays[r.clientID]; ok {
+		if region, ok := st.regions[rid]; ok {
+			region.ClearOverlay(r.clientID)
 		}
+		delete(st.clientOverlays, r.clientID)
+		delete(st.regionOverlays, rid)
 	}
 	delete(st.clients, r.clientID)
 	delete(st.clientSessions, r.clientID)
@@ -384,7 +348,6 @@ func (r destroyRegionReq) handle(st *eventLoopState) {
 	}
 	var pb patchBuilder
 	delete(st.regions, r.regionID)
-	delete(st.overlays, r.regionID)
 	delete(st.tree.Regions, r.regionID)
 	pb.Delete("/regions/" + r.regionID)
 	sessionName := region.Session()
@@ -403,11 +366,17 @@ func (r destroyRegionReq) handle(st *eventLoopState) {
 			slog.Info("removed empty session", "session", sessionName)
 		}
 	}
-	if subs := st.regionSubs[r.regionID]; subs != nil {
-		for clientID := range subs {
+	// Clean up overlay bookkeeping for this region.
+	if overlayClientID, ok := st.regionOverlays[r.regionID]; ok {
+		delete(st.regionOverlays, r.regionID)
+		delete(st.clientOverlays, overlayClientID)
+	}
+	// Clean up subscriptions — actor is already stopped, just
+	// remove event-loop-side bookkeeping.
+	for clientID, rid := range st.subscriptions {
+		if rid == r.regionID {
 			delete(st.subscriptions, clientID)
 		}
-		delete(st.regionSubs, r.regionID)
 	}
 	st.broadcastTree(&pb)
 	r.resp <- destroyResult{region: region, found: true}
@@ -426,16 +395,6 @@ func (r killRegionReq) handle(st *eventLoopState) {
 
 func (r killClientReq) handle(st *eventLoopState) {
 	r.resp <- st.clients[r.clientID]
-}
-
-func (r getSubscribersReq) handle(st *eventLoopState) {
-	var subs []*Client
-	for clientID := range st.regionSubs[r.regionID] {
-		if c, ok := st.clients[clientID]; ok {
-			subs = append(subs, c)
-		}
-	}
-	r.resp <- subscribersData{clients: subs, overlay: st.overlays[r.regionID]}
 }
 
 func (r getStatusReq) handle(st *eventLoopState) {
@@ -593,35 +552,20 @@ func (r subscribeReq) handle(st *eventLoopState) {
 	}
 	// Remove from previous subscription if any.
 	if prev, ok := st.subscriptions[r.clientID]; ok && prev != r.regionID {
-		if s := st.regionSubs[prev]; s != nil {
-			delete(s, r.clientID)
-			if len(s) == 0 {
-				delete(st.regionSubs, prev)
-			}
+		if prevRegion, ok := st.regions[prev]; ok {
+			prevRegion.RemoveSubscriber(r.clientID)
 		}
 	}
-	snap := region.Snapshot()
-	if ov, ok := st.overlays[r.regionID]; ok {
-		snap = compositeSnapshot(snap, ov)
+	client := st.clients[r.clientID]
+	if client == nil {
+		r.resp <- nil
+		return
 	}
-	// Enqueue the initial snapshot to the client's writeCh
-	// BEFORE adding the client to the subscriber set. The
-	// watcher goroutine sends terminal_events via SendMessage,
-	// which writes to the same writeCh; pushing the snapshot
-	// first guarantees it lands ahead of any events the
-	// watcher might emit between the next two statements.
-	// Without this ordering, the client could receive
-	// terminal_events before its initial screen_update,
-	// drop them (no local screen yet), and be left with a
-	// stale snapshot.
-	if client, ok := st.clients[r.clientID]; ok {
-		client.SendMessage(newScreenUpdate(region.ID(), snap))
-	}
+	// AddSubscriber sends the initial snapshot inside the actor
+	// before adding the client to the subscriber set, guaranteeing
+	// ordering relative to subsequent terminal_events.
+	snap := region.AddSubscriber(client)
 	st.subscriptions[r.clientID] = r.regionID
-	if st.regionSubs[r.regionID] == nil {
-		st.regionSubs[r.regionID] = make(map[uint32]struct{})
-	}
-	st.regionSubs[r.regionID][r.clientID] = struct{}{}
 	// Update tree: client subscription changed.
 	cid := strconv.FormatUint(uint64(r.clientID), 10)
 	if cn, ok := st.tree.Clients[cid]; ok {
@@ -637,11 +581,8 @@ func (r subscribeReq) handle(st *eventLoopState) {
 func (r unsubscribeReq) handle(st *eventLoopState) {
 	if rid, ok := st.subscriptions[r.clientID]; ok {
 		delete(st.subscriptions, r.clientID)
-		if s := st.regionSubs[rid]; s != nil {
-			delete(s, r.clientID)
-			if len(s) == 0 {
-				delete(st.regionSubs, rid)
-			}
+		if region, ok := st.regions[rid]; ok {
+			region.RemoveSubscriber(r.clientID)
 		}
 	}
 	cid := strconv.FormatUint(uint64(r.clientID), 10)
@@ -689,64 +630,23 @@ func (r overlayRegisterReq) handle(st *eventLoopState) {
 		r.resp <- overlayRegisterResult{err: "region not found"}
 		return
 	}
-	// Save PTY state before the overlay app potentially changes it.
-	region.SaveTermios()
-	st.overlays[r.regionID] = &overlayState{
-		clientID: r.clientID,
-		regionID: r.regionID,
+	result := region.RegisterOverlay(r.client)
+	if result.err == "" {
+		st.clientOverlays[r.client.id] = r.regionID
+		st.regionOverlays[r.regionID] = r.client.id
 	}
-	slog.Info("overlay registered", "region_id", r.regionID, "client_id", r.clientID)
-	r.resp <- overlayRegisterResult{width: region.Width(), height: region.Height()}
-}
-
-func (r overlayRenderReq) handle(st *eventLoopState) {
-	ov := st.overlays[r.regionID]
-	if ov == nil || ov.clientID != r.clientID {
-		return
-	}
-	ov.cells = r.cells
-	ov.cursorRow = r.cursorRow
-	ov.cursorCol = r.cursorCol
-	ov.modes = r.modes
-	// Send composited snapshot to subscribers.
-	region := st.regions[r.regionID]
-	if region == nil {
-		return
-	}
-	snap := region.Snapshot()
-	composited := compositeSnapshot(snap, ov)
-	snapMsg := newScreenUpdate(r.regionID, composited)
-	for cid := range st.regionSubs[r.regionID] {
-		if c, ok := st.clients[cid]; ok {
-			c.SendMessage(snapMsg)
-		}
-	}
+	r.resp <- result
 }
 
 func (r overlayClearReq) handle(st *eventLoopState) {
-	ov := st.overlays[r.regionID]
-	if ov == nil || ov.clientID != r.clientID {
+	if ownerID, ok := st.regionOverlays[r.regionID]; !ok || ownerID != r.clientID {
 		return
 	}
-	delete(st.overlays, r.regionID)
-	// Restore PTY terminal attributes in case the overlay app left raw mode.
 	if region, ok := st.regions[r.regionID]; ok {
-		region.RestoreTermios()
+		region.ClearOverlay(r.clientID)
 	}
-	slog.Info("overlay cleared", "region_id", r.regionID, "client_id", r.clientID)
-	// Re-send plain PTY snapshot.
-	if region, ok := st.regions[r.regionID]; ok {
-		snapMsg := newScreenUpdate(r.regionID, region.Snapshot())
-		for cid := range st.regionSubs[r.regionID] {
-			if c, ok := st.clients[cid]; ok {
-				c.SendMessage(snapMsg)
-			}
-		}
-	}
-}
-
-func (r getOverlayReq) handle(st *eventLoopState) {
-	r.resp <- st.overlays[r.regionID]
+	delete(st.regionOverlays, r.regionID)
+	delete(st.clientOverlays, r.clientID)
 }
 
 func (r inputRouteReq) handle(st *eventLoopState) {
@@ -755,8 +655,8 @@ func (r inputRouteReq) handle(st *eventLoopState) {
 		r.resp <- inputRouteResult{}
 		return
 	}
-	if ov, ok := st.overlays[r.regionID]; ok {
-		if c, ok := st.clients[ov.clientID]; ok {
+	if overlayClientID, ok := st.regionOverlays[r.regionID]; ok {
+		if c, ok := st.clients[overlayClientID]; ok {
 			r.resp <- inputRouteResult{overlayClient: c}
 			return
 		}

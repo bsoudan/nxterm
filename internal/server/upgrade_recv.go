@@ -111,7 +111,7 @@ func RecvUpgrade(fd int, sshCfg transport.SSHListenerConfig, version string) (*S
 			slog.Warn("upgrade-recv: no PTY FD for region", "region_id", rs.ID)
 			continue
 		}
-		region := RestoreRegion(rs.ID, rs.Name, rs.Cmd, rs.Session, rs.Pid, rs.Width, rs.Height, ptmxFile, rs.Screen)
+		region := RestoreRegion(rs.ID, rs.Name, rs.Cmd, rs.Session, rs.Pid, rs.Width, rs.Height, ptmxFile, rs.Screen, srv.destroyRegion)
 		resp := make(chan struct{})
 		srv.send(restoreRegionReq{region: region, session: rs.Session, resp: resp})
 		<-resp
@@ -161,7 +161,6 @@ func (r restoreRegionReq) handle(st *eventLoopState) {
 	st.tree.Sessions[r.session] = snode
 	pb.Add("/sessions/"+r.session+"/region_ids", r.region.ID())
 	st.broadcastTree(&pb)
-	go st.srv.watchRegion(r.region)
 	r.resp <- struct{}{}
 	if created {
 		st.notifySessionsChanged()

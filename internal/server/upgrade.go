@@ -121,7 +121,7 @@ func (s *Server) HandleUpgrade(specs []string, sshCfg transport.SSHListenerConfi
 	// by the new process's readLoop after handoff — nothing is lost.
 	for id, r := range result.regions {
 		if pr, ok := r.(*PTYRegion); ok {
-			if err := pr.StopReadLoop(); err != nil {
+			if err := pr.StopActor(); err != nil {
 				slog.Warn("upgrade: failed to stop readLoop", "region_id", id, "err", err)
 			}
 		}
@@ -247,12 +247,10 @@ func buildUpgradeState(s *Server, result upgradeResult, specs []string) *Upgrade
 			slog.Info("upgrade: skipping native region", "region_id", r.ID())
 			continue
 		}
-		pr.mu.Lock()
-		histState := pr.hscreen.MarshalState()
-		pr.mu.Unlock()
+		histState := pr.actor.hscreen.MarshalState()
 		state.Regions = append(state.Regions, RegionState{
 			ID: pr.id, Name: pr.name, Cmd: pr.cmd, Pid: pr.pid,
-			Session: pr.session, Width: pr.width, Height: pr.height,
+			Session: pr.session, Width: pr.actor.width, Height: pr.actor.height,
 			Screen: histState,
 		})
 	}
@@ -334,7 +332,7 @@ func (s *Server) resumeAfterFailedUpgrade(result upgradeResult) {
 		if !ok {
 			continue // native regions don't have readLoops to restart
 		}
-		if err := pr.ResumeReadLoop(); err != nil {
+		if err := pr.ResumeActor(s.destroyRegion); err != nil {
 			slog.Error("upgrade: rollback failed to restart readLoop", "region_id", pr.id, "err", err)
 		}
 	}

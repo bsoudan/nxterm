@@ -200,7 +200,7 @@ func (s *Server) SpawnRegion(sessionName, cmd string, args []string, env map[str
 	if height == 0 {
 		height = 24
 	}
-	region, err := NewRegion(cmd, args, env, int(width), int(height), s.socketAddr())
+	region, err := NewRegion(cmd, args, env, int(width), int(height), s.socketAddr(), s.destroyRegion)
 	if err != nil {
 		return nil, err
 	}
@@ -214,17 +214,7 @@ func (s *Server) SpawnRegion(sessionName, cmd string, args []string, env map[str
 
 	slog.Info("spawned region", "region_id", region.ID(), "cmd", cmd, "session", sessionName)
 
-	go s.watchRegion(region)
 	return region, nil
-}
-
-func (s *Server) watchRegion(region Region) {
-	for range region.Notify() {
-		s.sendTerminalEvents(region)
-	}
-	<-region.ReaderDone()
-	s.sendTerminalEvents(region)
-	s.destroyRegion(region.ID())
 }
 
 func (s *Server) destroyRegion(regionID string) {
@@ -264,7 +254,6 @@ func (s *Server) RouteInput(regionID string) (Region, *Client) {
 	return result.region, result.overlayClient
 }
 
-
 func (s *Server) KillRegion(regionID string) bool {
 	resp := make(chan Region, 1)
 	if !s.send(killRegionReq{regionID: regionID, resp: resp}) {
@@ -293,53 +282,6 @@ func (s *Server) KillClient(clientID uint32) bool {
 
 func (s *Server) removeClient(id uint32) {
 	s.send(removeClientReq{clientID: id})
-}
-
-func (s *Server) sendTerminalEvents(region Region) {
-	events, needsSnapshot := region.FlushEvents()
-
-	if !needsSnapshot && len(events) == 0 {
-		return
-	}
-
-	resp := make(chan subscribersData, 1)
-	if !s.send(getSubscribersReq{regionID: region.ID(), resp: resp}) {
-		return
-	}
-	data := <-resp
-
-	if len(data.clients) == 0 {
-		return
-	}
-
-	// When an overlay is active, always send a composited snapshot.
-	if data.overlay != nil {
-		snap := region.Snapshot()
-		composited := compositeSnapshot(snap, data.overlay)
-		snapMsg := newScreenUpdate(region.ID(), composited)
-		for _, c := range data.clients {
-			c.SendMessage(snapMsg)
-		}
-		return
-	}
-
-	if needsSnapshot {
-		snapMsg := newScreenUpdate(region.ID(), region.Snapshot())
-		for _, c := range data.clients {
-			c.SendMessage(snapMsg)
-		}
-		return
-	}
-
-	msg := protocol.TerminalEvents{
-		Type:     "terminal_events",
-		RegionID: region.ID(),
-		Events:   events,
-	}
-
-	for _, c := range data.clients {
-		c.SendMessage(msg)
-	}
 }
 
 // newScreenUpdate builds a protocol.ScreenUpdate from a Snapshot for the
@@ -593,14 +535,6 @@ func (s *Server) Subscribe(clientID uint32, regionID string) (Region, Snapshot) 
 		return nil, Snapshot{}
 	}
 	return result.region, result.snapshot
-}
-
-func (s *Server) GetOverlay(regionID string) *overlayState {
-	resp := make(chan *overlayState, 1)
-	if !s.send(getOverlayReq{regionID: regionID, resp: resp}) {
-		return nil
-	}
-	return <-resp
 }
 
 func (s *Server) Unsubscribe(clientID uint32) {

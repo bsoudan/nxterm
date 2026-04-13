@@ -2,7 +2,6 @@ package server
 
 import (
 	"crypto/rand"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -10,7 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode/utf8"
@@ -35,7 +34,6 @@ type Region interface {
 	Height() int
 
 	Snapshot() Snapshot
-	FlushEvents() ([]protocol.TerminalEvent, bool)
 	GetScrollback() [][]protocol.ScreenCell
 	WriteInput([]byte)
 	Resize(width, height uint16) error
@@ -43,14 +41,17 @@ type Region interface {
 	Close()
 
 	ScrollbackLen() int
-	Notify() <-chan struct{}
-	ReaderDone() <-chan struct{}
 	IsNative() bool
 
-	// SaveTermios saves the PTY's terminal attributes so they can be
-	// restored after an overlay app exits (which may leave raw mode set).
-	SaveTermios()
-	RestoreTermios()
+	// Subscriber management — backed by the region actor.
+	AddSubscriber(c *Client) Snapshot
+	RemoveSubscriber(clientID uint32)
+
+	// Overlay — registration/clearing go through the event loop for
+	// bookkeeping, which delegates to these methods on the region.
+	RegisterOverlay(client *Client) overlayRegisterResult
+	RenderOverlay(clientID uint32, cells [][]protocol.ScreenCell, cursorRow, cursorCol uint16, modes map[int]bool)
+	ClearOverlay(clientID uint32)
 }
 
 type Snapshot struct {
@@ -67,7 +68,9 @@ type Snapshot struct {
 // scrollbackSize is the maximum number of lines kept in the scrollback buffer.
 const scrollbackSize = 10000
 
-// PTYRegion wraps a PTY + child process + VT parser.
+// PTYRegion wraps a PTY region backed by an actor goroutine. The actor
+// owns all mutable state (screen, subscribers, overlay). PTYRegion is a
+// thin wrapper that sends messages to the actor.
 type PTYRegion struct {
 	id      string
 	name    string
@@ -75,30 +78,313 @@ type PTYRegion struct {
 	pid     int
 	session string
 
-	width  int
-	height int
+	actor *regionActor
 
-	ptmx    *os.File
-	cmdObj  *exec.Cmd
-	screen  *te.Screen
-	hscreen *te.HistoryScreen
-	proxy   *EventProxy
-	stream  *te.Stream
-	mu      sync.Mutex
-
-	notify     chan struct{}
-	readerDone chan struct{}
-
-	savedTermios *unix.Termios // saved before overlay, restored after
+	// width and height are updated atomically by Resize so callers
+	// outside the actor can read them without a round trip.
+	width  atomic.Int32
+	height atomic.Int32
 }
 
+func (r *PTYRegion) ID() string          { return r.id }
+func (r *PTYRegion) Name() string        { return r.name }
+func (r *PTYRegion) Cmd() string         { return r.cmd }
+func (r *PTYRegion) Pid() int            { return r.pid }
+func (r *PTYRegion) Session() string     { return r.session }
+func (r *PTYRegion) SetSession(s string) { r.session = s }
+func (r *PTYRegion) Width() int          { return int(r.width.Load()) }
+func (r *PTYRegion) Height() int         { return int(r.height.Load()) }
+func (r *PTYRegion) IsNative() bool      { return false }
+
+// Snapshot returns the current screen state, composited with the overlay
+// if one is active.
+func (r *PTYRegion) Snapshot() Snapshot {
+	resp := make(chan Snapshot, 1)
+	select {
+	case r.actor.msgs <- snapshotMsg{resp: resp}:
+	case <-r.actor.actorDone:
+		return Snapshot{}
+	}
+	select {
+	case snap := <-resp:
+		return snap
+	case <-r.actor.actorDone:
+		return Snapshot{}
+	}
+}
+
+func (r *PTYRegion) GetScrollback() [][]protocol.ScreenCell {
+	resp := make(chan [][]protocol.ScreenCell, 1)
+	select {
+	case r.actor.msgs <- scrollbackMsg{resp: resp}:
+	case <-r.actor.actorDone:
+		return nil
+	}
+	select {
+	case sb := <-resp:
+		return sb
+	case <-r.actor.actorDone:
+		return nil
+	}
+}
+
+func (r *PTYRegion) ScrollbackLen() int {
+	resp := make(chan int, 1)
+	select {
+	case r.actor.msgs <- scrollbackLenMsg{resp: resp}:
+	case <-r.actor.actorDone:
+		return 0
+	}
+	select {
+	case n := <-resp:
+		return n
+	case <-r.actor.actorDone:
+		return 0
+	}
+}
+
+func (r *PTYRegion) Resize(width, height uint16) error {
+	resp := make(chan error, 1)
+	select {
+	case r.actor.msgs <- resizeMsg{width: width, height: height, resp: resp}:
+	case <-r.actor.actorDone:
+		return fmt.Errorf("region stopped")
+	}
+	select {
+	case err := <-resp:
+		if err == nil {
+			r.width.Store(int32(width))
+			r.height.Store(int32(height))
+		}
+		return err
+	case <-r.actor.actorDone:
+		return fmt.Errorf("region stopped")
+	}
+}
+
+// WriteInput writes directly to the PTY master. This is thread-safe
+// (kernel PTY write) and does not go through the actor.
+func (r *PTYRegion) WriteInput(data []byte) {
+	if _, err := r.actor.ptmx.Write(data); err != nil {
+		slog.Debug("write input error", "region_id", r.id, "err", err)
+	}
+}
+
+func (r *PTYRegion) Kill() {
+	if r.actor.cmdObj != nil {
+		r.actor.cmdObj.Process.Signal(syscall.SIGKILL)
+	} else if r.pid > 0 {
+		syscall.Kill(r.pid, syscall.SIGKILL)
+	}
+}
+
+func (r *PTYRegion) Close() {
+	r.actor.ptmx.Close()
+}
+
+// AddSubscriber adds a client to this region's subscriber set and
+// returns the initial composited snapshot. The screen_update is sent
+// to the client inside the actor before the subscriber is added,
+// guaranteeing ordering relative to subsequent terminal_events.
+func (r *PTYRegion) AddSubscriber(c *Client) Snapshot {
+	resp := make(chan Snapshot, 1)
+	select {
+	case r.actor.msgs <- addSubscriberMsg{client: c, resp: resp}:
+	case <-r.actor.actorDone:
+		return Snapshot{}
+	}
+	select {
+	case snap := <-resp:
+		return snap
+	case <-r.actor.actorDone:
+		return Snapshot{}
+	}
+}
+
+// RemoveSubscriber removes a client from the subscriber set. If the
+// client owned the overlay, it is cleared. Fire-and-forget.
+func (r *PTYRegion) RemoveSubscriber(clientID uint32) {
+	select {
+	case r.actor.msgs <- removeSubscriberMsg{clientID: clientID}:
+	case <-r.actor.actorDone:
+	}
+}
+
+func (r *PTYRegion) RegisterOverlay(client *Client) overlayRegisterResult {
+	resp := make(chan overlayRegisterResult, 1)
+	select {
+	case r.actor.msgs <- overlayRegisterMsg{client: client, resp: resp}:
+	case <-r.actor.actorDone:
+		return overlayRegisterResult{err: "region stopped"}
+	}
+	select {
+	case result := <-resp:
+		return result
+	case <-r.actor.actorDone:
+		return overlayRegisterResult{err: "region stopped"}
+	}
+}
+
+func (r *PTYRegion) RenderOverlay(clientID uint32, cells [][]protocol.ScreenCell, cursorRow, cursorCol uint16, modes map[int]bool) {
+	select {
+	case r.actor.msgs <- overlayRenderMsg{
+		clientID: clientID, cells: cells,
+		cursorRow: cursorRow, cursorCol: cursorCol, modes: modes,
+	}:
+	case <-r.actor.actorDone:
+	}
+}
+
+func (r *PTYRegion) ClearOverlay(clientID uint32) {
+	select {
+	case r.actor.msgs <- overlayClearMsg{clientID: clientID}:
+	case <-r.actor.actorDone:
+	}
+}
+
+// DetachPTY dups the PTY master FD for handoff to a new process. The
+// caller must call StopActor first; the dup'd FD goes to the new
+// process, while the original is left in place for Close() to clean up.
+func (r *PTYRegion) DetachPTY() *os.File {
+	var newFD int
+	err := withPTYFd(r.actor.ptmx, func(fd int) error {
+		var derr error
+		newFD, derr = syscall.Dup(fd)
+		return derr
+	})
+	if err != nil {
+		slog.Error("DetachPTY: dup failed", "region_id", r.id, "err", err)
+		return nil
+	}
+	return os.NewFile(uintptr(newFD), r.actor.ptmx.Name())
+}
+
+// StopActor stops the actor goroutine and its readLoop. Used during
+// live upgrade to freeze terminal state for consistent snapshotting.
+func (r *PTYRegion) StopActor() error {
+	resp := make(chan struct{}, 1)
+	select {
+	case r.actor.msgs <- stopActorMsg{resp: resp}:
+	case <-r.actor.actorDone:
+		return nil
+	}
+	select {
+	case <-resp:
+		return nil
+	case <-r.actor.actorDone:
+		return nil
+	}
+}
+
+// ResumeActor restarts the actor after a failed upgrade rollback.
+// The caller must have called StopActor first.
+func (r *PTYRegion) ResumeActor(destroyFn func(string)) error {
+	if err := r.actor.ptmx.SetReadDeadline(time.Time{}); err != nil {
+		return fmt.Errorf("clear read deadline: %w", err)
+	}
+	a := r.actor
+	a.destroyFn = destroyFn
+	a.readerDone = make(chan struct{})
+	a.actorDone = make(chan struct{})
+	a.msgs = make(chan regionMsg, actorChanSize)
+	a.stopped = false
+	a.start()
+	return nil
+}
+
+// ActorDone returns a channel that is closed when the actor exits.
+func (r *PTYRegion) ActorDone() <-chan struct{} {
+	return r.actor.actorDone
+}
+
+// ── Construction ─────────────────────────────────────────────────────────────
+
+func NewRegion(cmdStr string, args []string, env map[string]string, width, height int, socketAddr string, destroyFn func(string)) (Region, error) {
+	id := generateUUID()
+	name := extractName(cmdStr)
+
+	cmdObj := exec.Command(cmdStr, args...)
+	cmdObj.Env = append(os.Environ(), "TERM=xterm-256color", "PS1=nxterm$ ")
+	if socketAddr != "" {
+		cmdObj.Env = append(cmdObj.Env, "NXTERMD_SOCKET="+socketAddr, "NXTERMD_REGIONID="+id)
+	}
+	for k, v := range env {
+		cmdObj.Env = append(cmdObj.Env, k+"="+v)
+	}
+
+	ptmx, err := pty.Start(cmdObj)
+	if err != nil {
+		return nil, err
+	}
+	if err := setNonblockPollable(ptmx); err != nil {
+		ptmx.Close()
+		return nil, fmt.Errorf("set ptmx nonblock: %w", err)
+	}
+	if err := setWinsize(ptmx, uint16(height), uint16(width)); err != nil {
+		ptmx.Close()
+		return nil, fmt.Errorf("set ptmx winsize: %w", err)
+	}
+
+	hscreen := te.NewHistoryScreen(width, height, scrollbackSize)
+	hscreen.Screen.WriteProcessInput = func(data string) {
+		ptmx.Write([]byte(data))
+	}
+
+	actor := newRegionActor(id, ptmx, cmdObj, width, height, hscreen, destroyFn)
+
+	r := &PTYRegion{
+		id:    id,
+		name:  name,
+		cmd:   cmdStr,
+		pid:   cmdObj.Process.Pid,
+		actor: actor,
+	}
+	r.width.Store(int32(width))
+	r.height.Store(int32(height))
+
+	slog.Debug("spawned child", "pid", r.pid, "cmd", cmdStr)
+	actor.start()
+
+	return r, nil
+}
+
+// RestoreRegion reconstructs a PTYRegion from serialized state and a PTY FD.
+// Used by the new process during live upgrade.
+func RestoreRegion(id, name, cmd, session string, pid, width, height int, ptmxFile *os.File, histState *te.HistoryState, destroyFn func(string)) Region {
+	hscreen := te.NewHistoryScreen(width, height, scrollbackSize)
+	hscreen.UnmarshalState(histState)
+	hscreen.Screen.WriteProcessInput = func(data string) {
+		ptmxFile.Write([]byte(data))
+	}
+
+	if err := setNonblockPollable(ptmxFile); err != nil {
+		slog.Warn("restore: setNonblockPollable failed", "region_id", id, "err", err)
+	}
+
+	actor := newRegionActor(id, ptmxFile, nil, width, height, hscreen, destroyFn)
+
+	r := &PTYRegion{
+		id:      id,
+		name:    name,
+		cmd:     cmd,
+		pid:     pid,
+		session: session,
+		actor:   actor,
+	}
+	r.width.Store(int32(width))
+	r.height.Store(int32(height))
+
+	actor.start()
+	return r
+}
+
+// ── PTY FD helpers ───────────────────────────────────────────────────────────
+
 // withPTYFd runs fn with the PTY master's raw file descriptor without
-// going through *os.File.Fd(). The latter would set the file back to
-// blocking mode and remove it from Go's runtime poller, breaking
-// SetReadDeadline. SyscallConn().Control keeps the poller registration
-// intact.
-func (r *PTYRegion) withPTYFd(fn func(fd int) error) error {
-	rc, err := r.ptmx.SyscallConn()
+// going through *os.File.Fd(). SyscallConn().Control keeps the runtime
+// poller registration intact.
+func withPTYFd(f *os.File, fn func(fd int) error) error {
+	rc, err := f.SyscallConn()
 	if err != nil {
 		return err
 	}
@@ -112,9 +398,7 @@ func (r *PTYRegion) withPTYFd(fn func(fd int) error) error {
 }
 
 // setNonblockPollable puts a *os.File in non-blocking mode without
-// disturbing Go's runtime poller registration. SetReadDeadline only
-// works on files that the runtime knows are pollable, so we have to
-// twiddle O_NONBLOCK via SyscallConn rather than Fd().
+// disturbing Go's runtime poller registration.
 func setNonblockPollable(f *os.File) error {
 	rc, err := f.SyscallConn()
 	if err != nil {
@@ -130,8 +414,6 @@ func setNonblockPollable(f *os.File) error {
 }
 
 // setWinsize is a SyscallConn-friendly equivalent of pty.Setsize.
-// It avoids calling f.Fd() so the runtime poller registration stays
-// intact for SetReadDeadline.
 func setWinsize(f *os.File, rows, cols uint16) error {
 	rc, err := f.SyscallConn()
 	if err != nil {
@@ -150,335 +432,7 @@ func setWinsize(f *os.File, rows, cols uint16) error {
 	return inner
 }
 
-func (r *PTYRegion) ID() string          { return r.id }
-func (r *PTYRegion) Name() string        { return r.name }
-func (r *PTYRegion) Cmd() string         { return r.cmd }
-func (r *PTYRegion) Pid() int            { return r.pid }
-func (r *PTYRegion) Session() string     { return r.session }
-func (r *PTYRegion) SetSession(s string) { r.session = s }
-func (r *PTYRegion) Width() int          { return r.width }
-func (r *PTYRegion) Height() int         { return r.height }
-func (r *PTYRegion) IsNative() bool      { return false }
-
-func (r *PTYRegion) ScrollbackLen() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.hscreen.Scrollback()
-}
-
-func (r *PTYRegion) Notify() <-chan struct{}     { return r.notify }
-func (r *PTYRegion) ReaderDone() <-chan struct{} { return r.readerDone }
-
-// SaveTermios saves the PTY's current terminal attributes.
-func (r *PTYRegion) SaveTermios() {
-	err := r.withPTYFd(func(fd int) error {
-		t, err := unix.IoctlGetTermios(fd, unix.TCGETS)
-		if err != nil {
-			return err
-		}
-		r.savedTermios = t
-		return nil
-	})
-	if err != nil {
-		slog.Debug("SaveTermios failed", "region_id", r.id, "err", err)
-	}
-}
-
-// RestoreTermios restores previously saved terminal attributes.
-func (r *PTYRegion) RestoreTermios() {
-	if r.savedTermios == nil {
-		return
-	}
-	err := r.withPTYFd(func(fd int) error {
-		return unix.IoctlSetTermios(fd, unix.TCSETS, r.savedTermios)
-	})
-	if err != nil {
-		slog.Debug("RestoreTermios failed", "region_id", r.id, "err", err)
-	}
-	r.savedTermios = nil
-}
-
-func NewRegion(cmdStr string, args []string, env map[string]string, width, height int, socketAddr string) (Region, error) {
-	id := generateUUID()
-	name := extractName(cmdStr)
-
-	cmdObj := exec.Command(cmdStr, args...)
-	cmdObj.Env = append(os.Environ(), "TERM=xterm-256color", "PS1=nxterm$ ")
-	if socketAddr != "" {
-		cmdObj.Env = append(cmdObj.Env, "NXTERMD_SOCKET="+socketAddr, "NXTERMD_REGIONID="+id)
-	}
-	for k, v := range env {
-		cmdObj.Env = append(cmdObj.Env, k+"="+v)
-	}
-
-	// Use pty.Start (no size) instead of StartWithSize, then set the
-	// winsize ourselves via SyscallConn — pty.Setsize calls f.Fd() which
-	// would unregister the file from Go's runtime poller and break
-	// SetReadDeadline, which we rely on to stop the readLoop cleanly
-	// during a live upgrade.
-	ptmx, err := pty.Start(cmdObj)
-	if err != nil {
-		return nil, err
-	}
-	if err := setNonblockPollable(ptmx); err != nil {
-		ptmx.Close()
-		return nil, fmt.Errorf("set ptmx nonblock: %w", err)
-	}
-	if err := setWinsize(ptmx, uint16(height), uint16(width)); err != nil {
-		ptmx.Close()
-		return nil, fmt.Errorf("set ptmx winsize: %w", err)
-	}
-
-	hscreen := te.NewHistoryScreen(width, height, scrollbackSize)
-	// Wire the screen's reply path back to the PTY master so device
-	// queries from the child (DECRQM, DA, DSR, DECRQSS, etc.) actually
-	// receive answers. Without this, programs that probe the terminal
-	// — bubbletea v2 in particular emits \e[?2026$p / \e[?2027$p / \e[?u
-	// on startup — sit waiting for replies that never arrive, leading
-	// to multi-second timeouts and missing-feature fallbacks.
-	hscreen.Screen.WriteProcessInput = func(data string) {
-		ptmx.Write([]byte(data))
-	}
-	proxy := NewEventProxy(hscreen)
-	stream := te.NewStream(proxy, false)
-
-	r := &PTYRegion{
-		id:      id,
-		name:    name,
-		cmd:     cmdStr,
-		pid:     cmdObj.Process.Pid,
-		width:   width,
-		height:  height,
-		ptmx:    ptmx,
-		cmdObj:  cmdObj,
-		screen:  hscreen.Screen,
-		hscreen: hscreen,
-		proxy:   proxy,
-		stream:  stream,
-		notify:     make(chan struct{}, 1),
-		readerDone: make(chan struct{}),
-	}
-
-	slog.Debug("spawned child", "pid", r.pid, "cmd", cmdStr)
-
-	go r.readLoop()
-	go r.waitLoop()
-
-	return r, nil
-}
-
-// maxCarry is the maximum number of bytes carried across reads. This must be
-// large enough to hold any incomplete ANSI escape sequence or UTF-8 character
-// that could span a read boundary.
-const maxCarry = 256
-
-func (r *PTYRegion) readLoop() {
-	defer close(r.readerDone)
-	buf := make([]byte, 4096)
-	var carry [maxCarry]byte
-	var carryN int
-	for {
-		n, err := r.ptmx.Read(buf)
-		if n > 0 {
-			data, cn := sequenceSafe(carry[:carryN], buf[:n], carry[:])
-			carryN = cn
-
-			r.mu.Lock()
-			r.stream.FeedBytes(data)
-			r.mu.Unlock()
-
-			// Non-blocking send to coalesce multiple reads into one notification
-			select {
-			case r.notify <- struct{}{}:
-			default:
-			}
-		}
-		if err != nil {
-			// os.ErrDeadlineExceeded is a controlled stop from
-			// StopReadLoop during a live upgrade — don't log it.
-			if !errors.Is(err, os.ErrDeadlineExceeded) {
-				slog.Debug("readLoop exiting", "region_id", r.id, "err", err)
-			}
-			return
-		}
-	}
-}
-
-// StopReadLoop interrupts the readLoop and waits for it to exit. Used
-// before taking a screen snapshot during a live upgrade so the snapshot
-// is consistent: with the readLoop stopped, no further bytes can mutate
-// the screen state. After this returns, bytes that arrive on the PTY
-// queue in the kernel buffer until the new process starts reading.
-func (r *PTYRegion) StopReadLoop() error {
-	// Set the deadline to a time in the past — this immediately
-	// interrupts any in-flight Read on the pollable, non-blocking
-	// PTY file descriptor with os.ErrDeadlineExceeded.
-	if err := r.ptmx.SetReadDeadline(time.Unix(1, 0)); err != nil {
-		return fmt.Errorf("set read deadline: %w", err)
-	}
-	select {
-	case <-r.readerDone:
-		return nil
-	case <-time.After(2 * time.Second):
-		return fmt.Errorf("readLoop did not exit within 2s")
-	}
-}
-
-// ResumeReadLoop clears the read deadline and restarts the readLoop
-// after a failed upgrade rollback. The caller must have observed
-// readerDone before invoking this.
-//
-// For inherited regions (cmdObj == nil), waitLoop watches readerDone
-// to detect child exit and closes notify when it fires. Since
-// StopReadLoop already closed readerDone, waitLoop has already run
-// and closed notify — so both channels must be recreated and
-// waitLoop restarted. For spawned regions, waitLoop watches
-// cmdObj.Wait() instead, so notify is still open.
-func (r *PTYRegion) ResumeReadLoop() error {
-	if err := r.ptmx.SetReadDeadline(time.Time{}); err != nil {
-		return fmt.Errorf("clear read deadline: %w", err)
-	}
-	r.readerDone = make(chan struct{})
-	if r.cmdObj == nil {
-		// Inherited region: waitLoop already exited and closed notify.
-		r.notify = make(chan struct{}, 1)
-		go r.waitLoop()
-	}
-	go r.readLoop()
-	return nil
-}
-
-// sequenceSafe prepends any carried-over bytes from a previous read to chunk,
-// then returns the longest prefix that ends on a complete sequence boundary.
-// It uses charmbracelet's DecodeSequence to detect incomplete ANSI escape
-// sequences, and additionally checks for incomplete UTF-8 at the tail (which
-// DecodeSequence does not catch). Remaining bytes are copied into carry.
-func sequenceSafe(carry, chunk, carryBuf []byte) (safe []byte, carryN int) {
-	var buf []byte
-	if len(carry) > 0 {
-		buf = make([]byte, len(carry)+len(chunk))
-		copy(buf, carry)
-		copy(buf[len(carry):], chunk)
-	} else {
-		buf = chunk
-	}
-
-	if len(buf) == 0 {
-		return nil, 0
-	}
-
-	// Walk through complete sequences using DecodeSequence.
-	safeEnd := 0
-	for safeEnd < len(buf) {
-		_, _, n, newState := ansi.DecodeSequence(buf[safeEnd:], ansi.NormalState, nil)
-		if n == 0 {
-			break
-		}
-		if newState != ansi.NormalState {
-			// Mid-escape-sequence — carry the rest.
-			break
-		}
-		safeEnd += n
-	}
-
-	// DecodeSequence treats incomplete UTF-8 leader bytes (e.g. 0xC3 alone)
-	// as valid single-byte sequences. Check whether the last consumed byte
-	// starts an incomplete UTF-8 character and pull it back into carry.
-	for safeEnd > 0 && !utf8.Valid(buf[:safeEnd]) {
-		safeEnd--
-	}
-
-	remaining := buf[safeEnd:]
-	if len(remaining) > len(carryBuf) {
-		// Carry buffer overflow — feed everything to avoid unbounded growth.
-		return buf, 0
-	}
-	return buf[:safeEnd], copy(carryBuf, remaining)
-}
-
-func (r *PTYRegion) waitLoop() {
-	if r.cmdObj != nil {
-		r.cmdObj.Wait()
-	}
-	// Wait for readLoop to finish before closing notify. The readLoop
-	// may still be draining buffered PTY output after the child exits;
-	// closing notify while readLoop sends on it causes a panic.
-	<-r.readerDone
-	close(r.notify)
-}
-
-func (r *PTYRegion) WriteInput(data []byte) {
-	if _, err := r.ptmx.Write(data); err != nil {
-		slog.Debug("write input error", "region_id", r.id, "err", err)
-	}
-}
-
-func (r *PTYRegion) Resize(width, height uint16) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if err := setWinsize(r.ptmx, height, width); err != nil {
-		return err
-	}
-
-	r.screen.Resize(int(height), int(width))
-	r.width = int(width)
-	r.height = int(height)
-
-	slog.Debug("region resized", "region_id", r.id, "width", width, "height", height)
-	return nil
-}
-
-func (r *PTYRegion) Snapshot() Snapshot {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	display := r.screen.Display()
-	lines := make([]string, r.height)
-
-	for i := 0; i < r.height; i++ {
-		if i < len(display) {
-			lines[i] = padLine(display[i], r.width)
-		} else {
-			lines[i] = strings.Repeat(" ", r.width)
-		}
-	}
-
-	// Include cell-level color/attribute data.
-	// Read Buffer directly to avoid go-te's LinesCells() which can panic
-	// when Buffer has more rows than Lines after a resize.
-	numRows := r.height
-	if numRows > len(r.screen.Buffer) {
-		numRows = len(r.screen.Buffer)
-	}
-	cells := make([][]protocol.ScreenCell, numRows)
-	for row := 0; row < numRows; row++ {
-		srcRow := r.screen.Buffer[row]
-		cells[row] = make([]protocol.ScreenCell, len(srcRow))
-		for col, c := range srcRow {
-			cells[row][col] = cellToProtocol(c)
-		}
-	}
-
-	var modes map[int]bool
-	if len(r.screen.Mode) > 0 {
-		modes = make(map[int]bool, len(r.screen.Mode))
-		for k := range r.screen.Mode {
-			modes[k] = true
-		}
-	}
-
-	return Snapshot{
-		Lines:         lines,
-		CursorRow:     uint16(r.screen.Cursor.Row),
-		CursorCol:     uint16(r.screen.Cursor.Col),
-		Cells:         cells,
-		Modes:         modes,
-		Title:         r.screen.Title,
-		IconName:      r.screen.IconName,
-		ScrollbackLen: r.hscreen.Scrollback(),
-	}
-}
+// ── Shared helpers ───────────────────────────────────────────────────────────
 
 func cellToProtocol(c te.Cell) protocol.ScreenCell {
 	pc := protocol.ScreenCell{Char: c.Data}
@@ -518,141 +472,59 @@ func colorToSpec(c te.Color) string {
 	case te.ColorDefault:
 		return ""
 	case te.ColorANSI16:
-		return c.Name // e.g., "red", "brightgreen"
+		return c.Name
 	case te.ColorANSI256:
 		return fmt.Sprintf("5;%d", c.Index)
 	case te.ColorTrueColor:
-		return "2;" + c.Name // Name is hex like "ff8700"
+		return "2;" + c.Name
 	}
 	return ""
 }
 
-// GetScrollback returns the scrollback history as cell data.
-func (r *PTYRegion) GetScrollback() [][]protocol.ScreenCell {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+// maxCarry is the maximum number of bytes carried across reads.
+const maxCarry = 256
 
-	history := r.hscreen.History()
-	if len(history) == 0 {
-		return nil
+// sequenceSafe prepends any carried-over bytes from a previous read to chunk,
+// then returns the longest prefix that ends on a complete sequence boundary.
+func sequenceSafe(carry, chunk, carryBuf []byte) (safe []byte, carryN int) {
+	var buf []byte
+	if len(carry) > 0 {
+		buf = make([]byte, len(carry)+len(chunk))
+		copy(buf, carry)
+		copy(buf[len(carry):], chunk)
+	} else {
+		buf = chunk
 	}
-	cells := make([][]protocol.ScreenCell, len(history))
-	for i, row := range history {
-		// Find last non-blank cell to trim trailing empties.
-		last := len(row) - 1
-		for last >= 0 {
-			c := row[last]
-			if c.Data != "" && c.Data != " " && c.Data != "\x00" {
-				break
-			}
-			if c.Attr != (te.Attr{}) {
-				break
-			}
-			last--
+	if len(buf) == 0 {
+		return nil, 0
+	}
+	safeEnd := 0
+	for safeEnd < len(buf) {
+		_, _, n, newState := ansi.DecodeSequence(buf[safeEnd:], ansi.NormalState, nil)
+		if n == 0 {
+			break
 		}
-		trimmed := row[:last+1]
-		cells[i] = make([]protocol.ScreenCell, len(trimmed))
-		for j, c := range trimmed {
-			cells[i][j] = cellToProtocol(c)
+		if newState != ansi.NormalState {
+			break
 		}
+		safeEnd += n
 	}
-	return cells
+	for safeEnd > 0 && !utf8.Valid(buf[:safeEnd]) {
+		safeEnd--
+	}
+	remaining := buf[safeEnd:]
+	if len(remaining) > len(carryBuf) {
+		return buf, 0
+	}
+	return buf[:safeEnd], copy(carryBuf, remaining)
 }
 
-// FlushEvents returns accumulated events. If a synchronized output batch
-// completed (mode 2026), needsSnapshot is true — the caller should send a
-// screen_update snapshot, then send any trailing events that came after the
-// sync ended.
-func (r *PTYRegion) FlushEvents() (events []protocol.TerminalEvent, needsSnapshot bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.proxy.Flush()
-}
-
-func (r *PTYRegion) Kill() {
-	if r.cmdObj != nil {
-		r.cmdObj.Process.Signal(syscall.SIGKILL)
-	} else if r.pid > 0 {
-		syscall.Kill(r.pid, syscall.SIGKILL)
-	}
-}
-
-func (r *PTYRegion) Close() {
-	r.ptmx.Close()
-}
-
-// DetachPTY dups the PTY master FD for handoff to a new process. The
-// caller must call StopReadLoop first; the dup'd FD goes to the new
-// process, while r.ptmx is left in place for r.Close() to clean up.
-//
-// The dup'd FD inherits O_NONBLOCK because dup shares the underlying
-// open file description, so the receiving process's os.NewFile will
-// detect it as kindNonBlock and register it with the runtime poller.
-func (r *PTYRegion) DetachPTY() *os.File {
-	var newFD int
-	err := r.withPTYFd(func(fd int) error {
-		var derr error
-		newFD, derr = syscall.Dup(fd)
-		return derr
-	})
-	if err != nil {
-		slog.Error("DetachPTY: dup failed", "region_id", r.id, "err", err)
-		return nil
-	}
-	return os.NewFile(uintptr(newFD), r.ptmx.Name())
-}
-
-// RestoreRegion reconstructs a PTYRegion from serialized state and a PTY FD.
-// Used by the new process during live upgrade. The child process is already
-// running (inherited from the old process); cmdObj is nil.
-func RestoreRegion(id, name, cmd, session string, pid, width, height int, ptmxFile *os.File, histState *te.HistoryState) Region {
-	hscreen := te.NewHistoryScreen(width, height, scrollbackSize)
-	hscreen.UnmarshalState(histState)
-	hscreen.Screen.WriteProcessInput = func(data string) {
-		ptmxFile.Write([]byte(data))
-	}
-
-	proxy := NewEventProxy(hscreen)
-	stream := te.NewStream(proxy, false)
-
-	// Ensure the inherited PTY FD is registered with the runtime
-	// poller so SetReadDeadline works (needed for live upgrade
-	// rollback). os.NewFile on a dup'd FD does not always do this.
-	if err := setNonblockPollable(ptmxFile); err != nil {
-		slog.Warn("restore: setNonblockPollable failed", "region_id", id, "err", err)
-	}
-
-	r := &PTYRegion{
-		id:      id,
-		name:    name,
-		cmd:     cmd,
-		pid:     pid,
-		session: session,
-		width:   width,
-		height:  height,
-		ptmx:    ptmxFile,
-		screen:  hscreen.Screen,
-		hscreen: hscreen,
-		proxy:   proxy,
-		stream:  stream,
-		notify:     make(chan struct{}, 1),
-		readerDone: make(chan struct{}),
-	}
-
-	go r.readLoop()
-	go r.waitLoop()
-
-	return r
-}
-
-// padLine pads or truncates a line to exactly width characters (by rune count).
 func padLine(line string, width int) string {
 	runeCount := utf8.RuneCountInString(line)
 	if runeCount == width {
 		return line
 	}
 	if runeCount > width {
-		// Truncate to width runes
 		var b strings.Builder
 		n := 0
 		for _, r := range line {
@@ -664,8 +536,11 @@ func padLine(line string, width int) string {
 		}
 		return b.String()
 	}
-	// Pad with spaces
 	return line + strings.Repeat(" ", width-runeCount)
+}
+
+func blankLine(width int) string {
+	return strings.Repeat(" ", width)
 }
 
 func generateUUID() string {
