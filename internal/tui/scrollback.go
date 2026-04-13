@@ -159,8 +159,8 @@ func (s *ScrollbackLayer) handleKey(msg tea.KeyPressMsg) (tea.Msg, tea.Cmd, bool
 		}
 	case "pgdown", "ctrl+d":
 		s.offset -= halfPage
-		if s.offset < 0 {
-			s.offset = 0
+		if s.offset <= 0 {
+			return QuitLayerMsg{}, nil, true
 		}
 	case "home", "g":
 		s.offset = maxOffset

@@ -188,6 +188,20 @@ func TestScrollbackPageUpDown(t *testing.T) {
 	nxt.WaitForScreen(func(lines []string) bool {
 		return !strings.Contains(lines[0], "scrollback")
 	}, "scrollback not activated by PageDown", 3*time.Second)
+
+	// Re-enter scrollback and verify that paging down to the bottom exits.
+	nxt.Write([]byte("\x1b[5~")) // PageUp to enter
+	nxt.WaitForScreen(func(lines []string) bool {
+		return strings.Contains(lines[0], "scrollback")
+	}, "scrollback re-entered via PageUp", 5*time.Second)
+
+	// Page down past offset 0 — should auto-exit scrollback.
+	nxt.Write([]byte("\x1b[6~")) // PageDown
+	time.Sleep(100 * time.Millisecond)
+
+	nxt.WaitForScreen(func(lines []string) bool {
+		return !strings.Contains(lines[0], "scrollback")
+	}, "scrollback exited by PageDown at bottom", 5*time.Second)
 }
 
 func TestScrollbackScrollWheel(t *testing.T) {
