@@ -14,7 +14,7 @@ import (
 type tab struct {
 	regionID   string
 	regionName string
-	term       *TerminalLayer // nil until subscribe succeeds
+	term       *TerminalLayer
 }
 
 // SessionLayer manages one named session's regions and terminals.
@@ -113,9 +113,7 @@ func (s *SessionLayer) syncFromTree(tree protocol.Tree) {
 		if serverIDs[t.regionID] {
 			if r, ok := tree.Regions[t.regionID]; ok {
 				t.regionName = r.Name
-				if t.term != nil {
-					t.term.regionName = r.Name
-				}
+				t.term.regionName = r.Name
 			}
 			s.tabs[n] = t
 			n++
@@ -130,7 +128,8 @@ func (s *SessionLayer) syncFromTree(tree protocol.Tree) {
 			if r, ok := tree.Regions[id]; ok {
 				name = r.Name
 			}
-			s.tabs = append(s.tabs, tab{regionID: id, regionName: name})
+			term := NewTerminalLayer(s.server, id, name, s.termWidth, s.termHeight, s.statusBarMargin)
+			s.tabs = append(s.tabs, tab{regionID: id, regionName: name, term: term})
 		}
 	}
 
@@ -204,7 +203,6 @@ func (s *SessionLayer) KillAllRegions() {
 // Activate subscribes to the active region. Called when this session
 // becomes the active session (e.g., MainLayer switches to it).
 func (s *SessionLayer) Activate() tea.Cmd {
-	s.ensureTerminal()
 	if t := s.activeTerm(); t != nil {
 		s.status = "subscribing..."
 		return t.Activate()
@@ -220,27 +218,6 @@ func (s *SessionLayer) Deactivate() {
 	}
 }
 
-// ensureTerminal creates the terminal for the active tab if it doesn't exist yet.
-func (s *SessionLayer) ensureTerminal() {
-	if len(s.tabs) == 0 {
-		return
-	}
-	t := &s.tabs[s.activeTab]
-	if t.term == nil {
-		t.term = NewTerminalLayer(s.server, t.regionID, t.regionName, s.termWidth, s.termHeight, s.statusBarMargin)
-	}
-}
-
-// ensureTerminalForTab creates the terminal for a specific tab if it doesn't exist yet.
-func (s *SessionLayer) ensureTerminalForTab(idx int) {
-	if idx < 0 || idx >= len(s.tabs) {
-		return
-	}
-	t := &s.tabs[idx]
-	if t.term == nil {
-		t.term = NewTerminalLayer(s.server, t.regionID, t.regionName, s.termWidth, s.termHeight, s.statusBarMargin)
-	}
-}
 
 // switchToTab switches from the current active tab to the given index.
 func (s *SessionLayer) switchToTab(idx int) {
@@ -332,7 +309,6 @@ func (s *SessionLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 			return nil, nil, true
 		}
 		s.status = ""
-		s.ensureTerminal()
 		return nil, nil, true
 
 	// Terminal messages — route to the correct tab by RegionID
@@ -341,22 +317,20 @@ func (s *SessionLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 		if idx < 0 {
 			return nil, nil, true
 		}
-		s.ensureTerminalForTab(idx)
 		_, cmd, _ := s.tabs[idx].term.Update(msg)
 		return nil, cmd, true
 	case protocol.GetScreenResponse:
 		idx := s.findTabIndex(msg.RegionID)
-		if idx >= 0 && s.tabs[idx].term != nil {
-			_, cmd, _ := s.tabs[idx].term.Update(msg)
-			return nil, cmd, true
+		if idx < 0 {
+			return nil, nil, true
 		}
-		return nil, nil, true
+		_, cmd, _ := s.tabs[idx].term.Update(msg)
+		return nil, cmd, true
 	case protocol.TerminalEvents:
 		idx := s.findTabIndex(msg.RegionID)
 		if idx < 0 {
 			return nil, nil, true
 		}
-		s.ensureTerminalForTab(idx)
 		_, cmd, _ := s.tabs[idx].term.Update(msg)
 		return nil, cmd, true
 	case protocol.GetScrollbackResponse:
@@ -516,10 +490,7 @@ func (s *SessionLayer) renderTabBar(width int) string {
 			label = fmt.Sprintf(" <%d> ", i+1)
 			sb.WriteString(statusActiveTab.Render(label))
 		} else {
-			name := t.regionName
-			if t.term != nil {
-				name = t.term.Title()
-			}
+			name := t.term.Title()
 			label = fmt.Sprintf(" %d:%s ", i+1, truncateTitle(stripEmoji(name), 30))
 			sb.WriteString(statusFaint.Render(label))
 		}
