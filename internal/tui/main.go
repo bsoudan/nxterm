@@ -232,7 +232,14 @@ func runFrontend(_ context.Context, cmd *cli.Command) error {
 			newSrv.Run(c, reconnDialFn)
 		}()
 	}
-	main := NewNxtermModel(server, pipeW, registry, logRing, initEndpoint, version, changelog, sessionName, cfg.GetStatusBarMargin(), connectFn)
+	main := NewNxtermModel(server, pipeW, registry, AppContext{
+		Version:         version,
+		Changelog:       changelog,
+		Endpoint:        initEndpoint,
+		SessionName:     sessionName,
+		StatusBarMargin: cfg.GetStatusBarMargin(),
+		LogRing:         logRing,
+	}, connectFn)
 
 	p = tea.NewProgram(main,
 		tea.WithInput(pipeR),

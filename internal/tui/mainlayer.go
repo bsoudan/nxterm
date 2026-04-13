@@ -66,27 +66,36 @@ type NxtermModel struct {
 	focusBuf []byte
 }
 
+// AppContext holds application-level metadata and services shared
+// across the layer stack. These are set once at startup and never change.
+type AppContext struct {
+	Version         string
+	Changelog       string
+	Endpoint        string
+	SessionName     string
+	StatusBarMargin int
+	LogRing         *LogRingBuffer
+}
+
 // NewNxtermModel creates the top-level application model.
 func NewNxtermModel(
 	server *Server, pipeW io.Writer, registry *Registry,
-	logRing *LogRingBuffer,
-	endpoint, version, changelog, sessionName string,
-	statusBarMargin int,
+	app AppContext,
 	connectFn func(endpoint, session string),
 ) *NxtermModel {
 	hostname, _ := os.Hostname()
 	treeStore := &TreeStore{}
 	tasks := layer.NewTaskRunner[RenderState]()
 
-	sm := NewSessionManagerLayer(server, registry, treeStore, tasks, endpoint, version, hostname, sessionName, statusBarMargin)
+	sm := NewSessionManagerLayer(server, registry, treeStore, tasks, app.Endpoint, app.Version, hostname, app.SessionName, app.StatusBarMargin)
 
 	m := &NxtermModel{
 		server:         server,
 		pipeW:          pipeW,
 		registry:       registry,
-		logRing:        logRing,
-		version:        version,
-		changelog:      changelog,
+		logRing:        app.LogRing,
+		version:        app.Version,
+		changelog:      app.Changelog,
 		connectFn:      connectFn,
 		treeStore:      treeStore,
 		tasks:          tasks,
