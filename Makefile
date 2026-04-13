@@ -68,10 +68,10 @@ check-windows:
 test: test-e2e
 
 test-e2e: all build-upgrade-test-binaries
-	PATH="$(CURDIR)/.local/bin:$(PATH)" UPGRADE_BINARIES_DIR="$(CURDIR)/$(UPGRADE_TEST_DIR)" go test -v -timeout 120s ./e2e
+	PATH="$(CURDIR)/.local/bin:$(PATH)" UPGRADE_BINARIES_DIR="$(CURDIR)/$(UPGRADE_TEST_DIR)" go test -v -timeout 30s -parallel 8 ./e2e
 
 test-upgrade: all build-upgrade-test-binaries
-	PATH="$(CURDIR)/.local/bin:$(PATH)" UPGRADE_BINARIES_DIR="$(CURDIR)/$(UPGRADE_TEST_DIR)" go test -v -timeout 120s -run 'TestLiveUpgrade|TestTUIUpgradeE2E|TestUpgradeCheck|TestClientBinaryDownload' ./e2e
+	PATH="$(CURDIR)/.local/bin:$(PATH)" UPGRADE_BINARIES_DIR="$(CURDIR)/$(UPGRADE_TEST_DIR)" go test -v -timeout 30s -parallel 8 -run 'TestLiveUpgrade|TestTUIUpgradeE2E|TestUpgradeCheck|TestClientBinaryDownload' ./e2e
 
 # Stress test (quick). Override with env vars:
 #   STRESS_TUI_CLIENTS  — number of nxterm instances        (default: 5)
