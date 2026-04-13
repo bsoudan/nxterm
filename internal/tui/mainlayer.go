@@ -763,6 +763,21 @@ func (m *MainLayer) Run(p *tea.Program, rawCh <-chan RawInputMsg,
 	}
 }
 
+// writeToPipeAndDrain writes data to pipeW and then drains the
+// resulting bubbletea message from p.Msgs(). pipeW is a synchronous
+// io.Pipe that blocks until the reader (bubbletea) consumes the data.
+// Since we're inside the main loop, we need to write from a goroutine
+// and then read the resulting message synchronously.
+func (m *MainLayer) writeToPipeAndDrain(data []byte) {
+	buf := make([]byte, len(data))
+	copy(buf, data)
+	go m.pipeW.Write(buf)
+	// Drain until the pipeW goroutine's message has been processed.
+	// The write produces one or more tea.KeyPressMsg on p.Msgs().
+	msg := <-m.program.Msgs()
+	m.program.Handle(msg)
+}
+
 // processRawInput handles raw bytes from stdin.
 func (m *MainLayer) processRawInput(raw RawInputMsg) {
 	if m.commandMode {
@@ -771,14 +786,7 @@ func (m *MainLayer) processRawInput(raw RawInputMsg) {
 		return
 	}
 	if needsFocusRouting(m.stack) {
-		// Write to pipeW in a goroutine — pipeW is a synchronous
-		// io.Pipe that blocks until bubbletea reads from pipeR,
-		// but we're currently inside the main loop so nobody is
-		// reading pipeR. The goroutine unblocks when the main loop
-		// returns to its select and processes p.Msgs().
-		data := make([]byte, len(raw))
-		copy(data, raw)
-		go m.pipeW.Write(data)
+		m.writeToPipeAndDrain([]byte(raw))
 		return
 	}
 	if idx := bytes.IndexByte([]byte(raw), m.registry.PrefixKey); idx >= 0 {
@@ -821,9 +829,7 @@ func (m *MainLayer) handleFilteredInput(raw RawInputMsg, filters [][]byte) bool 
 				if pos > 0 {
 					m.sendRawToServer(buf[:pos])
 				}
-				data := make([]byte, len(seq))
-				copy(data, seq)
-				go m.pipeW.Write(data)
+				m.writeToPipeAndDrain(seq)
 				if rest := buf[pos+n:]; len(rest) > 0 {
 					m.processRawInput(RawInputMsg(rest))
 				}
