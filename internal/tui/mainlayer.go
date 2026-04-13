@@ -771,15 +771,14 @@ func (m *MainLayer) processRawInput(raw RawInputMsg) {
 		return
 	}
 	if needsFocusRouting(m.stack) {
-		buf := []byte(raw)
-		for len(buf) > 0 {
-			_, _, n, _ := ansi.DecodeSequence(buf, ansi.NormalState, nil)
-			if n <= 0 {
-				n = len(buf)
-			}
-			m.pipeW.Write(buf[:n])
-			buf = buf[n:]
-		}
+		// Write to pipeW in a goroutine — pipeW is a synchronous
+		// io.Pipe that blocks until bubbletea reads from pipeR,
+		// but we're currently inside the main loop so nobody is
+		// reading pipeR. The goroutine unblocks when the main loop
+		// returns to its select and processes p.Msgs().
+		data := make([]byte, len(raw))
+		copy(data, raw)
+		go m.pipeW.Write(data)
 		return
 	}
 	if idx := bytes.IndexByte([]byte(raw), m.registry.PrefixKey); idx >= 0 {
@@ -867,8 +866,9 @@ func (m *MainLayer) execCmdSync(cmd tea.Cmd) {
 		m.quitRequested = true
 		return
 	}
-	// Dispatch through the layer stack.
-	_, nextCmd, _ := m.Update(msg)
+	// Dispatch through the layer stack. Use stack.Update so
+	// PushLayerMsg/popLayerMsg are handled at the stack level.
+	nextCmd := m.stack.Update(msg)
 	if nextCmd != nil {
 		m.execCmdSync(nextCmd)
 	}
@@ -967,10 +967,10 @@ func (m *MainLayer) reconnectLoop(initial DisconnectedMsg) {
 	for _, s := range m.sessions {
 		s.connStatus = "reconnecting"
 	}
+	m.program.Render()
 
 	tickDone := make(chan struct{})
 	go func() {
-		defer close(tickDone)
 		t := time.NewTicker(time.Second)
 		defer t.Stop()
 		for {
