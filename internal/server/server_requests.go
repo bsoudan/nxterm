@@ -3,39 +3,44 @@ package server
 import (
 	"fmt"
 	"log/slog"
-	"sort"
-	"strconv"
 
 	"nxtermd/internal/config"
 	"nxtermd/internal/protocol"
 )
 
 // request is the interface all event loop requests must implement.
-// This provides compile-time safety: forgetting to add a handle
-// method on a new request type will cause a compilation error when
-// the request is sent on the typed channel.
 type request interface {
 	handle(st *eventLoopState)
 }
 
 // eventLoopState holds all mutable state owned by the event loop.
+// The tree is the single source of truth for regions, sessions,
+// programs, and clients. The auxiliary maps track server-internal
+// bookkeeping that clients don't need to see.
 type eventLoopState struct {
 	srv            *Server
-	regions        map[string]Region
-	clients        map[uint32]*Client
-	sessions       map[string]*Session
-	programs       map[string]config.ProgramConfig
-	subscriptions  map[uint32]string  // clientID → regionID
-	clientSessions map[uint32]string  // clientID → sessionName
-	clientOverlays map[uint32]string  // clientID → regionID for overlay cleanup
-	regionOverlays map[string]uint32  // regionID → overlay clientID for input routing
-	tree           protocol.Tree
-	treeVersion    uint64
-	exit           bool // set by upgrade handler to exit the event loop
+	tree           *ServerTree
+	subscriptions  map[uint32]string // clientID → regionID
+	clientOverlays map[uint32]string // clientID → regionID
+	regionOverlays map[string]uint32 // regionID → overlay clientID
+	exit           bool
 }
 
-func (st *eventLoopState) broadcastTree(pb *patchBuilder) {
-	broadcastTreeEvents(pb, &st.treeVersion, st.clients)
+// commitAndBroadcast ends the current transaction and broadcasts
+// any accumulated tree ops to all connected clients.
+func (st *eventLoopState) commitAndBroadcast() {
+	v, ops := st.tree.CommitTx()
+	if len(ops) == 0 {
+		return
+	}
+	msg := protocol.TreeEvents{
+		Type:    "tree_events",
+		Version: v,
+		Ops:     ops,
+	}
+	st.tree.ForEachClient(func(_ uint32, c *Client) {
+		c.SendMessage(msg)
+	})
 }
 
 func (st *eventLoopState) notifySessionsChanged() {
@@ -43,15 +48,10 @@ func (st *eventLoopState) notifySessionsChanged() {
 	if fn == nil {
 		return
 	}
-	names := make([]string, 0, len(st.sessions))
-	for name := range st.sessions {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	go fn(names)
+	go fn(st.tree.SessionNames())
 }
 
-// ── Request types sent to the server event loop ──────────────────────────────
+// ── Request types ────────────────────────────────────────────────────────────
 
 type addClientReq struct {
 	client *Client
@@ -160,7 +160,7 @@ type subscribeResult struct {
 type subscribeReq struct {
 	clientID uint32
 	regionID string
-	resp     chan *subscribeResult // nil if region not found
+	resp     chan *subscribeResult
 }
 
 type unsubscribeReq struct {
@@ -175,6 +175,15 @@ type setClientSessionReq struct {
 type getClientSessionReq struct {
 	clientID uint32
 	resp     chan string
+}
+
+type identifyReq struct {
+	clientID uint32
+	identity clientIdentity
+}
+
+type treeSnapshotReq struct {
+	clientID uint32
 }
 
 type shutdownResult struct {
@@ -194,7 +203,7 @@ type overlayState struct {
 }
 
 type overlayRegisterReq struct {
-	client *Client
+	client   *Client
 	regionID string
 	resp     chan overlayRegisterResult
 }
@@ -223,42 +232,41 @@ type inputRouteReq struct {
 // ── Event loop ───────────────────────────────────────────────────────────────
 
 func (s *Server) eventLoop() {
+	tree := NewServerTree(s.version, s.startTime.Unix(), s.listenerAddrs())
+
+	// Populate programs from config (no tx — no clients yet).
+	for _, p := range s.initPrograms {
+		tree.SetProgram(p)
+	}
+	s.initPrograms = nil
+
 	st := &eventLoopState{
 		srv:            s,
-		regions:        s.initRegions,
-		clients:        s.initClients,
-		sessions:       s.initSessions,
-		programs:       s.initPrograms,
+		tree:           tree,
 		subscriptions:  make(map[uint32]string),
-		clientSessions: make(map[uint32]string),
 		clientOverlays: make(map[uint32]string),
 		regionOverlays: make(map[string]uint32),
-		tree:           buildTreeFromMaps(s.initRegions, s.initSessions, s.initPrograms, s.version, s.startTime.Unix(), s.listenerAddrs()),
 	}
-
-	// Clear init references so only the event loop owns these maps.
-	s.initRegions = nil
-	s.initClients = nil
-	s.initSessions = nil
-	s.initPrograms = nil
 
 	for {
 		select {
 		case req := <-s.requests:
+			st.tree.StartTx()
 			req.handle(st)
+			st.commitAndBroadcast()
 			if st.exit {
 				return
 			}
 		case <-s.done:
-			clientList := make([]*Client, 0, len(st.clients))
-			for _, c := range st.clients {
-				clientList = append(clientList, c)
-			}
-			regionList := make([]Region, 0, len(st.regions))
-			for _, r := range st.regions {
-				regionList = append(regionList, r)
-			}
-			s.shutdownResp <- shutdownResult{clients: clientList, regions: regionList}
+			var clients []*Client
+			st.tree.ForEachClient(func(_ uint32, c *Client) {
+				clients = append(clients, c)
+			})
+			var regions []Region
+			st.tree.ForEachRegion(func(_ string, r Region) {
+				regions = append(regions, r)
+			})
+			s.shutdownResp <- shutdownResult{clients: clients, regions: regions}
 			return
 		}
 	}
@@ -267,73 +275,51 @@ func (s *Server) eventLoop() {
 // ── Request handlers ─────────────────────────────────────────────────────────
 
 func (r addClientReq) handle(st *eventLoopState) {
-	// Broadcast the client-added patch to existing clients
-	// BEFORE adding the new client, so it doesn't receive
-	// tree_events before its own identify + tree_snapshot.
-	cid := strconv.FormatUint(uint64(r.client.id), 10)
-	cnode := protocol.ClientNode{ID: cid}
-	st.tree.Clients[cid] = cnode
-	var pb patchBuilder
-	pb.Set("/clients/"+cid, cnode)
-	st.broadcastTree(&pb)
-	// Now add the client and prepare its snapshot.
-	st.clients[r.client.id] = r.client
-	snap := protocol.TreeSnapshot{
-		Type:    "tree_snapshot",
-		Version: st.treeVersion,
-		Tree:    deepCopyTree(st.tree),
+	// Add the client node and broadcast to EXISTING clients before
+	// the new client is reachable, so it doesn't receive tree_events
+	// before its own tree_snapshot.
+	st.tree.AddClient(r.client.id, r.client)
+	v, ops := st.tree.CommitTx()
+	if len(ops) > 0 {
+		msg := protocol.TreeEvents{
+			Type:    "tree_events",
+			Version: v,
+			Ops:     ops,
+		}
+		st.tree.ForEachClient(func(id uint32, c *Client) {
+			if id != r.client.id {
+				c.SendMessage(msg)
+			}
+		})
 	}
-	r.resp <- addClientResult{treeSnapshot: snap}
+	r.resp <- addClientResult{treeSnapshot: st.tree.Snapshot()}
+	// Re-start tx so the event loop's commitAndBroadcast is a no-op.
+	st.tree.StartTx()
 }
 
 func (r removeClientReq) handle(st *eventLoopState) {
 	if rid, ok := st.subscriptions[r.clientID]; ok {
 		delete(st.subscriptions, r.clientID)
-		if region, ok := st.regions[rid]; ok {
+		if region := st.tree.Region(rid); region != nil {
 			region.RemoveSubscriber(r.clientID)
 		}
 	}
-	// Clean up any overlay owned by this client.
 	if rid, ok := st.clientOverlays[r.clientID]; ok {
-		if region, ok := st.regions[rid]; ok {
+		if region := st.tree.Region(rid); region != nil {
 			region.ClearOverlay(r.clientID)
 		}
 		delete(st.clientOverlays, r.clientID)
 		delete(st.regionOverlays, rid)
 	}
-	delete(st.clients, r.clientID)
-	delete(st.clientSessions, r.clientID)
-	cid := strconv.FormatUint(uint64(r.clientID), 10)
-	delete(st.tree.Clients, cid)
-	var pb patchBuilder
-	pb.Delete("/clients/" + cid)
-	st.broadcastTree(&pb)
+	st.tree.DeleteClient(r.clientID)
 	slog.Debug("client disconnected", "id", r.clientID)
 }
 
 func (r spawnRegionReq) handle(st *eventLoopState) {
-	var pb patchBuilder
-	st.regions[r.region.ID()] = r.region
-	sess := st.sessions[r.sessionName]
-	created := false
-	if sess == nil {
-		sess = NewSession(r.sessionName)
-		st.sessions[r.sessionName] = sess
-		created = true
-		snode := protocol.SessionNode{Name: r.sessionName, RegionIDs: []string{}}
-		st.tree.Sessions[r.sessionName] = snode
-		pb.Set("/sessions/"+r.sessionName, snode)
-	}
-	sess.regions[r.region.ID()] = r.region
 	r.region.SetSession(r.sessionName)
-	rnode := regionToNode(r.region)
-	st.tree.Regions[r.region.ID()] = rnode
-	pb.Set("/regions/"+r.region.ID(), rnode)
-	snode := st.tree.Sessions[r.sessionName]
-	snode.RegionIDs = append(snode.RegionIDs, r.region.ID())
-	st.tree.Sessions[r.sessionName] = snode
-	pb.Add("/sessions/"+r.sessionName+"/region_ids", r.region.ID())
-	st.broadcastTree(&pb)
+	st.tree.SetRegion(r.region)
+	created := st.tree.EnsureSession(r.sessionName)
+	st.tree.AddRegionToSession(r.sessionName, r.region.ID())
 	r.resp <- struct{}{}
 	if created {
 		st.notifySessionsChanged()
@@ -341,44 +327,29 @@ func (r spawnRegionReq) handle(st *eventLoopState) {
 }
 
 func (r destroyRegionReq) handle(st *eventLoopState) {
-	region, ok := st.regions[r.regionID]
-	if !ok {
+	region := st.tree.Region(r.regionID)
+	if region == nil {
 		r.resp <- destroyResult{found: false}
 		return
 	}
-	var pb patchBuilder
-	delete(st.regions, r.regionID)
-	delete(st.tree.Regions, r.regionID)
-	pb.Delete("/regions/" + r.regionID)
 	sessionName := region.Session()
+	st.tree.DeleteRegion(r.regionID)
+	st.tree.RemoveRegionFromSession(sessionName, r.regionID)
 	sessionRemoved := false
-	if sess := st.sessions[sessionName]; sess != nil {
-		delete(sess.regions, r.regionID)
-		snode := st.tree.Sessions[sessionName]
-		snode.RegionIDs = removeString(snode.RegionIDs, r.regionID)
-		st.tree.Sessions[sessionName] = snode
-		pb.Remove("/sessions/"+sessionName+"/region_ids", r.regionID)
-		if len(sess.regions) == 0 {
-			delete(st.sessions, sessionName)
-			delete(st.tree.Sessions, sessionName)
-			pb.Delete("/sessions/" + sessionName)
-			sessionRemoved = true
-			slog.Info("removed empty session", "session", sessionName)
-		}
+	if ids, ok := st.tree.SessionRegionIDs(sessionName); ok && len(ids) == 0 {
+		st.tree.DeleteSession(sessionName)
+		sessionRemoved = true
+		slog.Info("removed empty session", "session", sessionName)
 	}
-	// Clean up overlay bookkeeping for this region.
 	if overlayClientID, ok := st.regionOverlays[r.regionID]; ok {
 		delete(st.regionOverlays, r.regionID)
 		delete(st.clientOverlays, overlayClientID)
 	}
-	// Clean up subscriptions — actor is already stopped, just
-	// remove event-loop-side bookkeeping.
 	for clientID, rid := range st.subscriptions {
 		if rid == r.regionID {
 			delete(st.subscriptions, clientID)
 		}
 	}
-	st.broadcastTree(&pb)
 	r.resp <- destroyResult{region: region, found: true}
 	if sessionRemoved {
 		st.notifySessionsChanged()
@@ -386,31 +357,27 @@ func (r destroyRegionReq) handle(st *eventLoopState) {
 }
 
 func (r findRegionReq) handle(st *eventLoopState) {
-	r.resp <- st.regions[r.regionID]
+	r.resp <- st.tree.Region(r.regionID)
 }
 
 func (r killRegionReq) handle(st *eventLoopState) {
-	r.resp <- st.regions[r.regionID]
+	r.resp <- st.tree.Region(r.regionID)
 }
 
 func (r killClientReq) handle(st *eventLoopState) {
-	r.resp <- st.clients[r.clientID]
+	r.resp <- st.tree.Client(r.clientID)
 }
 
 func (r getStatusReq) handle(st *eventLoopState) {
 	r.resp <- statusCounts{
-		numClients:  len(st.clients),
-		numRegions:  len(st.regions),
-		numSessions: len(st.sessions),
+		numClients:  st.tree.NumClients(),
+		numRegions:  st.tree.NumRegions(),
+		numSessions: st.tree.NumSessions(),
 	}
 }
 
 func (r lookupProgramReq) handle(st *eventLoopState) {
-	if p, ok := st.programs[r.name]; ok {
-		r.resp <- &p
-	} else {
-		r.resp <- nil
-	}
+	r.resp <- st.tree.Program(r.name)
 }
 
 func (r sessionConnectReq) handle(st *eventLoopState) {
@@ -418,15 +385,16 @@ func (r sessionConnectReq) handle(st *eventLoopState) {
 	if name == "" {
 		name = st.srv.sessionsCfg.DefaultName
 	}
-	if sess, exists := st.sessions[name]; exists {
-		infos := make([]protocol.RegionInfo, 0, len(sess.regions))
-		for _, reg := range sess.regions {
+	if regionIDs, ok := st.tree.SessionRegionIDs(name); ok {
+		infos := make([]protocol.RegionInfo, 0, len(regionIDs))
+		for _, id := range regionIDs {
+			reg := st.tree.Region(id)
+			if reg == nil {
+				continue
+			}
 			infos = append(infos, protocol.RegionInfo{
-				RegionID: reg.ID(),
-				Name:     reg.Name(),
-				Cmd:      reg.Cmd(),
-				Pid:      reg.Pid(),
-				Session:  sess.name,
+				RegionID: reg.ID(), Name: reg.Name(), Cmd: reg.Cmd(),
+				Pid: reg.Pid(), Session: name,
 			})
 		}
 		r.resp <- sessionConnectResult{exists: true, regionInfos: infos}
@@ -434,199 +402,168 @@ func (r sessionConnectReq) handle(st *eventLoopState) {
 	}
 	programNames := st.srv.sessionsCfg.DefaultPrograms
 	if len(programNames) == 0 {
-		if _, ok := st.programs["default"]; ok {
+		if st.tree.Program("default") != nil {
 			programNames = []string{"default"}
 		} else {
-			for pname := range st.programs {
-				programNames = []string{pname}
-				break
-			}
+			st.tree.ForEachProgram(func(pname string, _ config.ProgramConfig) {
+				if len(programNames) == 0 {
+					programNames = []string{pname}
+				}
+			})
 		}
 	}
 	var configs []config.ProgramConfig
 	for _, pname := range programNames {
-		if p, ok := st.programs[pname]; ok {
-			configs = append(configs, p)
+		if p := st.tree.Program(pname); p != nil {
+			configs = append(configs, *p)
 		}
 	}
 	r.resp <- sessionConnectResult{exists: false, programConfigs: configs}
 }
 
 func (r listProgramsReq) handle(st *eventLoopState) {
-	infos := make([]protocol.ProgramInfo, 0, len(st.programs))
-	for _, p := range st.programs {
+	var infos []protocol.ProgramInfo
+	st.tree.ForEachProgram(func(_ string, p config.ProgramConfig) {
 		infos = append(infos, protocol.ProgramInfo{Name: p.Name, Cmd: p.Cmd})
-	}
+	})
 	r.resp <- infos
 }
 
 func (r addProgramReq) handle(st *eventLoopState) {
-	if _, exists := st.programs[r.prog.Name]; exists {
+	if st.tree.Program(r.prog.Name) != nil {
 		r.resp <- fmt.Errorf("program %q already exists", r.prog.Name)
 	} else {
-		st.programs[r.prog.Name] = r.prog
-		pnode := programToNode(r.prog.Name, r.prog)
-		st.tree.Programs[r.prog.Name] = pnode
-		var pb patchBuilder
-		pb.Set("/programs/"+r.prog.Name, pnode)
-		st.broadcastTree(&pb)
+		st.tree.SetProgram(r.prog)
 		r.resp <- nil
 	}
 }
 
 func (r removeProgramReq) handle(st *eventLoopState) {
-	if _, exists := st.programs[r.name]; !exists {
+	if st.tree.Program(r.name) == nil {
 		r.resp <- fmt.Errorf("program %q not found", r.name)
 	} else {
-		delete(st.programs, r.name)
-		delete(st.tree.Programs, r.name)
-		var pb patchBuilder
-		pb.Delete("/programs/" + r.name)
-		st.broadcastTree(&pb)
+		st.tree.DeleteProgram(r.name)
 		r.resp <- nil
 	}
 }
 
 func (r getRegionInfosReq) handle(st *eventLoopState) {
 	if r.session != "" {
-		sess := st.sessions[r.session]
-		if sess == nil {
+		regionIDs, ok := st.tree.SessionRegionIDs(r.session)
+		if !ok {
 			r.resp <- nil
 			return
 		}
-		infos := make([]protocol.RegionInfo, 0, len(sess.regions))
-		for _, reg := range sess.regions {
+		infos := make([]protocol.RegionInfo, 0, len(regionIDs))
+		for _, id := range regionIDs {
+			reg := st.tree.Region(id)
+			if reg == nil {
+				continue
+			}
 			infos = append(infos, protocol.RegionInfo{
-				RegionID:      reg.ID(),
-				Name:          reg.Name(),
-				Cmd:           reg.Cmd(),
-				Pid:           reg.Pid(),
-				Session:       sess.name,
-				Width:         reg.Width(),
-				Height:        reg.Height(),
-				ScrollbackLen: reg.ScrollbackLen(),
-				Native:        reg.IsNative(),
+				RegionID: reg.ID(), Name: reg.Name(), Cmd: reg.Cmd(),
+				Pid: reg.Pid(), Session: r.session,
+				Width: reg.Width(), Height: reg.Height(),
+				ScrollbackLen: reg.ScrollbackLen(), Native: reg.IsNative(),
 			})
 		}
 		r.resp <- infos
 		return
 	}
-	infos := make([]protocol.RegionInfo, 0, len(st.regions))
-	for _, reg := range st.regions {
+	var infos []protocol.RegionInfo
+	st.tree.ForEachRegion(func(_ string, reg Region) {
 		infos = append(infos, protocol.RegionInfo{
-			RegionID:      reg.ID(),
-			Name:          reg.Name(),
-			Cmd:           reg.Cmd(),
-			Pid:           reg.Pid(),
-			Session:       reg.Session(),
-			Width:         reg.Width(),
-			Height:        reg.Height(),
-			ScrollbackLen: reg.ScrollbackLen(),
-			Native:        reg.IsNative(),
+			RegionID: reg.ID(), Name: reg.Name(), Cmd: reg.Cmd(),
+			Pid: reg.Pid(), Session: reg.Session(),
+			Width: reg.Width(), Height: reg.Height(),
+			ScrollbackLen: reg.ScrollbackLen(), Native: reg.IsNative(),
 		})
-	}
+	})
 	r.resp <- infos
 }
 
 func (r getClientInfosReq) handle(st *eventLoopState) {
-	infos := make([]protocol.ClientInfoData, 0, len(st.clients))
-	for _, c := range st.clients {
+	var infos []protocol.ClientInfoData
+	st.tree.ForEachClient(func(_ uint32, c *Client) {
 		infos = append(infos, protocol.ClientInfoData{
 			ClientID:           c.id,
 			Hostname:           c.GetHostname(),
 			Username:           c.GetUsername(),
 			Pid:                c.GetPid(),
 			Process:            c.GetProcess(),
-			Session:            st.clientSessions[c.id],
+			Session:            st.tree.ClientSession(c.id),
 			SubscribedRegionID: st.subscriptions[c.id],
 		})
-	}
+	})
 	r.resp <- infos
 }
 
 func (r subscribeReq) handle(st *eventLoopState) {
-	region, exists := st.regions[r.regionID]
-	if !exists {
+	region := st.tree.Region(r.regionID)
+	if region == nil {
 		r.resp <- nil
 		return
 	}
-	// Remove from previous subscription if any.
 	if prev, ok := st.subscriptions[r.clientID]; ok && prev != r.regionID {
-		if prevRegion, ok := st.regions[prev]; ok {
+		if prevRegion := st.tree.Region(prev); prevRegion != nil {
 			prevRegion.RemoveSubscriber(r.clientID)
 		}
 	}
-	client := st.clients[r.clientID]
+	client := st.tree.Client(r.clientID)
 	if client == nil {
 		r.resp <- nil
 		return
 	}
-	// AddSubscriber sends the initial snapshot inside the actor
-	// before adding the client to the subscriber set, guaranteeing
-	// ordering relative to subsequent terminal_events.
 	snap := region.AddSubscriber(client)
 	st.subscriptions[r.clientID] = r.regionID
-	// Update tree: client subscription changed.
-	cid := strconv.FormatUint(uint64(r.clientID), 10)
-	if cn, ok := st.tree.Clients[cid]; ok {
-		cn.SubscribedRegionID = r.regionID
-		st.tree.Clients[cid] = cn
-		var pb patchBuilder
-		pb.Set("/clients/"+cid, cn)
-		st.broadcastTree(&pb)
-	}
+	st.tree.SetClientSubscription(r.clientID, r.regionID)
 	r.resp <- &subscribeResult{region: region, snapshot: snap}
 }
 
 func (r unsubscribeReq) handle(st *eventLoopState) {
 	if rid, ok := st.subscriptions[r.clientID]; ok {
 		delete(st.subscriptions, r.clientID)
-		if region, ok := st.regions[rid]; ok {
+		if region := st.tree.Region(rid); region != nil {
 			region.RemoveSubscriber(r.clientID)
 		}
 	}
-	cid := strconv.FormatUint(uint64(r.clientID), 10)
-	if cn, ok := st.tree.Clients[cid]; ok && cn.SubscribedRegionID != "" {
-		cn.SubscribedRegionID = ""
-		st.tree.Clients[cid] = cn
-		var pb patchBuilder
-		pb.Set("/clients/"+cid, cn)
-		st.broadcastTree(&pb)
-	}
+	st.tree.SetClientSubscription(r.clientID, "")
 }
 
 func (r setClientSessionReq) handle(st *eventLoopState) {
-	st.clientSessions[r.clientID] = r.sessionName
-	cid := strconv.FormatUint(uint64(r.clientID), 10)
-	if cn, ok := st.tree.Clients[cid]; ok {
-		cn.Session = r.sessionName
-		st.tree.Clients[cid] = cn
-		var pb patchBuilder
-		pb.Set("/clients/"+cid, cn)
-		st.broadcastTree(&pb)
-	}
+	st.tree.SetClientSession(r.clientID, r.sessionName)
 }
 
 func (r getClientSessionReq) handle(st *eventLoopState) {
-	r.resp <- st.clientSessions[r.clientID]
+	r.resp <- st.tree.ClientSession(r.clientID)
+}
+
+func (r identifyReq) handle(st *eventLoopState) {
+	st.tree.SetClientIdentity(r.clientID, r.identity)
+}
+
+func (r treeSnapshotReq) handle(st *eventLoopState) {
+	if c := st.tree.Client(r.clientID); c != nil {
+		c.SendMessage(st.tree.Snapshot())
+	}
 }
 
 func (r getSessionInfosReq) handle(st *eventLoopState) {
-	infos := make([]protocol.SessionInfo, 0, len(st.sessions))
-	for _, sess := range st.sessions {
+	var infos []protocol.SessionInfo
+	st.tree.ForEachSession(func(name string, regionIDs []string) {
 		infos = append(infos, protocol.SessionInfo{
-			Name:       sess.name,
-			NumRegions: len(sess.regions),
+			Name:       name,
+			NumRegions: len(regionIDs),
 		})
-	}
+	})
 	r.resp <- infos
 }
 
-// --- Overlay support ---
+// ── Overlay handlers ─────────────────────────────────────────────────────────
 
 func (r overlayRegisterReq) handle(st *eventLoopState) {
-	region, ok := st.regions[r.regionID]
-	if !ok {
+	region := st.tree.Region(r.regionID)
+	if region == nil {
 		r.resp <- overlayRegisterResult{err: "region not found"}
 		return
 	}
@@ -642,7 +579,7 @@ func (r overlayClearReq) handle(st *eventLoopState) {
 	if ownerID, ok := st.regionOverlays[r.regionID]; !ok || ownerID != r.clientID {
 		return
 	}
-	if region, ok := st.regions[r.regionID]; ok {
+	if region := st.tree.Region(r.regionID); region != nil {
 		region.ClearOverlay(r.clientID)
 	}
 	delete(st.regionOverlays, r.regionID)
@@ -650,13 +587,13 @@ func (r overlayClearReq) handle(st *eventLoopState) {
 }
 
 func (r inputRouteReq) handle(st *eventLoopState) {
-	region, ok := st.regions[r.regionID]
-	if !ok {
+	region := st.tree.Region(r.regionID)
+	if region == nil {
 		r.resp <- inputRouteResult{}
 		return
 	}
 	if overlayClientID, ok := st.regionOverlays[r.regionID]; ok {
-		if c, ok := st.clients[overlayClientID]; ok {
+		if c := st.tree.Client(overlayClientID); c != nil {
 			r.resp <- inputRouteResult{overlayClient: c}
 			return
 		}

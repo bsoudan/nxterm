@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"maps"
 	"net"
 	"os"
 	"os/exec"
@@ -119,24 +118,26 @@ func (s *Server) HandleUpgrade(specs []string, sshCfg transport.SSHListenerConfi
 	// snapshot is guaranteed consistent. Bytes that arrive on the PTY
 	// after this point queue in the kernel buffer and will be picked up
 	// by the new process's readLoop after handoff — nothing is lost.
-	for id, r := range result.regions {
+	var regionCount int
+	result.tree.ForEachRegion(func(id string, r Region) {
+		regionCount++
 		if pr, ok := r.(*PTYRegion); ok {
 			if err := pr.StopActor(); err != nil {
 				slog.Warn("upgrade: failed to stop readLoop", "region_id", id, "err", err)
 			}
 		}
-	}
-	slog.Info("upgrade: stopped PTY readLoops", "pty_regions", len(result.regions))
+	})
+	slog.Info("upgrade: stopped PTY readLoops", "pty_regions", regionCount)
 	s.broadcastUpgradeStatus(clients, protocol.UpgradePhaseStoppedReadLoops,
-		fmt.Sprintf("stopped %d pty read loop(s)", len(result.regions)))
+		fmt.Sprintf("stopped %d pty read loop(s)", regionCount))
 
 	// Dup PTY FDs for handoff. Native regions don't have PTYs.
 	ptyDups := make(map[string]*os.File) // regionID → dup'd PTY file
-	for id, r := range result.regions {
+	result.tree.ForEachRegion(func(id string, r Region) {
 		if pr, ok := r.(*PTYRegion); ok {
 			ptyDups[id] = pr.DetachPTY()
 		}
-	}
+	})
 	slog.Info("upgrade: detached PTY FDs", "pty_regions", len(ptyDups))
 
 	state := buildUpgradeState(s, result, specs)
@@ -228,24 +229,22 @@ func buildUpgradeState(s *Server, result upgradeResult, specs []string) *Upgrade
 		DefaultName:     s.sessionsCfg.DefaultName,
 		DefaultPrograms: s.sessionsCfg.DefaultPrograms,
 	}
-	for name, p := range result.programs {
+	result.tree.ForEachProgram(func(name string, p config.ProgramConfig) {
 		state.Programs[name] = ProgramConfigJSON{
 			Name: p.Name, Cmd: p.Cmd, Args: p.Args, Env: p.Env,
 		}
-	}
-	for name, sess := range result.sessions {
+	})
+	result.tree.ForEachSession(func(name string, regionIDs []string) {
 		ss := SessionState{Name: name}
-		for id := range sess.regions {
-			ss.RegionIDs = append(ss.RegionIDs, id)
-		}
+		ss.RegionIDs = append(ss.RegionIDs, regionIDs...)
 		state.Sessions = append(state.Sessions, ss)
-	}
+	})
 	// Only serialize PTY regions — native regions are killed on upgrade.
-	for _, r := range result.regions {
+	result.tree.ForEachRegion(func(_ string, r Region) {
 		pr, ok := r.(*PTYRegion)
 		if !ok {
 			slog.Info("upgrade: skipping native region", "region_id", r.ID())
-			continue
+			return
 		}
 		histState := pr.actor.hscreen.MarshalState()
 		state.Regions = append(state.Regions, RegionState{
@@ -253,7 +252,7 @@ func buildUpgradeState(s *Server, result upgradeResult, specs []string) *Upgrade
 			Session: pr.session, Width: pr.actor.width, Height: pr.actor.height,
 			Screen: histState,
 		})
-	}
+	})
 	return state
 }
 
@@ -327,15 +326,15 @@ func (s *Server) resumeAfterFailedUpgrade(result upgradeResult) {
 	slog.Warn("upgrade: rolling back")
 	s.noAccept.Store(false)
 	s.send(resumeUpgradeReq{})
-	for _, r := range result.regions {
+	result.tree.ForEachRegion(func(_ string, r Region) {
 		pr, ok := r.(*PTYRegion)
 		if !ok {
-			continue // native regions don't have readLoops to restart
+			return // native regions don't have readLoops to restart
 		}
 		if err := pr.ResumeActor(s.destroyRegion); err != nil {
 			slog.Error("upgrade: rollback failed to restart readLoop", "region_id", pr.id, "err", err)
 		}
-	}
+	})
 	slog.Warn("upgrade: rollback complete, but listeners were closed; restart may be needed")
 }
 
@@ -344,17 +343,13 @@ type resumeUpgradeReq struct{}
 type snapshotClientsReq struct{ resp chan map[uint32]*Client }
 
 func (r snapshotClientsReq) handle(st *eventLoopState) {
-	snap := make(map[uint32]*Client, len(st.clients))
-	maps.Copy(snap, st.clients)
-	r.resp <- snap
+	r.resp <- st.tree.ClientMap()
 }
 
 func (r upgradeReq) handle(st *eventLoopState) {
 	r.resp <- upgradeResult{
-		regions:  st.regions,
-		sessions: st.sessions,
-		programs: st.programs,
-		clients:  st.clients,
+		tree:    st.tree,
+		clients: st.tree.ClientMap(),
 	}
 	// Pause: wait for resume (rollback) or done (successful upgrade).
 	select {
@@ -371,9 +366,7 @@ func (r upgradeReq) handle(st *eventLoopState) {
 func (r resumeUpgradeReq) handle(st *eventLoopState) {}
 
 type upgradeResult struct {
-	regions  map[string]Region
-	sessions map[string]*Session
-	programs map[string]config.ProgramConfig
+	tree *ServerTree
 	// clients is the snapshot of connected clients at the moment the
 	// event loop paused. The event loop goroutine does not touch the
 	// map after returning this result (it blocks on s.requests waiting

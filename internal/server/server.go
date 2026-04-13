@@ -46,11 +46,9 @@ type Server struct {
 	// session names; values are *sync.Mutex.
 	sessionCreateMus sync.Map
 
-	// init* fields transfer ownership of maps to the event loop goroutine.
-	// They are set in NewServer and consumed (nilled) by eventLoop on startup.
-	initRegions  map[string]Region
-	initClients  map[uint32]*Client
-	initSessions map[string]*Session
+	// initPrograms transfers ownership of the programs map to the event
+	// loop goroutine. Set in NewServer and consumed (nilled) by eventLoop
+	// on startup.
 	initPrograms map[string]config.ProgramConfig
 }
 
@@ -84,9 +82,6 @@ func NewServer(listeners []net.Listener, version string, cfg config.ServerConfig
 		requests:     make(chan request, 256),
 		done:         make(chan struct{}),
 		shutdownResp: make(chan shutdownResult, 1),
-		initRegions:  make(map[string]Region),
-		initClients:  make(map[uint32]*Client),
-		initSessions: make(map[string]*Session),
 		initPrograms: programs,
 	}
 	s.nextClientID.Store(1)
@@ -430,7 +425,7 @@ func (s *Server) sessionCreateMu(name string) *sync.Mutex {
 // A per-name mutex serializes concurrent calls for the same session
 // name so the find-and-spawn pair is atomic with respect to other
 // clients. Calls for different session names run in parallel.
-func (s *Server) findOrCreateSession(name string, width, height uint16) (*Session, []protocol.RegionInfo, error) {
+func (s *Server) findOrCreateSession(name string, width, height uint16) (string, []protocol.RegionInfo, error) {
 	if name == "" {
 		name = s.sessionsCfg.DefaultName
 	}
@@ -441,13 +436,12 @@ func (s *Server) findOrCreateSession(name string, width, height uint16) (*Sessio
 
 	resp := make(chan sessionConnectResult, 1)
 	if !s.send(sessionConnectReq{name: name, width: width, height: height, resp: resp}) {
-		return nil, nil, fmt.Errorf("server shutting down")
+		return "", nil, fmt.Errorf("server shutting down")
 	}
 	result := <-resp
 
 	if result.exists {
-		// Return a Session value for the caller (just needs the name).
-		return &Session{name: name}, result.regionInfos, nil
+		return name, result.regionInfos, nil
 	}
 
 	// Session doesn't exist yet — spawn the programs.
@@ -455,7 +449,7 @@ func (s *Server) findOrCreateSession(name string, width, height uint16) (*Sessio
 	for _, prog := range result.programConfigs {
 		region, err := s.SpawnRegion(name, prog.Cmd, prog.Args, prog.Env, width, height)
 		if err != nil {
-			return nil, nil, err
+			return "", nil, err
 		}
 		infos = append(infos, protocol.RegionInfo{
 			RegionID: region.ID(),
@@ -466,7 +460,7 @@ func (s *Server) findOrCreateSession(name string, width, height uint16) (*Sessio
 		})
 	}
 
-	return &Session{name: name}, infos, nil
+	return name, infos, nil
 }
 
 func (s *Server) listProgramInfos() []protocol.ProgramInfo {

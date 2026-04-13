@@ -2,188 +2,370 @@ package server
 
 import (
 	"encoding/json"
-	"maps"
 	"os"
+	"sort"
 	"strconv"
 
 	"nxtermd/internal/config"
 	"nxtermd/internal/protocol"
 )
 
-// buildTreeFromMaps constructs the initial Tree from the event loop's maps.
-// Called once at the start of eventLoop and after a live upgrade restore.
-func buildTreeFromMaps(
-	regions map[string]Region,
-	sessions map[string]*Session,
-	programs map[string]config.ProgramConfig,
-	version string,
-	startTime int64,
-	socketPath string,
-) protocol.Tree {
-	t := protocol.Tree{
-		Server: protocol.ServerNode{
+// ServerTree is the single source of truth for the server's object graph.
+// It holds both live objects (Region, *Client) and their protocol nodes.
+// Typed mutation methods automatically track TreeOps during a transaction.
+// The event loop wraps each request handler in StartTx/CommitTx so
+// handlers never need to build patches or broadcast manually.
+type ServerTree struct {
+	server   protocol.ServerNode
+	regions  map[string]regionEntry
+	sessions map[string]sessionEntry
+	programs map[string]programEntry
+	clients  map[string]clientEntry
+	upgrade  protocol.UpgradeNode
+
+	version uint64
+	ops     []protocol.TreeOp
+	inTx    bool
+}
+
+type regionEntry struct {
+	region Region
+	node   protocol.RegionNode
+}
+
+type sessionEntry struct {
+	regionIDs []string
+	node      protocol.SessionNode
+}
+
+type programEntry struct {
+	config config.ProgramConfig
+	node   protocol.ProgramNode
+}
+
+type clientEntry struct {
+	client *Client
+	node   protocol.ClientNode
+}
+
+func NewServerTree(version string, startTime int64, socketPath string) *ServerTree {
+	return &ServerTree{
+		server: protocol.ServerNode{
 			Version:    version,
 			Pid:        os.Getpid(),
 			StartTime:  startTime,
 			SocketPath: socketPath,
 		},
-		Sessions: make(map[string]protocol.SessionNode, len(sessions)),
-		Regions:  make(map[string]protocol.RegionNode, len(regions)),
-		Programs: make(map[string]protocol.ProgramNode, len(programs)),
-		Clients:  make(map[string]protocol.ClientNode),
-	}
-
-	for id, r := range regions {
-		t.Regions[id] = regionToNode(r)
-	}
-	for name, sess := range sessions {
-		ids := make([]string, 0, len(sess.regions))
-		for rid := range sess.regions {
-			ids = append(ids, rid)
-		}
-		t.Sessions[name] = protocol.SessionNode{Name: name, RegionIDs: ids}
-	}
-	for name, p := range programs {
-		t.Programs[name] = programToNode(name, p)
-	}
-	return t
-}
-
-func regionToNode(r Region) protocol.RegionNode {
-	return protocol.RegionNode{
-		ID:            r.ID(),
-		Name:          r.Name(),
-		Cmd:           r.Cmd(),
-		Pid:           r.Pid(),
-		Session:       r.Session(),
-		Width:         r.Width(),
-		Height:        r.Height(),
-		Native:        r.IsNative(),
-		ScrollbackLen: r.ScrollbackLen(),
+		regions:  make(map[string]regionEntry),
+		sessions: make(map[string]sessionEntry),
+		programs: make(map[string]programEntry),
+		clients:  make(map[string]clientEntry),
 	}
 }
 
-func programToNode(name string, p config.ProgramConfig) protocol.ProgramNode {
-	return protocol.ProgramNode{
-		Name: name,
-		Cmd:  p.Cmd,
-		Args: p.Args,
+// ── Transaction ──────────────────────────────────────────────────────────────
+
+func (t *ServerTree) StartTx() {
+	t.inTx = true
+	t.ops = t.ops[:0]
+}
+
+// CommitTx ends the transaction and returns the version and accumulated ops.
+// Returns 0, nil if no mutations occurred.
+func (t *ServerTree) CommitTx() (uint64, []protocol.TreeOp) {
+	t.inTx = false
+	if len(t.ops) == 0 {
+		return 0, nil
+	}
+	t.version++
+	ops := make([]protocol.TreeOp, len(t.ops))
+	copy(ops, t.ops)
+	t.ops = t.ops[:0]
+	return t.version, ops
+}
+
+func (t *ServerTree) emit(op protocol.TreeOp) {
+	if t.inTx {
+		t.ops = append(t.ops, op)
 	}
 }
 
-// deepCopyTree returns a deep copy of the tree suitable for sending
-// as a snapshot. Maps and slices are cloned so the snapshot is
-// independent of subsequent mutations.
-func deepCopyTree(t protocol.Tree) protocol.Tree {
-	cp := protocol.Tree{
-		Server:  t.Server,
-		Upgrade: t.Upgrade,
-	}
-	cp.Sessions = make(map[string]protocol.SessionNode, len(t.Sessions))
-	for k, v := range t.Sessions {
-		ids := make([]string, len(v.RegionIDs))
-		copy(ids, v.RegionIDs)
-		v.RegionIDs = ids
-		cp.Sessions[k] = v
-	}
-	cp.Regions = make(map[string]protocol.RegionNode, len(t.Regions))
-	maps.Copy(cp.Regions, t.Regions)
-	cp.Programs = make(map[string]protocol.ProgramNode, len(t.Programs))
-	for k, v := range t.Programs {
-		args := make([]string, len(v.Args))
-		copy(args, v.Args)
-		v.Args = args
-		cp.Programs[k] = v
-	}
-	cp.Clients = make(map[string]protocol.ClientNode, len(t.Clients))
-	maps.Copy(cp.Clients, t.Clients)
-	return cp
-}
-
-// ── patchBuilder ─────────────────────────────────────────────────────────────
-
-// patchBuilder accumulates TreeOp entries during a single event loop
-// iteration. After the mutation, call broadcastTreeEvents to send them.
-type patchBuilder struct {
-	ops []protocol.TreeOp
-}
-
-func (pb *patchBuilder) Set(path string, value any) {
+func (t *ServerTree) emitSet(path string, value any) {
 	raw, _ := json.Marshal(value)
-	pb.ops = append(pb.ops, protocol.TreeOp{Op: "set", Path: path, Value: raw})
+	t.emit(protocol.TreeOp{Op: "set", Path: path, Value: raw})
 }
 
-func (pb *patchBuilder) Delete(path string) {
-	pb.ops = append(pb.ops, protocol.TreeOp{Op: "delete", Path: path})
+func (t *ServerTree) emitDelete(path string) {
+	t.emit(protocol.TreeOp{Op: "delete", Path: path})
 }
 
-func (pb *patchBuilder) Add(path string, value any) {
+func (t *ServerTree) emitAdd(path string, value any) {
 	raw, _ := json.Marshal(value)
-	pb.ops = append(pb.ops, protocol.TreeOp{Op: "add", Path: path, Value: raw})
+	t.emit(protocol.TreeOp{Op: "add", Path: path, Value: raw})
 }
 
-func (pb *patchBuilder) Remove(path string, match any) {
+func (t *ServerTree) emitRemove(path string, match any) {
 	raw, _ := json.Marshal(match)
-	pb.ops = append(pb.ops, protocol.TreeOp{Op: "remove", Path: path, Match: raw})
+	t.emit(protocol.TreeOp{Op: "remove", Path: path, Match: raw})
 }
 
-func (pb *patchBuilder) empty() bool { return len(pb.ops) == 0 }
+// ── Region mutations ─────────────────────────────────────────────────────────
 
-// broadcastTreeEvents increments the version and sends a tree_events
-// message to all connected clients. Called from inside the event loop
-// where the clients map is directly available.
-func broadcastTreeEvents(pb *patchBuilder, treeVersion *uint64, clients map[uint32]*Client) {
-	if pb.empty() {
+func (t *ServerTree) SetRegion(r Region) {
+	node := protocol.RegionNode{
+		ID: r.ID(), Name: r.Name(), Cmd: r.Cmd(), Pid: r.Pid(),
+		Session: r.Session(), Width: r.Width(), Height: r.Height(),
+		Native: r.IsNative(), ScrollbackLen: r.ScrollbackLen(),
+	}
+	t.regions[r.ID()] = regionEntry{region: r, node: node}
+	t.emitSet("/regions/"+r.ID(), node)
+}
+
+func (t *ServerTree) DeleteRegion(id string) {
+	delete(t.regions, id)
+	t.emitDelete("/regions/" + id)
+}
+
+// ── Session mutations ────────────────────────────────────────────────────────
+
+// EnsureSession creates the session if it doesn't exist. Returns true if created.
+func (t *ServerTree) EnsureSession(name string) bool {
+	if _, ok := t.sessions[name]; ok {
+		return false
+	}
+	node := protocol.SessionNode{Name: name, RegionIDs: []string{}}
+	t.sessions[name] = sessionEntry{node: node}
+	t.emitSet("/sessions/"+name, node)
+	return true
+}
+
+func (t *ServerTree) DeleteSession(name string) {
+	delete(t.sessions, name)
+	t.emitDelete("/sessions/" + name)
+}
+
+func (t *ServerTree) AddRegionToSession(session, regionID string) {
+	e, ok := t.sessions[session]
+	if !ok {
 		return
 	}
-	*treeVersion++
-	msg := protocol.TreeEvents{
-		Type:    "tree_events",
-		Version: *treeVersion,
-		Ops:     pb.ops,
+	e.regionIDs = append(e.regionIDs, regionID)
+	e.node.RegionIDs = e.regionIDs
+	t.sessions[session] = e
+	t.emitAdd("/sessions/"+session+"/region_ids", regionID)
+}
+
+func (t *ServerTree) RemoveRegionFromSession(session, regionID string) {
+	e, ok := t.sessions[session]
+	if !ok {
+		return
 	}
-	for _, c := range clients {
-		c.SendMessage(msg)
+	e.regionIDs = removeString(e.regionIDs, regionID)
+	e.node.RegionIDs = e.regionIDs
+	t.sessions[session] = e
+	t.emitRemove("/sessions/"+session+"/region_ids", regionID)
+}
+
+// ── Program mutations ────────────────────────────────────────────────────────
+
+func (t *ServerTree) SetProgram(p config.ProgramConfig) {
+	node := protocol.ProgramNode{Name: p.Name, Cmd: p.Cmd, Args: p.Args}
+	t.programs[p.Name] = programEntry{config: p, node: node}
+	t.emitSet("/programs/"+p.Name, node)
+}
+
+func (t *ServerTree) DeleteProgram(name string) {
+	delete(t.programs, name)
+	t.emitDelete("/programs/" + name)
+}
+
+// ── Client mutations ─────────────────────────────────────────────────────────
+
+func (t *ServerTree) AddClient(id uint32, c *Client) {
+	cid := clientIDStr(id)
+	node := protocol.ClientNode{ID: cid}
+	t.clients[cid] = clientEntry{client: c, node: node}
+	t.emitSet("/clients/"+cid, node)
+}
+
+func (t *ServerTree) DeleteClient(id uint32) {
+	cid := clientIDStr(id)
+	delete(t.clients, cid)
+	t.emitDelete("/clients/" + cid)
+}
+
+func (t *ServerTree) SetClientIdentity(id uint32, ident clientIdentity) {
+	cid := clientIDStr(id)
+	e, ok := t.clients[cid]
+	if !ok {
+		return
+	}
+	e.node.Hostname = ident.hostname
+	e.node.Username = ident.username
+	e.node.Pid = ident.pid
+	e.node.Process = ident.process
+	t.clients[cid] = e
+	t.emitSet("/clients/"+cid, e.node)
+}
+
+func (t *ServerTree) SetClientSubscription(id uint32, regionID string) {
+	cid := clientIDStr(id)
+	e, ok := t.clients[cid]
+	if !ok {
+		return
+	}
+	e.node.SubscribedRegionID = regionID
+	t.clients[cid] = e
+	t.emitSet("/clients/"+cid, e.node)
+}
+
+func (t *ServerTree) SetClientSession(id uint32, sessionName string) {
+	cid := clientIDStr(id)
+	e, ok := t.clients[cid]
+	if !ok {
+		return
+	}
+	e.node.Session = sessionName
+	t.clients[cid] = e
+	t.emitSet("/clients/"+cid, e.node)
+}
+
+// ── Upgrade ──────────────────────────────────────────────────────────────────
+
+func (t *ServerTree) SetUpgrade(u protocol.UpgradeNode) {
+	t.upgrade = u
+	t.emitSet("/upgrade", u)
+}
+
+// ── Queries ──────────────────────────────────────────────────────────────────
+
+func (t *ServerTree) Region(id string) Region {
+	if e, ok := t.regions[id]; ok {
+		return e.region
+	}
+	return nil
+}
+
+func (t *ServerTree) Client(id uint32) *Client {
+	if e, ok := t.clients[clientIDStr(id)]; ok {
+		return e.client
+	}
+	return nil
+}
+
+func (t *ServerTree) ClientSession(id uint32) string {
+	if e, ok := t.clients[clientIDStr(id)]; ok {
+		return e.node.Session
+	}
+	return ""
+}
+
+func (t *ServerTree) SessionRegionIDs(name string) ([]string, bool) {
+	if e, ok := t.sessions[name]; ok {
+		return e.regionIDs, true
+	}
+	return nil, false
+}
+
+func (t *ServerTree) Program(name string) *config.ProgramConfig {
+	if e, ok := t.programs[name]; ok {
+		cfg := e.config
+		return &cfg
+	}
+	return nil
+}
+
+func (t *ServerTree) NumClients() int  { return len(t.clients) }
+func (t *ServerTree) NumRegions() int  { return len(t.regions) }
+func (t *ServerTree) NumSessions() int { return len(t.sessions) }
+
+func (t *ServerTree) SessionNames() []string {
+	names := make([]string, 0, len(t.sessions))
+	for name := range t.sessions {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func (t *ServerTree) ForEachClient(fn func(uint32, *Client)) {
+	for _, e := range t.clients {
+		fn(e.client.id, e.client)
 	}
 }
 
-// ── Request types for tree ───────────────────────────────────────────────────
-
-// identifyReq routes an identify message through the event loop so the
-// tree's client node can be updated.
-type identifyReq struct {
-	clientID uint32
-	identity clientIdentity
-}
-
-func (r identifyReq) handle(st *eventLoopState) {
-	cid := strconv.FormatUint(uint64(r.clientID), 10)
-	if cn, ok := st.tree.Clients[cid]; ok {
-		cn.Hostname = r.identity.hostname
-		cn.Username = r.identity.username
-		cn.Pid = r.identity.pid
-		cn.Process = r.identity.process
-		st.tree.Clients[cid] = cn
-		var pb patchBuilder
-		pb.Set("/clients/"+cid, cn)
-		st.broadcastTree(&pb)
+func (t *ServerTree) ForEachRegion(fn func(string, Region)) {
+	for id, e := range t.regions {
+		fn(id, e.region)
 	}
 }
 
-// treeSnapshotReq requests a deep copy of the current tree + version.
-// Used for tree_resync_request handling.
-type treeSnapshotReq struct {
-	clientID uint32
+func (t *ServerTree) ForEachSession(fn func(string, []string)) {
+	for name, e := range t.sessions {
+		fn(name, e.regionIDs)
+	}
 }
 
-func (r treeSnapshotReq) handle(st *eventLoopState) {
-	if c, ok := st.clients[r.clientID]; ok {
-		c.SendMessage(protocol.TreeSnapshot{
-			Type:    "tree_snapshot",
-			Version: st.treeVersion,
-			Tree:    deepCopyTree(st.tree),
-		})
+func (t *ServerTree) ForEachProgram(fn func(string, config.ProgramConfig)) {
+	for name, e := range t.programs {
+		fn(name, e.config)
 	}
+}
+
+// ClientMap returns a snapshot of all clients keyed by ID.
+func (t *ServerTree) ClientMap() map[uint32]*Client {
+	m := make(map[uint32]*Client, len(t.clients))
+	for _, e := range t.clients {
+		m[e.client.id] = e.client
+	}
+	return m
+}
+
+func (t *ServerTree) Version() uint64 { return t.version }
+
+// Snapshot returns a deep-copy TreeSnapshot for sending to a client.
+func (t *ServerTree) Snapshot() protocol.TreeSnapshot {
+	tree := protocol.Tree{
+		Server:   t.server,
+		Upgrade:  t.upgrade,
+		Sessions: make(map[string]protocol.SessionNode, len(t.sessions)),
+		Regions:  make(map[string]protocol.RegionNode, len(t.regions)),
+		Programs: make(map[string]protocol.ProgramNode, len(t.programs)),
+		Clients:  make(map[string]protocol.ClientNode, len(t.clients)),
+	}
+	for k, v := range t.sessions {
+		node := v.node
+		ids := make([]string, len(node.RegionIDs))
+		copy(ids, node.RegionIDs)
+		node.RegionIDs = ids
+		tree.Sessions[k] = node
+	}
+	for k, v := range t.regions {
+		tree.Regions[k] = v.node
+	}
+	for k, v := range t.programs {
+		node := v.node
+		if len(node.Args) > 0 {
+			args := make([]string, len(node.Args))
+			copy(args, node.Args)
+			node.Args = args
+		}
+		tree.Programs[k] = node
+	}
+	for k, v := range t.clients {
+		tree.Clients[k] = v.node
+	}
+	return protocol.TreeSnapshot{
+		Type:    "tree_snapshot",
+		Version: t.version,
+		Tree:    tree,
+	}
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+func clientIDStr(id uint32) string {
+	return strconv.FormatUint(uint64(id), 10)
 }
 
 func removeString(ss []string, v string) []string {

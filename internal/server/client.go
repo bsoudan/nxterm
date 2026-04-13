@@ -631,7 +631,7 @@ func (c *Client) handleSessionConnect(msg protocol.SessionConnectRequest, reply 
 		sessionName = c.server.sessionsCfg.DefaultName
 	}
 
-	sess, infos, err := c.server.findOrCreateSession(sessionName, msg.Width, msg.Height)
+	sessionName, infos, err := c.server.findOrCreateSession(sessionName, msg.Width, msg.Height)
 	if err != nil {
 		reply(protocol.SessionConnectResponse{
 			Type:    "session_connect_response",
@@ -642,18 +642,18 @@ func (c *Client) handleSessionConnect(msg protocol.SessionConnectRequest, reply 
 		return
 	}
 
-	c.server.SetClientSession(c.id, sess.name)
+	c.server.SetClientSession(c.id, sessionName)
 
 	reply(protocol.SessionConnectResponse{
 		Type:     "session_connect_response",
-		Session:  sess.name,
+		Session:  sessionName,
 		Regions:  infos,
 		Programs: c.server.listProgramInfos(),
 		Error:    false,
 		Message:  "",
 	})
 
-	slog.Debug("client connected to session", "client_id", c.id, "session", sess.name)
+	slog.Debug("client connected to session", "client_id", c.id, "session", sessionName)
 }
 
 func (c *Client) handleListSessions(reply func(any)) {
