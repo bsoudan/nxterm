@@ -763,19 +763,50 @@ func (m *MainLayer) Run(p *tea.Program, rawCh <-chan RawInputMsg,
 	}
 }
 
-// writeToPipeAndDrain writes data to pipeW and then drains the
-// resulting bubbletea message from p.Msgs(). pipeW is a synchronous
-// io.Pipe that blocks until the reader (bubbletea) consumes the data.
-// Since we're inside the main loop, we need to write from a goroutine
-// and then read the resulting message synchronously.
+// writeToPipeAndDrain sends raw input through pipeW one sequence at a
+// time, draining the bubbletea message queue after each write so all
+// side effects (layer pops, state changes) settle before returning.
+//
+// pipeW is a synchronous io.Pipe — writes block until bubbletea's
+// input reader consumes the data. Since we're inside the main loop,
+// we write from a goroutine and drain p.Msgs() here.
 func (m *MainLayer) writeToPipeAndDrain(data []byte) {
-	buf := make([]byte, len(data))
-	copy(buf, data)
-	go m.pipeW.Write(buf)
-	// Drain until the pipeW goroutine's message has been processed.
-	// The write produces one or more tea.KeyPressMsg on p.Msgs().
-	msg := <-m.program.Msgs()
-	m.program.Handle(msg)
+	buf := data
+	for len(buf) > 0 {
+		_, _, n, _ := ansi.DecodeSequence(buf, ansi.NormalState, nil)
+		if n <= 0 {
+			n = len(buf)
+		}
+		seq := make([]byte, n)
+		copy(seq, buf[:n])
+		buf = buf[n:]
+
+		// Write one sequence. The goroutine unblocks once bubbletea
+		// reads from pipeR.
+		go m.pipeW.Write(seq)
+
+		// Block for the first message (the key event from this write).
+		// Then drain any follow-on messages (cmds that produce new
+		// messages like layer pops) with a short timeout so side
+		// effects settle before the next sequence.
+		msg := <-m.program.Msgs()
+		if _, err := m.program.Handle(msg); err != nil {
+			m.quitRequested = true
+			return
+		}
+		for {
+			select {
+			case msg := <-m.program.Msgs():
+				if _, err := m.program.Handle(msg); err != nil {
+					m.quitRequested = true
+					return
+				}
+			case <-time.After(5 * time.Millisecond):
+				goto nextSeq
+			}
+		}
+	nextSeq:
+	}
 }
 
 // processRawInput handles raw bytes from stdin.
