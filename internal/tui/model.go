@@ -2,6 +2,7 @@ package tui
 
 import (
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -59,6 +60,40 @@ func (m teaModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// MainCmd is handled directly — MainLayer is not on the stack.
+	if mc, ok := msg.(MainCmd); ok {
+		_, cmd, _ := m.handleCmd(mc)
+		return m, cmd
+	}
+
+	// System messages handled by MainLayer.
+	switch msg := msg.(type) {
+	case reconnectTickMsg:
+		if m.sm.connStatus == "reconnecting" {
+			return m, tea.Tick(time.Second, func(time.Time) tea.Msg { return reconnectTickMsg{} })
+		}
+		return m, nil
+	case ServerErrorMsg:
+		m.sm.err = msg.Context + ": " + msg.Message
+		_, cmd := m.quit()
+		return m, cmd
+	case protocol.Identify:
+		if msg.Hostname != m.sm.localHostname {
+			m.sm.endpoint = m.sm.localHostname + " -> " + m.sm.endpoint
+		}
+		return m, nil
+	case LogEntryMsg:
+		return m, nil
+	case showHintMsg:
+		pushCmd := func() tea.Msg { return PushLayerMsg{Layer: &HintLayer{registry: m.registry}} }
+		hideCmd := tea.Tick(3*time.Second, func(time.Time) tea.Msg { return hideHintMsg{} })
+		return m, tea.Batch(pushCmd, hideCmd)
+	case tea.WindowSizeMsg:
+		m.termWidth = msg.Width
+		m.termHeight = msg.Height
+		// Fall through to stack for SM to track dimensions too.
+	}
+
 	// Dispatch through the layer stack.
 	cmd := m.stack.Update(msg)
 	return m, cmd
@@ -77,10 +112,22 @@ func (m teaModel) View() tea.View {
 	statusText := ""
 	statusStyle := lipgloss.Style{}
 	rs := RenderState{}
+
+	// Command mode status comes from MainLayer (not on the stack).
+	rs.CommandMode = m.commandMode
+	if m.commandMode {
+		if len(m.commandBuffer) > 0 {
+			statusText = "? " + strings.Join(m.commandBuffer, " ")
+		} else {
+			statusText = "?"
+		}
+		statusStyle = commandModeStyle
+	}
+
 	for i, l := range m.stack.Layers() {
 		if tl, ok := l.(TermdLayer); ok {
 			t, s := tl.Status(&rs)
-			if t != "" {
+			if t != "" && !m.commandMode {
 				statusText = t
 				if i > 0 {
 					statusStyle = s.Bold(true).Foreground(lipgloss.Color("6"))
@@ -107,9 +154,9 @@ func (m teaModel) View() tea.View {
 
 	v := tea.NewView(content)
 	v.AltScreen = true
-	v.WindowTitle = windowTitle(m.MainLayer)
+	v.WindowTitle = windowTitle(m.sm)
 
-	if activeTerm := m.ActiveTerm(); activeTerm != nil {
+	if activeTerm := m.sm.ActiveTerm(); activeTerm != nil {
 		switch activeTerm.MouseMode() {
 		case 2:
 			v.MouseMode = tea.MouseModeAllMotion
@@ -134,10 +181,9 @@ func serverFromEndpoint(endpoint string) string {
 	return addr
 }
 
-// windowTitle composes the outer-terminal window title for the active
-// session+region.
-func windowTitle(main *MainLayer) string {
-	session := main.activeSessionLayer()
+// windowTitle composes the outer-terminal window title.
+func windowTitle(sm *SessionManagerLayer) string {
+	session := sm.activeSessionLayer()
 	if session == nil {
 		return "nxterm"
 	}
@@ -151,7 +197,7 @@ func windowTitle(main *MainLayer) string {
 	}
 	suffix += server
 
-	if t := main.ActiveTerm(); t != nil {
+	if t := sm.ActiveTerm(); t != nil {
 		if title := t.Title(); title != "" {
 			return title + " " + suffix
 		}
@@ -174,3 +220,4 @@ func renderStatusBar(status, version string, style lipgloss.Style, showVersion b
 
 	return result, displayWidth
 }
+
