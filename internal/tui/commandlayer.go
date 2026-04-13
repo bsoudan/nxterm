@@ -13,8 +13,12 @@ type HintLayer struct {
 }
 
 func (h *HintLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
-	if _, ok := msg.(hideHintMsg); ok {
+	switch msg.(type) {
+	case hideHintMsg:
 		return QuitLayerMsg{}, nil, true
+	case MainCmd, SessionCmd, PushLayerMsg:
+		// Dismiss immediately when the user takes any action.
+		return QuitLayerMsg{}, nil, false
 	}
 	return nil, nil, false
 }
@@ -55,6 +59,9 @@ var logoBorder = lipgloss.NewStyle().
 func (h *HintLayer) WantsKeyboardInput() bool { return false }
 
 func (h *HintLayer) Status(rs *RenderState) (string, lipgloss.Style) {
+	if rs.HasOverlay {
+		return "", lipgloss.Style{}
+	}
 	rs.HasHint = true
 	prefix := "ctrl+b"
 	if h.registry != nil {

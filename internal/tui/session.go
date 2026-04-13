@@ -360,10 +360,7 @@ func (s *SessionLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 		_, cmd, _ := s.tabs[idx].term.Update(msg)
 		return nil, cmd, true
 	case protocol.GetScrollbackResponse:
-		idx := s.findTabIndex(msg.RegionID)
-		if idx >= 0 && s.tabs[idx].term != nil {
-			_, _, _ = s.tabs[idx].term.Update(msg)
-		}
+		// Handled by ScrollbackLayer in the layer stack when active.
 		return nil, nil, true
 	case protocol.ResizeResponse:
 		return nil, nil, true
@@ -390,12 +387,6 @@ func (s *SessionLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 		return nil, cmd, true
 
 	case tea.KeyPressMsg:
-		// When scrollback is active, keys are handled by ScrollbackLayer
-		// via TerminalLayer.Update. Forward to the active terminal.
-		if t := s.activeTerm(); t != nil && t.ScrollbackActive() {
-			_, cmd, _ := t.Update(msg)
-			return nil, cmd, true
-		}
 		return nil, nil, true
 
 	default:
@@ -443,18 +434,10 @@ func (s *SessionLayer) handleCmd(msg SessionCmd) (tea.Msg, tea.Cmd, bool) {
 			}
 		}
 		return nil, nil, true
-	case "scroll-up":
-		if t := s.activeTerm(); t != nil && !t.ScrollbackActive() {
-			halfPage := t.contentHeight() / 2
-			if halfPage < 1 {
-				halfPage = 1
-			}
-			t.EnterScrollback(halfPage)
+	case "scroll-up", "scroll-down":
+		if t := s.activeTerm(); t != nil {
+			return t.Update(msg)
 		}
-		return nil, nil, true
-	case "scroll-down":
-		// scroll-down is only meaningful when already in scrollback
-		// (handled by ScrollbackLayer). It should not initiate scrollback.
 		return nil, nil, true
 	default:
 		return nil, nil, true
@@ -466,7 +449,7 @@ func (s *SessionLayer) checkBindingCondition(when string) bool {
 	switch when {
 	case "normal-screen":
 		t := s.activeTerm()
-		return t != nil && !t.IsAltScreen()
+		return t != nil && !t.IsAltScreen() && !t.ScrollbackActive()
 	default:
 		return true
 	}
@@ -621,9 +604,6 @@ func truncateTitle(s string, max int) string {
 func (s *SessionLayer) WantsKeyboardInput() bool { return false }
 
 func (s *SessionLayer) Status(rs *RenderState) (string, lipgloss.Style) {
-	if t := s.activeTerm(); t != nil && t.ScrollbackActive() {
-		return t.Status(rs)
-	}
 	name := s.endpoint
 	if s.sessionName != "" {
 		name = s.sessionName + "@" + s.endpoint

@@ -514,8 +514,8 @@ func (m *MainLayer) handleCmd(msg MainCmd) (tea.Msg, tea.Cmd, bool) {
 		return nil, nil, true
 	case "enter-scrollback":
 		if s := m.activeSessionLayer(); s != nil {
-			if t := s.activeTerm(); t != nil {
-				t.EnterScrollback(0)
+			if t := s.activeTerm(); t != nil && !t.ScrollbackActive() {
+				return push(t.NewScrollbackLayer(0))
 			}
 		}
 		return nil, nil, true
@@ -683,7 +683,7 @@ func (m *MainLayer) Status(rs *RenderState) (string, lipgloss.Style) {
 }
 
 func (m *MainLayer) WantsKeyboardInput() bool {
-	return m.ActiveTerm() != nil && m.ActiveTerm().ScrollbackActive()
+	return false
 }
 
 // UpgradeAvailable reports whether any upgrade is available.

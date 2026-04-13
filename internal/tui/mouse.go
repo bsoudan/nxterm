@@ -132,17 +132,8 @@ func mouseButtonSGR(b tea.MouseButton) int {
 
 
 // handleMouse processes mouse events that arrive through bubbletea's
-// parser (focus routing mode, e.g. during scrollback). Normal-mode
-// mouse handling (wheel entry, ChildWantsMouse) is in handleRawInput.
+// parser (focus routing mode). Scrollback mouse events are handled
+// by ScrollbackLayer in the layer stack.
 func (s *SessionLayer) handleMouse(msg tea.MouseMsg) tea.Cmd {
-	t := s.activeTerm()
-	if t == nil {
-		return nil
-	}
-	// When scrollback is active, forward to the terminal layer which
-	// delegates to ScrollbackLayer for wheel events.
-	if t.ScrollbackActive() {
-		t.Update(msg)
-	}
 	return nil
 }

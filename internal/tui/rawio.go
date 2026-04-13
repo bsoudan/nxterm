@@ -330,11 +330,6 @@ func (s *SessionLayer) handleRawInput(chunk []byte) (tea.Msg, tea.Cmd) {
 			continue
 		}
 		if wheel, ok := mouse.(tea.MouseWheelMsg); ok {
-			// If scrollback already active, forward wheel directly to terminal layer.
-			if t != nil && t.ScrollbackActive() {
-				t.Update(mouse)
-				continue
-			}
 			// Look up virtual binding for this wheel direction.
 			// Execute synchronously so scrollback state updates immediately
 			// for subsequent wheel events in the same batch.
@@ -344,7 +339,10 @@ func (s *SessionLayer) handleRawInput(chunk []byte) (tea.Msg, tea.Cmd) {
 			}
 			if vb, ok := s.registry.LookupVirtual(vk); ok {
 				if vb.when == "" || s.checkBindingCondition(vb.when) {
-					s.handleCmd(SessionCmd{Name: vb.command.Name, Args: vb.args})
+					_, cmd, _ := s.handleCmd(SessionCmd{Name: vb.command.Name, Args: vb.args})
+					if cmd != nil {
+						cmds = append(cmds, cmd)
+					}
 				}
 			}
 			continue

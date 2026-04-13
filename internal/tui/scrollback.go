@@ -11,12 +11,14 @@ import (
 	"nxtermd/internal/protocol"
 )
 
-// ScrollbackLayer is a layer pushed onto TerminalLayer's inner stack
-// when scrollback mode is active. It renders the combined scrollback +
-// screen buffer from the client's local HistoryScreen and handles
-// navigation input. Because the HistoryScreen accumulates lines as
-// terminal events are replayed, the scrollback stays in sync with
-// new output that arrives while the user is viewing scrollback.
+// ScrollbackLayer is pushed onto the main layer stack when scrollback
+// mode is active. It renders the combined scrollback + screen buffer
+// from the client's local HistoryScreen and handles navigation input.
+// Because the HistoryScreen accumulates lines as terminal events are
+// replayed, the scrollback stays in sync with new output that arrives
+// while the user is viewing scrollback. Protocol messages that
+// ScrollbackLayer doesn't handle (TerminalEvents, ScreenUpdate) pass
+// through to SessionLayer/TerminalLayer via the stack.
 //
 // On entry, a GetScrollbackRequest is sent to the server. When the
 // response arrives, any lines the server has that the client doesn't
@@ -43,7 +45,7 @@ func newScrollbackLayer(term *TerminalLayer, offset int) *ScrollbackLayer {
 }
 
 func (s *ScrollbackLayer) Activate() tea.Cmd { return nil }
-func (s *ScrollbackLayer) Deactivate()       {}
+func (s *ScrollbackLayer) Deactivate()       { s.term.inScrollback = false }
 
 func (s *ScrollbackLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 	switch msg := msg.(type) {
