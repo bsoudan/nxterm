@@ -321,7 +321,12 @@ func (m *NxtermModel) Run(p *tea.Program, rawCh <-chan RawInputMsg,
 			}
 
 		case raw := <-rawCh:
-			if err := m.processRawInput(raw); err != nil {
+			cmd, err := m.processRawInput(raw)
+			if err != nil {
+				p.Stop(nil)
+				return nil
+			}
+			if err := m.execCmdSync(cmd); err != nil {
 				p.Stop(nil)
 				return nil
 			}
@@ -349,7 +354,11 @@ func (m *NxtermModel) stepFocusSequence() error {
 		rest := m.focusBuf
 		m.focusBuf = nil
 		if len(rest) > 0 {
-			return m.processRawInput(RawInputMsg(rest))
+			cmd, err := m.processRawInput(RawInputMsg(rest))
+			if err != nil {
+				return err
+			}
+			return m.execCmdSync(cmd)
 		}
 		return nil
 	}
@@ -379,71 +388,70 @@ func (m *NxtermModel) stepFocusSequence() error {
 	}
 }
 
-func (m *NxtermModel) processRawInput(raw RawInputMsg) error {
+// processRawInput handles raw terminal input and returns any command
+// that needs further processing. Callers pass the returned cmd to
+// execCmdSync (or the trampoline queue).
+func (m *NxtermModel) processRawInput(raw RawInputMsg) (tea.Cmd, error) {
 	if m.commandMode {
-		cmd := m.handleCommandInput([]byte(raw))
-		return m.execCmdSync(cmd)
+		return m.handleCommandInput([]byte(raw)), nil
 	}
 	if needsFocusRouting(m.stack) {
 		m.focusBuf = append(m.focusBuf, raw...)
-		return nil
+		return nil, nil
 	}
 	if idx := bytes.IndexByte([]byte(raw), m.registry.PrefixKey); idx >= 0 {
 		if idx > 0 {
-			// Send bytes before the prefix key to the server.
 			m.stack.Update(RawInputMsg(raw[:idx]))
 		}
 		m.enterCommandMode()
 		if rest := raw[idx+1:]; len(rest) > 0 {
-			return m.execCmdSync(m.handleCommandInput(rest))
+			return m.handleCommandInput(rest), nil
 		}
-		return nil
+		return nil, nil
 	}
-	// Forward to the stack (SM routes to active session).
-	cmd := m.stack.Update(RawInputMsg(raw))
-	if cmd != nil {
-		return m.execCmdSync(cmd)
-	}
-	return nil
+	return m.stack.Update(RawInputMsg(raw)), nil
 }
 
 func (m *NxtermModel) execCmdSync(cmd tea.Cmd) error {
-	if cmd == nil {
-		return nil
+	// Trampoline: process commands iteratively to avoid unbounded
+	// recursion through execCmdSync → processRawInput → execCmdSync.
+	var queue []tea.Cmd
+	if cmd != nil {
+		queue = append(queue, cmd)
 	}
-	msg := cmd()
-	if msg == nil {
-		return nil
-	}
-	if batch, ok := msg.(tea.BatchMsg); ok {
-		for _, c := range batch {
-			if err := m.execCmdSync(c); err != nil {
+	for len(queue) > 0 {
+		c := queue[0]
+		queue = queue[1:]
+		msg := c()
+		if msg == nil {
+			continue
+		}
+		switch msg := msg.(type) {
+		case tea.BatchMsg:
+			queue = append(queue, msg...)
+		case RawInputMsg:
+			cmd, err := m.processRawInput(msg)
+			if err != nil {
 				return err
 			}
-		}
-		return nil
-	}
-	if raw, ok := msg.(RawInputMsg); ok {
-		return m.processRawInput(raw)
-	}
-	if _, ok := msg.(tea.QuitMsg); ok {
-		return tea.ErrProgramQuit
-	}
-	// Intercept MainCmd before the stack — NxtermModel is not on the stack.
-	if mc, ok := msg.(MainCmd); ok {
-		resp, cmd, _ := m.handleCmd(mc)
-		if _, ok := resp.(tea.QuitMsg); ok {
+			if cmd != nil {
+				queue = append(queue, cmd)
+			}
+		case tea.QuitMsg:
 			return tea.ErrProgramQuit
+		case MainCmd:
+			resp, next, _ := m.handleCmd(msg)
+			if _, ok := resp.(tea.QuitMsg); ok {
+				return tea.ErrProgramQuit
+			}
+			if next != nil {
+				queue = append(queue, next)
+			}
+		default:
+			if next := m.stack.Update(msg); next != nil {
+				queue = append(queue, next)
+			}
 		}
-		if cmd != nil {
-			return m.execCmdSync(cmd)
-		}
-		return nil
-	}
-	// Dispatch through the layer stack.
-	nextCmd := m.stack.Update(msg)
-	if nextCmd != nil {
-		return m.execCmdSync(nextCmd)
 	}
 	return nil
 }
@@ -496,7 +504,11 @@ func (m *NxtermModel) drainUntil(match func(source string, msg any) bool) (any, 
 			}
 
 		case raw := <-m.rawCh:
-			if err := m.processRawInput(raw); err != nil {
+			cmd, err := m.processRawInput(raw)
+			if err != nil {
+				return nil, err
+			}
+			if err := m.execCmdSync(cmd); err != nil {
 				return nil, err
 			}
 			m.program.Render()
