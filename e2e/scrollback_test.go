@@ -725,3 +725,232 @@ func TestScrollbackDesync(t *testing.T) {
 	nxt.Write([]byte("q"))
 	nxt.WaitFor("nxterm$", 5*time.Second)
 }
+
+// TestScrollbackWheelClamp verifies that scrolling up with the mouse wheel
+// past the top of scrollback clamps the offset instead of growing it
+// unbounded. Without clamping, the user would have to scroll back down
+// through a "phantom" distance before the view starts moving.
+func TestScrollbackWheelClamp(t *testing.T) {
+	t.Parallel()
+	nxt := startFrontendShared(t)
+	defer nxt.Kill()
+
+	nxt.WaitFor("nxterm$", 10*time.Second)
+
+	// Generate ~100 lines of scrollback.
+	nxt.Write([]byte("seq 1 100\r"))
+	nxt.WaitFor("nxterm$", 10*time.Second)
+	nxt.WaitForSilence(200 * time.Millisecond)
+
+	// Enter scrollback via wheel up.
+	wheelUp := fmt.Sprintf("%c[<64;5;5M", ansi.ESC)
+	nxt.Write([]byte(wheelUp))
+	nxt.WaitForScreen(func(lines []string) bool {
+		return strings.Contains(lines[0], "scrollback")
+	}, "scrollback active", 5*time.Second)
+
+	// Scroll up way more than the scrollback contains (~100 lines,
+	// but we send 200 wheel events * 3 lines = 600 lines of scroll).
+	for range 200 {
+		nxt.Write([]byte(wheelUp))
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	// The status bar shows "scrollback [offset/total]". The offset
+	// should be clamped to the total, not inflated past it.
+	nxt.WaitForScreen(func(lines []string) bool {
+		status := lines[0]
+		if !strings.Contains(status, "scrollback") {
+			return false
+		}
+		// Parse "scrollback [N/M]" and verify N <= M.
+		var offset, total int
+		for _, part := range strings.Fields(status) {
+			if strings.HasPrefix(part, "[") && strings.HasSuffix(part, "]") {
+				fmt.Sscanf(part, "[%d/%d]", &offset, &total)
+			}
+		}
+		return total > 0 && offset <= total
+	}, "offset clamped to total", 5*time.Second)
+
+	// Now scroll down once — the view should start moving immediately
+	// (no phantom distance to burn through).
+	wheelDown := fmt.Sprintf("%c[<65;5;5M", ansi.ESC)
+	nxt.Write([]byte(wheelDown))
+	time.Sleep(100 * time.Millisecond)
+
+	// We should still be in scrollback (not auto-exited) since we were
+	// at the top and only scrolled down 3 lines.
+	nxt.WaitForScreen(func(lines []string) bool {
+		status := lines[0]
+		if !strings.Contains(status, "scrollback") {
+			return false
+		}
+		var offset, total int
+		for _, part := range strings.Fields(status) {
+			if strings.HasPrefix(part, "[") && strings.HasSuffix(part, "]") {
+				fmt.Sscanf(part, "[%d/%d]", &offset, &total)
+			}
+		}
+		// After one wheel-down (3 lines) from the top, offset should
+		// be total-3, not still at total.
+		return total > 0 && offset < total
+	}, "offset decreased after one wheel down from top", 5*time.Second)
+
+	nxt.Write([]byte("q"))
+	nxt.WaitForScreen(func(lines []string) bool {
+		return !strings.Contains(lines[0], "scrollback")
+	}, "scrollback exited", 5*time.Second)
+}
+
+// TestScrollbackRapidEntryExit verifies that rapidly entering and exiting
+// scrollback doesn't cause crashes or leave stale state.
+func TestScrollbackRapidEntryExit(t *testing.T) {
+	t.Parallel()
+	nxt := startFrontendShared(t)
+	defer nxt.Kill()
+
+	nxt.WaitFor("nxterm$", 10*time.Second)
+
+	// Generate scrollback.
+	nxt.Write([]byte("seq 1 200\r"))
+	nxt.WaitFor("nxterm$", 10*time.Second)
+	nxt.WaitForSilence(200 * time.Millisecond)
+
+	// Rapidly enter and exit scrollback 10 times.
+	for i := range 10 {
+		// Enter with ctrl+b [
+		nxt.Write([]byte{0x02, '['})
+		nxt.WaitForScreen(func(lines []string) bool {
+			return strings.Contains(lines[0], "scrollback")
+		}, fmt.Sprintf("scrollback active (iter %d)", i), 5*time.Second)
+
+		// Scroll up a bit.
+		nxt.Write([]byte{0x15}) // ctrl+u
+		time.Sleep(50 * time.Millisecond)
+
+		// Exit with q.
+		nxt.Write([]byte("q"))
+		nxt.WaitForScreen(func(lines []string) bool {
+			return !strings.Contains(lines[0], "scrollback")
+		}, fmt.Sprintf("scrollback exited (iter %d)", i), 5*time.Second)
+	}
+
+	// After all cycles, verify the terminal is still responsive.
+	nxt.Write([]byte("echo ALIVE\r"))
+	nxt.WaitFor("ALIVE", 5*time.Second)
+}
+
+// TestScrollbackResize verifies that resizing the terminal while in
+// scrollback mode doesn't corrupt the view or crash.
+func TestScrollbackResize(t *testing.T) {
+	t.Parallel()
+	socketPath, serverCleanup := startServer(t)
+	defer serverCleanup()
+
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
+
+	nxt.WaitFor("nxterm$", 10*time.Second)
+
+	// Generate scrollback.
+	nxt.Write([]byte("seq 1 200\r"))
+	nxt.WaitFor("nxterm$", 10*time.Second)
+	nxt.WaitForSilence(200 * time.Millisecond)
+
+	// Enter scrollback and scroll up.
+	nxt.Write([]byte{0x02, '['})
+	nxt.WaitForScreen(func(lines []string) bool {
+		return strings.Contains(lines[0], "scrollback")
+	}, "scrollback active", 5*time.Second)
+
+	for range 10 {
+		nxt.Write([]byte{0x15}) // ctrl+u
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	// Resize the terminal while in scrollback.
+	nxt.Resize(120, 40)
+	time.Sleep(500 * time.Millisecond)
+
+	// Should still be in scrollback mode.
+	nxt.WaitForScreen(func(lines []string) bool {
+		return strings.Contains(lines[0], "scrollback")
+	}, "scrollback still active after resize", 5*time.Second)
+
+	// Resize back to original size.
+	nxt.Resize(80, 24)
+	time.Sleep(500 * time.Millisecond)
+
+	// Exit scrollback.
+	nxt.Write([]byte("q"))
+	nxt.WaitForScreen(func(lines []string) bool {
+		return !strings.Contains(lines[0], "scrollback")
+	}, "scrollback exited after resize", 5*time.Second)
+
+	// Terminal should still work.
+	nxt.Write([]byte("echo RESIZE_OK\r"))
+	nxt.WaitFor("RESIZE_OK", 5*time.Second)
+}
+
+// TestScrollbackNoGapAfterSync verifies that after the server sync
+// completes, no phantom gap with x-markers appears in the scrollback
+// view. This catches a bug where serverTotal persists after syncBuf is
+// cleared, causing View() to compute a nonzero gap for lines that were
+// already prepended to local history.
+func TestScrollbackNoGapAfterSync(t *testing.T) {
+	t.Parallel()
+	socketPath, serverCleanup := startServer(t)
+	defer serverCleanup()
+
+	nxt := startFrontend(t, socketPath)
+	defer nxt.Kill()
+
+	nxt.WaitFor("nxterm$", 10*time.Second)
+
+	// Generate output, disconnect, reconnect so the client has no
+	// local history and must sync everything from the server.
+	nxt.Write([]byte("for i in $(seq 1 100); do echo \"SYNC_$i\"; done\r"))
+	nxt.WaitFor("nxterm$", 10*time.Second)
+	nxt.WaitForSilence(200 * time.Millisecond)
+
+	// Kill the client to force reconnect.
+	clientID := findFrontendClientID(t, socketPath)
+	runNxtermctl(t, socketPath, "client", "kill", clientID)
+
+	nxt.WaitFor("reconnecting", 10*time.Second)
+	nxt.WaitFor("nxterm$", 10*time.Second)
+	nxt.WaitForSilence(200 * time.Millisecond)
+
+	// Enter scrollback — triggers sync.
+	nxt.Write([]byte{0x02, '['})
+	nxt.WaitForScreen(func(lines []string) bool {
+		return strings.Contains(lines[0], "scrollback")
+	}, "scrollback active", 5*time.Second)
+
+	// Wait for sync to complete (status shows non-zero total).
+	nxt.WaitForScreen(func(lines []string) bool {
+		return strings.Contains(lines[0], "scrollback") &&
+			!strings.Contains(lines[0], "/0]")
+	}, "sync complete", 10*time.Second)
+
+	// Scroll to the top.
+	nxt.Write([]byte("g"))
+	time.Sleep(300 * time.Millisecond)
+
+	// Verify no x-markers on screen (which indicate a phantom gap).
+	screen := nxt.ScreenLines()
+	for i, line := range screen[1:] { // skip tab bar
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		// x-markers look like "x x x x x" (alternating x and space).
+		if strings.Count(trimmed, "x") > 5 && !strings.Contains(trimmed, "SYNC_") {
+			t.Errorf("line %d appears to be a gap marker: %q", i+1, trimmed)
+		}
+	}
+
+	nxt.Write([]byte("q"))
+	nxt.WaitFor("nxterm$", 5*time.Second)
+}

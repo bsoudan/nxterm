@@ -22,17 +22,23 @@ import (
 // response arrives, any lines the server has that the client doesn't
 // (from before the client connected) are prepended to the local history.
 type ScrollbackLayer struct {
-	offset      int           // lines scrolled back from bottom (0 = live)
-	term        *TerminalLayer // reference to the terminal for history + screen
-	serverTotal int           // total server scrollback lines (0 until first chunk)
-	synced      bool          // true once all server chunks have arrived
-	syncBuf     [][]te.Cell   // server chunks accumulated oldest-first
+	offset       int            // lines scrolled back from bottom (0 = live)
+	term         *TerminalLayer // reference to the terminal for history + screen
+	serverTotal  int            // total server scrollback lines (0 until first chunk)
+	synced       bool           // true once all server chunks have arrived
+	syncBuf      [][]te.Cell    // server chunks accumulated oldest-first
+	localAtEntry int            // local scrollback count when scrollback was entered
 }
 
 func newScrollbackLayer(term *TerminalLayer, offset int) *ScrollbackLayer {
+	localAtEntry := 0
+	if term.hscreen != nil {
+		localAtEntry = term.hscreen.Scrollback()
+	}
 	return &ScrollbackLayer{
-		offset: offset,
-		term:   term,
+		offset:       offset,
+		term:         term,
+		localAtEntry: localAtEntry,
 	}
 }
 
@@ -93,9 +99,12 @@ func (s *ScrollbackLayer) handleSyncChunk(msg protocol.GetScrollbackResponse) {
 	}
 
 	// All chunks received. Prepend the older lines the client missed.
-	localCount := s.term.hscreen.Scrollback()
-	gap := len(s.syncBuf) - localCount
-	slog.Debug("scrollback sync complete", "server_lines", len(s.syncBuf), "local_lines", localCount, "gap", gap)
+	// Use localAtEntry (snapshot from when scrollback was entered) rather
+	// than the current Scrollback() count, because terminal events may
+	// have grown the local history during the sync — those new lines are
+	// not in the server's snapshot and must not shrink the gap.
+	gap := len(s.syncBuf) - s.localAtEntry
+	slog.Debug("scrollback sync complete", "server_lines", len(s.syncBuf), "local_at_entry", s.localAtEntry, "local_now", s.term.hscreen.Scrollback(), "gap", gap)
 	if gap > 0 {
 		s.term.hscreen.PrependHistory(s.syncBuf[:gap])
 	}
@@ -105,11 +114,12 @@ func (s *ScrollbackLayer) handleSyncChunk(msg protocol.GetScrollbackResponse) {
 
 // scrollbackTotal returns the best-known total scrollback line count.
 // While syncing, this uses the server-reported total so the user can
-// scroll the full extent. After sync (or if no sync needed), it uses
-// the local history count.
+// scroll the full extent. After sync completes, only the local history
+// count is used — any difference vs serverTotal is due to capacity
+// limits, not data that might still load.
 func (s *ScrollbackLayer) scrollbackTotal() int {
 	local := len(s.term.ScrollbackLines())
-	if s.serverTotal > local {
+	if !s.synced && s.serverTotal > local {
 		return s.serverTotal
 	}
 	return local
@@ -158,6 +168,9 @@ func (s *ScrollbackLayer) handleWheel(button tea.MouseButton) (tea.Msg, tea.Cmd,
 	switch button {
 	case tea.MouseWheelUp:
 		s.offset += 3
+		if maxOffset := s.scrollbackTotal(); s.offset > maxOffset {
+			s.offset = maxOffset
+		}
 	case tea.MouseWheelDown:
 		s.offset -= 3
 		if s.offset <= 0 {
@@ -208,9 +221,12 @@ func (s *ScrollbackLayer) View(width, height int, rs *RenderState) []*lipgloss.L
 	// syncBuf contains the oldest server lines received so far.
 	// gap = serverTotal - syncBufLen - localHistoryLen (not yet loaded).
 	// local history = lines accumulated from terminal events.
+	// After sync completes, syncBuf is cleared and all loadable lines
+	// are in local history — any remaining difference vs serverTotal
+	// is due to capacity limits, not unloaded data, so gap is 0.
 	localLen := len(history)
 	gapLen := 0
-	if s.serverTotal > syncBufLen+localLen {
+	if !s.synced && s.serverTotal > syncBufLen+localLen {
 		gapLen = s.serverTotal - syncBufLen - localLen
 	}
 	totalLines := syncBufLen + gapLen + localLen + len(screenCells)
