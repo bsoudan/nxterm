@@ -1,4 +1,16 @@
-0.14.0-106-ga40e37f*:  M cmd/nxtermctl/main.go  M cmd/nxtermctl/proxy.go  M e2e/client_upgrade_test.go  M e2e/stress_test.go  M go.mod  M go.sum  M internal/server/server.go  M internal/tui/changelog.txt  M internal/tui/main.go ?? TODO.md ?? claude ?? doc/nxterm-app-spec.md ?? doc/server-concurrency.md ?? enter ?? examples/native_scratchpad/native_scratchpad ?? examples_bin/ ?? internal/transport/compress.go ?? logos ?? nxtree.md ?? profile001.callgraph.out ?? todo ?? ttui.tape 
+0.14.0-118-gdc328b4*: M  go.mod UU internal/tui/main.go UU internal/tui/mainlayer.go UU internal/tui/model.go M  internal/tui/rawio.go M  internal/tui/server.go A  pkg/bubbletea/.gitattributes A  pkg/bubbletea/.github/CODEOWNERS A  pkg/bubbletea/.github/ISSUE_TEMPLATE/bug.yml A  pkg/bubbletea/.github/ISSUE_TEMPLATE/bug_report.md A  pkg/bubbletea/.github/ISSUE_TEMPLATE/config.yml A  pkg/bubbletea/.github/ISSUE_TEMPLATE/feature_request.md A  pkg/bubbletea/.github/dependabot.yml A  pkg/bubbletea/.github/workflows/build.yml A  pkg/bubbletea/.github/workflows/coverage.yml A  pkg/bubbletea/.github/workflows/dependabot-sync.yml A  pkg/bubbletea/.github/workflows/examples.yml A  pkg/bubbletea/.github/workflows/lint-sync.yml A  pkg/bubbletea/.github/workflows/lint.yml A  pkg/bubbletea/.github/workflows/release.yml A  pkg/bubbletea/.gitignore A  pkg/bubbletea/.golangci.yml A  pkg/bubbletea/.goreleaser.yml A  pkg/bubbletea/LICENSE A  pkg/bubbletea/README.md A  pkg/bubbletea/Taskfile.yaml A  pkg/bubbletea/UPGRADE_GUIDE_V2.md A  pkg/bubbletea/clipboard.go A  pkg/bubbletea/color.go A  pkg/bubbletea/commands.go A  pkg/bubbletea/commands_test.go A  pkg/bubbletea/cursed_renderer.go A  pkg/bubbletea/cursor.go A  pkg/bubbletea/environ.go A  pkg/bubbletea/exec.go A  pkg/bubbletea/exec_test.go A  pkg/bubbletea/focus.go A  pkg/bubbletea/go.mod A  pkg/bubbletea/go.sum A  pkg/bubbletea/input.go A  pkg/bubbletea/key.go A  pkg/bubbletea/keyboard.go A  pkg/bubbletea/logging.go A  pkg/bubbletea/logging_test.go A  pkg/bubbletea/mod.go A  pkg/bubbletea/mouse.go A  pkg/bubbletea/nil_renderer.go A  pkg/bubbletea/options.go A  pkg/bubbletea/options_test.go A  pkg/bubbletea/paste.go A  pkg/bubbletea/profile.go A  pkg/bubbletea/raw.go A  pkg/bubbletea/renderer.go A  pkg/bubbletea/screen.go A  pkg/bubbletea/screen_test.go A  pkg/bubbletea/signals_unix.go A  pkg/bubbletea/signals_windows.go A  pkg/bubbletea/tea.go A  pkg/bubbletea/tea_test.go A  pkg/bubbletea/termcap.go A  pkg/bubbletea/termios_bsd.go A  pkg/bubbletea/termios_other.go A  pkg/bubbletea/termios_unix.go A  pkg/bubbletea/termios_windows.go A  pkg/bubbletea/testdata/TestClearMsg/bg_fg_cur_color.golden A  pkg/bubbletea/testdata/TestClearMsg/clear_screen.golden A  pkg/bubbletea/testdata/TestClearMsg/read_set_clipboard.golden A  pkg/bubbletea/testdata/TestViewModel/altscreen.golden A  pkg/bubbletea/testdata/TestViewModel/altscreen_autoexit.golden A  pkg/bubbletea/testdata/TestViewModel/bg_set_color.golden A  pkg/bubbletea/testdata/TestViewModel/bp_stop_start.golden A  pkg/bubbletea/testdata/TestViewModel/cursor_hide.golden A  pkg/bubbletea/testdata/TestViewModel/cursor_hideshow.golden A  pkg/bubbletea/testdata/TestViewModel/kitty_stop_startreleases.golden A  pkg/bubbletea/testdata/TestViewModel/mouse_allmotion.golden A  pkg/bubbletea/testdata/TestViewModel/mouse_cellmotion.golden A  pkg/bubbletea/testdata/TestViewModel/mouse_disable.golden A  pkg/bubbletea/tty.go A  pkg/bubbletea/tty_unix.go A  pkg/bubbletea/tty_windows.go A  pkg/bubbletea/xterm.go 
+0.14.0-118-gdc328b4: make: run e2e tests with -parallel 8 -timeout 30s
+0.14.0-117-gd78974b: fix: writeLoop input loss and remaining test flakes
+0.14.0-116-g62e1ece: e2e: reduce test sleeps for faster execution
+0.14.0-115-g96db121: e2e: run tests in parallel and fix server races exposed by load
+0.14.0-114-g530ba82: fix: preserve scrollback history across screen_update resets
+0.14.0-113-gdc0a19b: e2e: add shared server to reduce test startup overhead
+0.14.0-112-g8003ca8: fix: flaky TestAltScreenRestore race with less input readiness
+0.14.0-111-g774a190: remove dead destroyResult.subscribers field
+0.14.0-110-g60af8ca: remove old region_created/region_destroyed broadcasts (Phase 4: cleanup)
+0.14.0-109-gd015b21: switch TUI to tree-based state sync (Phase 3: client migration)
+0.14.0-108-gcf0e568: add client-side TreeStore (Phase 2: client tree infrastructure)
+0.14.0-107-g6e313db: feat: add zstd stream compression on protocol connections
 0.14.0-106-ga40e37f: add object tree state synchronization (Phase 1: server infrastructure)
 0.14.0-105-g13f0c8f: fix: allow scrolling during scrollback sync with x-marker gap
 0.14.0-104-gd257c7e: add scrollback sync debug logging and large reconnect test
@@ -87,15 +99,3 @@
 0.14.0-21-gcec9968: fix: support chained live upgrades (upgrade-from-upgrade)
 0.14.0-20-g4fd2d94: fix: old server process hangs after live upgrade, add simple upgrade test
 0.14.0-19-g26d2ac7: fix: subscribe race where late-joining clients could get blank screen
-0.14.0-18-gc5951d1: systemd notify support, termd live-upgrade command, test reliability
-0.14.0-17-g2b5ccc2: live upgrade: zero-downtime binary upgrade via SIGUSR2
-0.14.0-16-gb838013: connect overlay: browse/select servers from TUI
-0.14.0-15-g45954c5: mDNS service discovery for termd server
-0.14.0-14-gf1c9ae0: fix: ignore Ctrl+Z EOF on Windows to prevent UI freeze
-0.14.0-13-gce63462: no-session mode: stay alive when last session closes
-0.14.0-12-g491c5e7: rename frontend binary to ttui, symlink termd-tui for compat
-0.14.0-11-g0e23117: consolidate multi-module Go layout into single root module
-0.14.0-10-g1f245bb: command palette and rendering fixes
-0.14.0-9-g7fae2ad: fix: buffer incomplete UTF-8 and ANSI sequences across PTY reads
-0.14.0-8-g2b73dfb: add alt+fN, ctrl+fN, and ctrl+./ctrl+, keybindings
-0.14.0-7-g4a0025e: help overlay: use bubbles/v2/table widget, reorder categories

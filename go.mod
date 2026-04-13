@@ -43,3 +43,5 @@ require (
 )
 
 replace github.com/charmbracelet/ultraviolet => ./pkg/ultraviolet
+
+replace charm.land/bubbletea/v2 => ./pkg/bubbletea

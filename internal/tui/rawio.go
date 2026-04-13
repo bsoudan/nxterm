@@ -204,7 +204,7 @@ func filterCapabilityResponses(chunk []byte, capW io.Writer) []byte {
 }
 
 // InputLoop reads raw bytes from stdin and sends complete chunks to
-// bubbletea as RawInputMsg. It spawns a goroutine for blocking reads,
+// rawCh as RawInputMsg. It spawns a goroutine for blocking reads,
 // then runs InputParser for buffering and sequence boundary detection.
 //
 // bubbletea negotiates terminal capabilities by writing query sequences
@@ -212,8 +212,8 @@ func filterCapabilityResponses(chunk []byte, capW io.Writer) []byte {
 // bubbletea reads from a pipe (not stdin directly), these responses must
 // be forwarded through pipeW. filterCapabilityResponses identifies them
 // structurally (by CSI/DCS/OSC pattern) and routes them through pipeW,
-// while all other input is sent as RawInputMsg for the server.
-func InputLoop(stdin *os.File, p *tea.Program, pipeW io.Writer) {
+// while all other input is sent as RawInputMsg on rawCh.
+func InputLoop(stdin *os.File, rawCh chan<- RawInputMsg, pipeW io.Writer) {
 	ch := make(chan []byte, 16)
 	go func() {
 		buf := make([]byte, 4096)
@@ -243,7 +243,7 @@ func InputLoop(stdin *os.File, p *tea.Program, pipeW io.Writer) {
 		Send: func(msg RawInputMsg) {
 			remaining := filterCapabilityResponses([]byte(msg), pipeW)
 			if len(remaining) > 0 {
-				p.Send(RawInputMsg(remaining))
+				rawCh <- RawInputMsg(remaining)
 			}
 		},
 		EscTimeout: 50 * time.Millisecond,

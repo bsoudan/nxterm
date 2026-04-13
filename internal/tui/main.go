@@ -196,50 +196,45 @@ func runFrontend(_ context.Context, cmd *cli.Command) error {
 	sessionName := cmd.String("session")
 	server := NewServer(64, "nxterm")
 
-	// p is declared here so the connectFn closure can capture it.
-	// It is assigned after NewModel below.
 	var p *tea.Program
-	// uiPrompter is similarly captured by reference — the closures
-	// only run after p (and thus the prompter) has been set.
 	var uiPrompter *UIPrompter
 	var wg sync.WaitGroup
-
-	// connectFn dials a server and starts a Server.Run goroutine.
-	// It creates a fresh Server each time so it works for both the
-	// initial connect and subsequent reconnects from the connect overlay.
-	// session, if non-empty, is propagated through ConnectedMsg so the
-	// new SessionLayer requests that session instead of the default.
-	//
-	// Both the dial and the reconnect-loop dialFn use uiPrompter so
-	// any ssh:// auth prompts surface as overlays in the alt screen.
-	connectFn := func(ep, session string) {
-		go func() {
-			c, err := transport.DialWithPrompter(ep, uiPrompter)
-			if err != nil {
-				p.Send(ConnectErrorMsg{Endpoint: ep, Error: err.Error()})
-				return
-			}
-			c = transport.MaybeWrapCompression(transport.WrapTracing(c, "client"), ep)
-			df := func() (net.Conn, error) {
-				rc, err := transport.DialWithPrompter(ep, uiPrompter)
-				if err != nil {
-					return nil, err
-				}
-				return transport.WrapTracing(rc, "client"), nil
-			}
-			newSrv := NewServer(64, "nxterm")
-			p.Send(ConnectedMsg{Endpoint: ep, Session: session, Server: newSrv})
-			newSrv.Run(c, df, p)
-		}()
-	}
 
 	initEndpoint := endpoint
 	if disconnected {
 		initEndpoint = ""
 	}
 
-	model := NewModel(server, pipeW, registry, logRing, initEndpoint, version, changelog, sessionName, cfg.GetStatusBarMargin(), connectFn)
-	p = tea.NewProgram(model,
+	// dialFn wraps transport.DialWithPrompter for both the main loop's
+	// connectOverlay and the Server's reconnect loop.
+	dialFn := func(ep string) (net.Conn, error) {
+		c, err := transport.DialWithPrompter(ep, uiPrompter)
+		if err != nil {
+			return nil, err
+		}
+		return transport.MaybeWrapCompression(transport.WrapTracing(c, "client"), ep), nil
+	}
+
+	// connectFn dials a server and starts a Server.Run goroutine.
+	// Used by MainLayer for "open-session" during an active session.
+	connectFn := func(ep, session string) {
+		go func() {
+			c, err := dialFn(ep)
+			if err != nil {
+				p.Send(ConnectErrorMsg{Endpoint: ep, Error: err.Error()})
+				return
+			}
+			reconnDialFn := func() (net.Conn, error) {
+				return dialFn(ep)
+			}
+			newSrv := NewServer(64, "nxterm")
+			p.Send(ConnectedMsg{Endpoint: ep, Session: session, Server: newSrv})
+			newSrv.Run(c, reconnDialFn)
+		}()
+	}
+	main := NewMainLayer(server, pipeW, registry, logRing, initEndpoint, version, changelog, sessionName, cfg.GetStatusBarMargin(), connectFn)
+
+	p = tea.NewProgram(teaModel{main},
 		tea.WithInput(pipeR),
 		tea.WithColorProfile(colorprofile.TrueColor),
 	)
@@ -254,24 +249,21 @@ func runFrontend(_ context.Context, cmd *cli.Command) error {
 	logHandler.SetNotifyFn(func() { p.Send(LogEntryMsg{}) })
 
 	if !disconnected {
-		dialFn := func() (net.Conn, error) {
-			c, err := transport.DialWithPrompter(endpoint, uiPrompter)
-			if err != nil {
-				return nil, err
-			}
-			return transport.MaybeWrapCompression(transport.WrapTracing(c, "client"), endpoint), nil
+		reconnectDialFn := func() (net.Conn, error) {
+			return dialFn(endpoint)
 		}
 		wg.Add(1)
-		go func() { defer wg.Done(); server.Run(conn, dialFn, p) }()
+		go func() { defer wg.Done(); server.Run(conn, reconnectDialFn) }()
 	}
+	rawCh := make(chan RawInputMsg, 16)
 	wg.Add(1)
-	go func() { defer wg.Done(); InputLoop(stdinDup, p, pipeW) }()
+	go func() { defer wg.Done(); InputLoop(stdinDup, rawCh, pipeW) }()
 
 	// Start mDNS browsing when the connect overlay is shown.
 	browseCtx, browseCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	go browseServers(browseCtx, p)
 
-	finalModel, err := p.Run()
+	err = main.Run(p, rawCh, dialFn, !disconnected)
 
 	browseCancel()
 
@@ -295,7 +287,7 @@ func runFrontend(_ context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("program error: %w", err)
 	}
 
-	if m, ok := finalModel.(Model); ok && m.Detached {
+	if main.Detached {
 		restore()
 		os.Stdout.WriteString("detached\n")
 	}

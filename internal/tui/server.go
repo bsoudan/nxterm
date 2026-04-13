@@ -7,7 +7,6 @@ import (
 	"sync"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
 	"nxtermd/internal/client"
 	"nxtermd/internal/protocol"
 )
@@ -29,11 +28,19 @@ type ReconnectedMsg struct{}
 
 // Server owns the client connection and runs as a separate goroutine.
 // Bubbletea and the input loop communicate with it via Send().
+// Inbound protocol messages and lifecycle events are exposed as channels
+// for the main loop to select on.
 type Server struct {
 	ch          chan any
 	done        chan struct{} // closed by Close() to prevent Send() panic
 	closeOnce   sync.Once
 	processName string
+
+	// Inbound carries protocol messages from the server, read by the main loop.
+	Inbound chan protocol.Message
+
+	// Lifecycle carries DisconnectedMsg/ReconnectedMsg, read by the main loop.
+	Lifecycle chan any
 
 	downloadMu sync.Mutex
 	download   *Download // set during client binary download
@@ -44,6 +51,8 @@ func NewServer(bufSize int, processName string) *Server {
 		ch:          make(chan any, bufSize),
 		done:        make(chan struct{}),
 		processName: processName,
+		Inbound:     make(chan protocol.Message, 256),
+		Lifecycle:   make(chan any, 4),
 	}
 }
 
@@ -81,18 +90,18 @@ func (s *Server) Close() {
 
 // Run connects to the server, processes messages, and handles reconnection.
 // It blocks until the send channel is closed.
-func (s *Server) Run(conn net.Conn, dialFn func() (net.Conn, error), p *tea.Program) {
+func (s *Server) Run(conn net.Conn, dialFn func() (net.Conn, error)) {
 	c := s.newClient(conn)
 	s.sendIdentify(c)
 
 	for {
-		exit := s.runConnection(c, p)
+		exit := s.runConnection(c)
 		if exit {
 			return
 		}
 
 		// Connection lost — reconnect with exponential backoff
-		c = s.reconnect(dialFn, p)
+		c = s.reconnect(dialFn)
 		if c == nil {
 			return // send channel closed during reconnect
 		}
@@ -101,18 +110,8 @@ func (s *Server) Run(conn net.Conn, dialFn func() (net.Conn, error), p *tea.Prog
 
 // runConnection processes messages on a single connection until it drops
 // or the send channel closes. Returns true if we should exit entirely.
-func (s *Server) runConnection(c *client.Client, p *tea.Program) (exit bool) {
+func (s *Server) runConnection(c *client.Client) (exit bool) {
 	recv := c.Recv()
-
-	// Buffer inbound messages to bubbletea so that p.Send() blocking
-	// (e.g. during PTY rendering) doesn't stall the recv drain.
-	inboundBuf := make(chan any, 256)
-	go func() {
-		for msg := range inboundBuf {
-			p.Send(msg)
-		}
-	}()
-	defer close(inboundBuf)
 
 	for {
 		select {
@@ -130,14 +129,14 @@ func (s *Server) runConnection(c *client.Client, p *tea.Program) (exit bool) {
 				c.Close()
 				return false
 			}
-			s.dispatchInbound(msg, recv, inboundBuf)
+			s.dispatchInbound(msg, recv, s.Inbound)
 		}
 	}
 }
 
 // reconnect attempts to restore the connection with exponential backoff.
 // Returns the new client, or nil if the send channel was closed.
-func (s *Server) reconnect(dialFn func() (net.Conn, error), p *tea.Program) *client.Client {
+func (s *Server) reconnect(dialFn func() (net.Conn, error)) *client.Client {
 	if dialFn == nil {
 		return nil
 	}
@@ -147,7 +146,11 @@ func (s *Server) reconnect(dialFn func() (net.Conn, error), p *tea.Program) *cli
 
 	for {
 		retryAt := time.Now().Add(backoff)
-		p.Send(DisconnectedMsg{RetryAt: retryAt})
+		select {
+		case s.Lifecycle <- DisconnectedMsg{RetryAt: retryAt}:
+		case <-s.done:
+			return nil
+		}
 
 		// Wait for backoff. Messages queue in s.ch (buffered) during this time.
 		time.Sleep(backoff)
@@ -196,7 +199,12 @@ func (s *Server) reconnect(dialFn func() (net.Conn, error), p *tea.Program) *cli
 		}
 
 		s.sendIdentify(c)
-		p.Send(ReconnectedMsg{})
+		select {
+		case s.Lifecycle <- ReconnectedMsg{}:
+		case <-s.done:
+			c.Close()
+			return nil
+		}
 		return c
 	}
 }
@@ -218,10 +226,10 @@ func (s *Server) dispatchOutbound(c *client.Client, msg any) {
 	}
 }
 
-// dispatchInbound sends a message to bubbletea via the inbound buffer.
+// dispatchInbound sends a message to the inbound channel.
 // TerminalEvents are batched for performance. Binary chunks are written
 // directly to the active download to avoid backpressure through bubbletea.
-func (s *Server) dispatchInbound(msg protocol.Message, recv <-chan protocol.Message, inbound chan<- any) {
+func (s *Server) dispatchInbound(msg protocol.Message, recv <-chan protocol.Message, inbound chan<- protocol.Message) {
 	// Fast path: write binary chunks directly to the download file.
 	if chunk, ok := msg.Payload.(protocol.ClientBinaryChunk); ok {
 		s.downloadMu.Lock()

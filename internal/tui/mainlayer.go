@@ -1,8 +1,11 @@
 package tui
 
 import (
+	"bytes"
 	"fmt"
 	"io"
+	"net"
+	"os"
 	"runtime"
 	"slices"
 	"strconv"
@@ -13,12 +16,17 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"nxtermd/internal/protocol"
+	"nxtermd/internal/transport"
 	"nxtermd/pkg/layer"
 )
 
 // MainLayer sits at index 0 in the layer stack and manages multiple
 // SessionLayers. It intercepts session management commands and global
 // messages, forwarding everything else to the active session.
+//
+// MainLayer owns all TUI state: the layer stack, request state, task
+// runner, and connection lifecycle. The mainLoop drives it; bubbletea
+// sees it through a thin teaModel adapter for Init/Update/View.
 type MainLayer struct {
 	server    *Server
 	pipeW     io.Writer
@@ -50,14 +58,9 @@ type MainLayer struct {
 	termWidth  int
 	termHeight int
 
-	// pendingConnect is true when an initial SessionConnectRequest is
-	// queued but not yet sent because we don't know the window size yet.
-	// Cleared after the first WindowSizeMsg triggers the send.
-	pendingConnect bool
-
-	connectFn    func(endpoint, session string) // dials a server and sends ConnectedMsg
-	sessionName  string                         // initial session name, used after deferred connect
-	swapServerFn func(*Server)                  // updates the requestFn's server reference
+	connectFn   func(endpoint, session string) // dials a server and sends ConnectedMsg
+	sessionName string                         // initial session name, used after deferred connect
+	swapServer  func(*Server)                  // updates requestFn's server closure
 
 	// Number of blank rows between the tab/status bar at row 0 and the
 	// terminal content. Configured via FrontendConfig.StatusBarMargin.
@@ -67,15 +70,39 @@ type MainLayer struct {
 	// chord keys until a match or mismatch is found.
 	commandMode   bool
 	commandBuffer []string
+
+	// stack is the layer stack that MainLayer sits at the bottom of.
+	stack *layer.Stack[RenderState]
+
+	// req holds the shared request state (req_id counter, pending replies).
+	req *requestState
+
+	// Detached is set by the detach command to signal the main loop
+	// to print "detached" after shutdown.
+	Detached bool
+
+	// program and rawCh are set by Run and used by the event loop.
+	program *tea.Program
+	rawCh   <-chan RawInputMsg
 }
 
 func NewMainLayer(
-	server *Server, pipeW io.Writer, requestFn RequestFunc, registry *Registry,
+	server *Server, pipeW io.Writer, registry *Registry,
 	logRing *LogRingBuffer,
-	endpoint, version, changelog, hostname, sessionName string,
+	endpoint, version, changelog, sessionName string,
 	statusBarMargin int,
 	connectFn func(endpoint, session string),
 ) *MainLayer {
+	hostname, _ := os.Hostname()
+	req := &requestState{pending: make(map[uint64]ReplyFunc)}
+	currentServer := server
+	requestFn := func(msg any, reply ReplyFunc) {
+		req.nextReqID++
+		req.pending[req.nextReqID] = reply
+		currentServer.Send(protocol.TaggedWithReqID(msg, req.nextReqID))
+	}
+	req.requestFn = requestFn
+
 	m := &MainLayer{
 		server:          server,
 		pipeW:           pipeW,
@@ -90,10 +117,16 @@ func NewMainLayer(
 		connectFn:       connectFn,
 		sessionName:     sessionName,
 		statusBarMargin: statusBarMargin,
+		req:             req,
 	}
+
+	m.swapServer = func(newSrv *Server) { currentServer = newSrv }
+	m.treeStore = &TreeStore{}
+	m.tasks = layer.NewTaskRunner[RenderState]()
+	m.stack = layer.NewStack[RenderState](m)
+
 	if endpoint != "" {
-		// Connected mode: create initial session immediately.
-		session := NewSessionLayer(server, requestFn, registry, nil, logRing, endpoint, version, changelog, hostname, sessionName, statusBarMargin)
+		session := NewSessionLayer(server, requestFn, registry, m.treeStore, logRing, endpoint, version, changelog, hostname, sessionName, statusBarMargin)
 		m.sessions = []*SessionLayer{session}
 	}
 	return m
@@ -212,12 +245,6 @@ func (m *MainLayer) Init() tea.Cmd {
 			return PushLayerMsg{Layer: NewConnectLayer(recents)}
 		}
 	}
-	// Defer the SessionConnectRequest until the first WindowSizeMsg
-	// arrives so we can pass the actual viewport size to the server. The
-	// server uses these to size the PTYs of newly-spawned regions,
-	// avoiding an initial 80x24 → real-size resize round trip.
-	m.pendingConnect = true
-	m.checkForUpgrades()
 	return tea.Tick(3*time.Second, func(time.Time) tea.Msg { return showHintMsg{} })
 }
 
@@ -278,7 +305,7 @@ func (m *MainLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 
 	case ConnectedMsg:
 		m.server = msg.Server
-		m.swapServerFn(msg.Server)
+		m.swapServer(msg.Server)
 		m.endpoint = msg.Endpoint
 		m.connStatus = "connected"
 		// If the connect overlay specified a session, adopt it so
@@ -307,30 +334,6 @@ func (m *MainLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 		return nil, nil, false // let ConnectLayer handle it
 
 	// ── System messages ─────────────────────────────────────────────────
-
-	case DisconnectedMsg:
-		m.connStatus = "reconnecting"
-		m.retryAt = msg.RetryAt
-		for _, s := range m.sessions {
-			s.connStatus = "reconnecting"
-		}
-		return nil, tea.Tick(time.Second, func(time.Time) tea.Msg { return reconnectTickMsg{} }), true
-
-	case ReconnectedMsg:
-		m.connStatus = "connected"
-		m.retryAt = time.Time{}
-		for _, s := range m.sessions {
-			s.connStatus = "connected"
-		}
-		for _, s := range m.sessions {
-			s.Reconnect()
-		}
-		// Force resubscribe — the old subscription died with the connection.
-		if s := m.activeSessionLayer(); s != nil {
-			s.Activate()
-		}
-		m.checkForUpgrades()
-		return nil, nil, true
 
 	case reconnectTickMsg:
 		if m.connStatus == "reconnecting" {
@@ -362,17 +365,6 @@ func (m *MainLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 	case tea.WindowSizeMsg:
 		m.termWidth = msg.Width
 		m.termHeight = msg.Height
-		if m.pendingConnect && len(m.sessions) > 0 && m.termWidth > 0 && m.termHeight > 1 {
-			m.pendingConnect = false
-			s := m.sessions[0]
-			s.termWidth = m.termWidth
-			s.termHeight = m.termHeight
-			s.server.Send(protocol.SessionConnectRequest{
-				Session: s.sessionName,
-				Width:   uint16(m.termWidth),
-				Height:  uint16(m.viewportHeight()),
-			})
-		}
 		return m.forwardToActiveSession(msg)
 
 	// ── Everything else → active session ────────────────────────────────
@@ -711,4 +703,359 @@ func (m *MainLayer) checkForUpgrades() {
 			m.upgradeClientVer = resp.ClientVersion
 		}
 	})
+}
+
+// ── Event loop ──────────────────────────────────────────────────────────
+
+// Run is the top-level event loop. It replaces bubbletea's internal
+// eventLoop with an explicit select over all message sources: bubbletea
+// terminal events, raw stdin input, server protocol messages, and server
+// lifecycle events. Everything runs on one goroutine.
+func (m *MainLayer) Run(p *tea.Program, rawCh <-chan RawInputMsg,
+	dialFn func(string) (net.Conn, error), connected bool) error {
+
+	if err := p.Start(); err != nil {
+		return err
+	}
+
+	m.program = p
+	m.rawCh = rawCh
+
+	if connected {
+		m.initialSetup()
+	} else {
+		m.connectOverlay(dialFn)
+	}
+	m.checkForUpgrades()
+
+	for {
+		srv := m.server
+		select {
+		case msg := <-p.Msgs():
+			_, err := p.Handle(msg)
+			if err != nil {
+				_, stopErr := p.Stop(nil)
+				return stopErr
+			}
+
+		case raw := <-rawCh:
+			m.processRawInput(raw)
+			p.Render()
+
+		case msg := <-srv.Inbound:
+			m.processServerMsg(msg)
+			p.Render()
+
+		case msg := <-srv.Lifecycle:
+			switch msg := msg.(type) {
+			case DisconnectedMsg:
+				m.reconnectLoop(msg)
+			}
+
+		case <-p.Context().Done():
+			_, err := p.Stop(nil)
+			return err
+		}
+	}
+}
+
+// processRawInput handles raw bytes from stdin.
+func (m *MainLayer) processRawInput(raw RawInputMsg) {
+	if m.commandMode {
+		cmd := m.handleCommandInput([]byte(raw))
+		m.execCmdSync(cmd)
+		return
+	}
+	if needsFocusRouting(m.stack) {
+		buf := []byte(raw)
+		for len(buf) > 0 {
+			_, _, n, _ := ansi.DecodeSequence(buf, ansi.NormalState, nil)
+			if n <= 0 {
+				n = len(buf)
+			}
+			m.pipeW.Write(buf[:n])
+			buf = buf[n:]
+		}
+		return
+	}
+	if idx := bytes.IndexByte([]byte(raw), m.registry.PrefixKey); idx >= 0 {
+		if idx > 0 {
+			m.sendRawToServer(raw[:idx])
+		}
+		m.enterCommandMode()
+		if rest := raw[idx+1:]; len(rest) > 0 {
+			m.execCmdSync(m.handleCommandInput(rest))
+		}
+		return
+	}
+	if filters := collectKeyFilters(m.stack); len(filters) > 0 {
+		if m.handleFilteredInput(raw, filters) {
+			return
+		}
+	}
+	// Normal mode — forward to active session.
+	if s := m.activeSessionLayer(); s != nil {
+		_, cmd := s.handleRawInput([]byte(raw))
+		if cmd != nil {
+			m.program.Send(cmd())
+		}
+	}
+}
+
+// handleFilteredInput scans raw input for sequences matching key
+// filters. Returns true if a filter matched.
+func (m *MainLayer) handleFilteredInput(raw RawInputMsg, filters [][]byte) bool {
+	buf := []byte(raw)
+	pos := 0
+	for pos < len(buf) {
+		_, _, n, _ := ansi.DecodeSequence(buf[pos:], ansi.NormalState, nil)
+		if n == 0 {
+			break
+		}
+		seq := buf[pos : pos+n]
+		for _, f := range filters {
+			if bytes.Equal(seq, f) {
+				if pos > 0 {
+					m.sendRawToServer(buf[:pos])
+				}
+				m.pipeW.Write(seq)
+				if rest := buf[pos+n:]; len(rest) > 0 {
+					m.processRawInput(RawInputMsg(rest))
+				}
+				return true
+			}
+		}
+		pos += n
+	}
+	return false
+}
+
+// execCmdSync executes a tea.Cmd synchronously. Handles RawInputMsg
+// re-sends recursively; other messages go through bubbletea.
+func (m *MainLayer) execCmdSync(cmd tea.Cmd) {
+	if cmd == nil {
+		return
+	}
+	msg := cmd()
+	if msg == nil {
+		return
+	}
+	if raw, ok := msg.(RawInputMsg); ok {
+		m.processRawInput(raw)
+		return
+	}
+	m.program.Send(msg)
+}
+
+// processServerMsg handles a protocol message from the server.
+func (m *MainLayer) processServerMsg(msg protocol.Message) {
+	if msg.ReqID > 0 {
+		if reply, ok := m.req.pending[msg.ReqID]; ok {
+			delete(m.req.pending, msg.ReqID)
+			reply(msg.Payload)
+			return
+		}
+	}
+
+	// Tree sync
+	switch tmsg := msg.Payload.(type) {
+	case protocol.TreeSnapshot:
+		m.treeStore.HandleSnapshot(tmsg)
+		m.stack.Update(TreeChangedMsg{Tree: m.treeStore.Tree()})
+		return
+	case protocol.TreeEvents:
+		if !m.treeStore.HandleEvents(tmsg) {
+			m.server.Send(protocol.Tagged(protocol.TreeResyncRequest{}))
+			return
+		}
+		m.stack.Update(TreeChangedMsg{Tree: m.treeStore.Tree()})
+		return
+	}
+
+	m.stack.Update(msg.Payload)
+}
+
+// drainUntil reads from all channels, processing each message through
+// its handler, and returns when a message from any source matches the
+// filter. Returns nil if the context is cancelled.
+func (m *MainLayer) drainUntil(match func(source string, msg any) bool) any {
+	for {
+		select {
+		case msg := <-m.program.Msgs():
+			processed, err := m.program.Handle(msg)
+			if err != nil {
+				return nil
+			}
+			if processed != nil && match("tea", processed) {
+				return processed
+			}
+
+		case raw := <-m.rawCh:
+			m.processRawInput(raw)
+			m.program.Render()
+			if match("raw", raw) {
+				return raw
+			}
+
+		case msg := <-m.server.Inbound:
+			m.processServerMsg(msg)
+			m.program.Render()
+			if match("server", msg) {
+				return msg
+			}
+
+		case msg := <-m.server.Lifecycle:
+			if match("lifecycle", msg) {
+				return msg
+			}
+
+		case <-m.program.Context().Done():
+			return nil
+		}
+	}
+}
+
+// initialSetup waits for the window size then sends SessionConnectRequest.
+func (m *MainLayer) initialSetup() {
+	m.drainUntil(func(source string, msg any) bool {
+		_, ok := msg.(tea.WindowSizeMsg)
+		return source == "tea" && ok
+	})
+
+	if len(m.sessions) == 0 {
+		return
+	}
+	sess := m.sessions[0]
+	sess.server.Send(protocol.SessionConnectRequest{
+		Session: sess.sessionName,
+		Width:   uint16(m.termWidth),
+		Height:  uint16(m.viewportHeight()),
+	})
+}
+
+// reconnectLoop handles the reconnection lifecycle.
+func (m *MainLayer) reconnectLoop(initial DisconnectedMsg) {
+	m.connStatus = "reconnecting"
+	m.retryAt = initial.RetryAt
+	for _, s := range m.sessions {
+		s.connStatus = "reconnecting"
+	}
+
+	tickDone := make(chan struct{})
+	go func() {
+		defer close(tickDone)
+		t := time.NewTicker(time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-t.C:
+				m.program.Send(reconnectTickMsg{})
+			case <-tickDone:
+				return
+			case <-m.program.Context().Done():
+				return
+			}
+		}
+	}()
+
+	for {
+		msg := m.drainUntil(func(source string, msg any) bool {
+			if source != "lifecycle" {
+				return false
+			}
+			switch msg.(type) {
+			case DisconnectedMsg, ReconnectedMsg:
+				return true
+			}
+			return false
+		})
+
+		switch msg := msg.(type) {
+		case nil:
+			close(tickDone)
+			return
+		case DisconnectedMsg:
+			m.retryAt = msg.RetryAt
+		case ReconnectedMsg:
+			close(tickDone)
+			m.connStatus = "connected"
+			m.retryAt = time.Time{}
+			for _, s := range m.sessions {
+				s.connStatus = "connected"
+			}
+			for _, s := range m.sessions {
+				s.Reconnect()
+			}
+			if s := m.activeSessionLayer(); s != nil {
+				s.Activate()
+			}
+			m.checkForUpgrades()
+			return
+		}
+	}
+}
+
+// connectOverlay handles the initial disconnected-mode connect flow.
+func (m *MainLayer) connectOverlay(dialFn func(string) (net.Conn, error)) {
+	for {
+		msg := m.drainUntil(func(source string, msg any) bool {
+			if source != "tea" {
+				return false
+			}
+			_, ok := msg.(ConnectToServerMsg)
+			return ok
+		})
+
+		if msg == nil {
+			return
+		}
+
+		connectMsg := msg.(ConnectToServerMsg)
+
+		conn, err := dialFn(connectMsg.Endpoint)
+		if err != nil {
+			m.program.Send(ConnectErrorMsg{
+				Endpoint: connectMsg.Endpoint,
+				Error:    err.Error(),
+			})
+			continue
+		}
+		conn = transport.WrapTracing(conn, "client")
+
+		newSrv := NewServer(64, "nxterm")
+		reconnDialFn := func() (net.Conn, error) {
+			c, err := dialFn(connectMsg.Endpoint)
+			if err != nil {
+				return nil, err
+			}
+			return transport.WrapTracing(c, "client"), nil
+		}
+		go newSrv.Run(conn, reconnDialFn)
+
+		m.server.Close()
+		m.server = newSrv
+		m.swapServer(newSrv)
+		m.endpoint = connectMsg.Endpoint
+		m.connStatus = "connected"
+
+		if connectMsg.Session != "" {
+			m.sessionName = connectMsg.Session
+		}
+
+		session := NewSessionLayer(newSrv, m.requestFn, m.registry,
+			m.treeStore, m.logRing, m.endpoint, m.version, m.changelog,
+			m.localHostname, m.sessionName, m.statusBarMargin)
+		session.termWidth = m.termWidth
+		session.termHeight = m.termHeight
+		m.sessions = []*SessionLayer{session}
+		m.activeSession = 0
+		session.server.Send(protocol.SessionConnectRequest{
+			Session: session.sessionName,
+			Width:   uint16(m.termWidth),
+			Height:  uint16(m.viewportHeight()),
+		})
+
+		SaveRecent(recentAddress(connectMsg.Endpoint, connectMsg.Session), connectMsg.Endpoint)
+		return
+	}
 }

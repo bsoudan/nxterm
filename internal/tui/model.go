@@ -1,84 +1,24 @@
 package tui
 
 import (
-	"bytes"
-	"io"
-	"os"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/x/ansi"
 	"nxtermd/internal/protocol"
-	"nxtermd/pkg/layer"
 	"nxtermd/internal/transport"
+	"nxtermd/pkg/layer"
 )
 
-// Model is the top-level bubbletea model. It owns the layer stack and
-// dispatches messages top-down. Protocol message unwrapping, req_id
-// matching, raw input routing, and overlay compositing happen here.
-type Model struct {
-	stack     *layer.Stack[RenderState]
-	registry  *Registry
-	req       *requestState
-	Tasks     *layer.TaskRunner[RenderState]
-	treeStore *TreeStore
-	server    *Server
-	Detached  bool
+// teaModel adapts MainLayer to bubbletea's Model interface.
+// It has no state of its own — everything lives on MainLayer.
+type teaModel struct{ *MainLayer }
+
+func (m teaModel) Init() tea.Cmd {
+	return tea.Batch(m.MainLayer.Init(), m.tasks.ListenCmd())
 }
 
-func NewModel(s *Server, pipeW io.Writer, registry *Registry, ring *LogRingBuffer, endpoint, version, changelog, sessionName string, statusBarMargin int, connectFn func(endpoint, session string)) Model {
-	hostname, _ := os.Hostname()
-	req := &requestState{pending: make(map[uint64]ReplyFunc)}
-	// currentServer is a mutable pointer so requestFn always uses the
-	// latest server even after a reconnect swaps it.
-	currentServer := s
-	requestFn := func(msg any, reply ReplyFunc) {
-		req.nextReqID++
-		req.pending[req.nextReqID] = reply
-		currentServer.Send(protocol.TaggedWithReqID(msg, req.nextReqID))
-	}
-	req.requestFn = requestFn
-	main := NewMainLayer(s, pipeW, requestFn, registry, ring, endpoint, version, changelog, hostname, sessionName, statusBarMargin, connectFn)
-	main.swapServerFn = func(newSrv *Server) { currentServer = newSrv }
-	tasks := layer.NewTaskRunner[RenderState]()
-	main.tasks = tasks
-	stack := layer.NewStack[RenderState](main)
-	ts := &TreeStore{}
-	// Wire up treeStore reference so MainLayer and its SessionLayers
-	// can read the tree on demand (e.g., when SessionConnectResponse
-	// arrives and the session name becomes known).
-	main.treeStore = ts
-	for _, s := range main.sessions {
-		s.treeStore = ts
-	}
-	return Model{
-		stack:     stack,
-		registry:  registry,
-		req:       req,
-		Tasks:     tasks,
-		treeStore: ts,
-		server:    s,
-	}
-}
-
-func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.stack.Layers()[0].(*MainLayer).Init(), m.Tasks.ListenCmd())
-}
-
-func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// Unwrap protocol.Message: match req_id, then dispatch payload.
-	if pmsg, ok := msg.(protocol.Message); ok {
-		if pmsg.ReqID > 0 {
-			if reply, ok := m.req.pending[pmsg.ReqID]; ok {
-				delete(m.req.pending, pmsg.ReqID)
-				reply(pmsg.Payload)
-				return m, nil
-			}
-		}
-		msg = pmsg.Payload
-	}
-
+func (m teaModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Handle tree sync messages before anything else.
 	switch tmsg := msg.(type) {
 	case protocol.TreeSnapshot:
@@ -96,22 +36,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// Route task messages from task goroutines.
 	if layer.IsTaskMsg(msg) {
-		cmd := m.Tasks.HandleMsg(msg)
-		return m, tea.Batch(cmd, m.Tasks.ListenCmd())
+		cmd := m.tasks.HandleMsg(msg)
+		return m, tea.Batch(cmd, m.tasks.ListenCmd())
 	}
 
 	// Handle task Send messages — request/response from task goroutines.
-	// requestFn runs here on the bubbletea goroutine (safe for requestState).
 	if tsm, ok := msg.(layer.TaskSendMsg); ok {
 		m.req.requestFn(tsm.Payload, func(payload any) {
-			m.Tasks.Deliver(tsm.TaskID, payload)
+			m.tasks.Deliver(tsm.TaskID, payload)
 		})
 		return m, nil
 	}
 
 	// Check task WaitFor filters before layer iteration.
-	if m.Tasks.CheckFilters(msg) {
-		return m, nil // message consumed by a task
+	if m.tasks.CheckFilters(msg) {
+		return m, nil
 	}
 
 	// DetachMsg signals the app should record detach state.
@@ -120,129 +59,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// RawInputMsg: Model handles command mode, focus mode routing,
-	// prefix key detection, and key filter interception before the
-	// normal layer iteration.
-	//  - Command mode buffers keys after the prefix and matches
-	//    against the chord trie (handled synchronously in MainLayer).
-	//  - Focus mode feeds one sequence at a time through pipeW so
-	//    overlay layers can pop between keystrokes.
-	//  - Prefix key detection enters command mode and passes any
-	//    remaining bytes to the chord buffer.
-	//  - Key filters intercept specific sequences (e.g. PageUp/PageDown)
-	//    and route them through bubbletea's key parser while forwarding
-	//    the rest to the server.
-	if raw, ok := msg.(RawInputMsg); ok {
-		main := m.stack.Layers()[0].(*MainLayer)
-		if main.commandMode {
-			return m, main.handleCommandInput([]byte(raw))
-		}
-		if needsFocusRouting(m.stack) {
-			return m.handleFocusInput(raw, main.pipeW)
-		}
-		if idx := bytes.IndexByte([]byte(raw), m.registry.PrefixKey); idx >= 0 {
-			return m.handlePrefixDetected(raw, idx, main)
-		}
-		if filters := collectKeyFilters(m.stack); len(filters) > 0 {
-			if cmd := m.handleFilteredInput(raw, filters, main); cmd != nil {
-				return m, cmd
-			}
-		}
-		// Normal mode — fall through to layer iteration.
-		// MainLayer forwards to active session for mouse routing and server forwarding.
-	}
-
 	// Dispatch through the layer stack.
 	cmd := m.stack.Update(msg)
 	return m, cmd
 }
 
-// handleFocusInput routes raw input through pipeW one sequence at a time.
-// This allows overlay layers (help, scrollback, etc.) to receive
-// tea.KeyPressMsg events. Each sequence is written to pipeW individually;
-// remaining bytes are re-sent as a new RawInputMsg for the next cycle.
-func (m Model) handleFocusInput(raw RawInputMsg, pipeW io.Writer) (tea.Model, tea.Cmd) {
-	_, _, n, _ := ansi.DecodeSequence([]byte(raw), ansi.NormalState, nil)
-	if n <= 0 {
-		n = len(raw)
-	}
-
-	first := make([]byte, n)
-	copy(first, raw[:n])
-	writeCmd := func() tea.Msg {
-		pipeW.Write(first)
-		return nil
-	}
-
-	if n < len(raw) {
-		rest := make([]byte, len(raw)-n)
-		copy(rest, raw[n:])
-		resendCmd := func() tea.Msg { return RawInputMsg(rest) }
-		return m, tea.Sequence(writeCmd, resendCmd)
-	}
-	return m, writeCmd
-}
-
-// handlePrefixDetected handles a RawInputMsg that contains the prefix key.
-// Bytes before the prefix are forwarded to the server. MainLayer enters
-// command mode synchronously, and any remaining bytes are passed to the
-// chord buffer immediately — no async layer push needed.
-func (m Model) handlePrefixDetected(raw RawInputMsg, idx int, main *MainLayer) (tea.Model, tea.Cmd) {
-	if idx > 0 {
-		main.sendRawToServer(raw[:idx])
-	}
-	main.enterCommandMode()
-	rest := raw[idx+1:]
-	if len(rest) > 0 {
-		return m, main.handleCommandInput(rest)
-	}
-	return m, nil
-}
-
-// handleFilteredInput scans raw input for sequences matching key filters.
-// When a match is found, bytes before it are forwarded to the server,
-// the matching sequence is written to pipeW (so bubbletea delivers it
-// as a tea.KeyPressMsg), and remaining bytes are re-sent as RawInputMsg.
-// Returns nil if no filtered keys were found.
-func (m Model) handleFilteredInput(raw RawInputMsg, filters [][]byte, main *MainLayer) tea.Cmd {
-	buf := []byte(raw)
-	pos := 0
-	for pos < len(buf) {
-		_, _, n, _ := ansi.DecodeSequence(buf[pos:], ansi.NormalState, nil)
-		if n == 0 {
-			break
-		}
-		seq := buf[pos : pos+n]
-		for _, f := range filters {
-			if bytes.Equal(seq, f) {
-				if pos > 0 {
-					main.sendRawToServer(buf[:pos])
-				}
-				filtered := make([]byte, n)
-				copy(filtered, seq)
-				writeCmd := func() tea.Msg {
-					main.pipeW.Write(filtered)
-					return nil
-				}
-				rest := buf[pos+n:]
-				if len(rest) > 0 {
-					restCopy := make([]byte, len(rest))
-					copy(restCopy, rest)
-					resendCmd := func() tea.Msg { return RawInputMsg(restCopy) }
-					return tea.Sequence(writeCmd, resendCmd)
-				}
-				return writeCmd
-			}
-		}
-		pos += n
-	}
-	return nil
-}
-
-func (m Model) View() tea.View {
-	main := m.stack.Layers()[0].(*MainLayer)
-
-	width, height := main.termWidth, main.termHeight
+func (m teaModel) View() tea.View {
+	width, height := m.termWidth, m.termHeight
 	if width <= 0 {
 		width = 80
 	}
@@ -251,7 +74,6 @@ func (m Model) View() tea.View {
 	}
 
 	// Pass 1: collect status and build render state.
-	// Each layer's Status() may set flags on the render state.
 	statusText := ""
 	statusStyle := lipgloss.Style{}
 	rs := RenderState{}
@@ -277,7 +99,7 @@ func (m Model) View() tea.View {
 	layers := m.stack.View(width, height, &rs)
 
 	// Status bar (right side of tab bar) as the topmost layer.
-	statusContent, statusWidth := renderStatusBar(statusText, main.version, statusStyle, rs.HasHint)
+	statusContent, statusWidth := renderStatusBar(statusText, m.version, statusStyle, rs.HasHint)
 	statusX := max(width-statusWidth, 0)
 	layers = append(layers, lipgloss.NewLayer(statusContent).X(statusX).Z(2))
 
@@ -285,9 +107,9 @@ func (m Model) View() tea.View {
 
 	v := tea.NewView(content)
 	v.AltScreen = true
-	v.WindowTitle = windowTitle(main)
+	v.WindowTitle = windowTitle(m.MainLayer)
 
-	if activeTerm := main.ActiveTerm(); activeTerm != nil {
+	if activeTerm := m.ActiveTerm(); activeTerm != nil {
 		switch activeTerm.MouseMode() {
 		case 2:
 			v.MouseMode = tea.MouseModeAllMotion
@@ -300,9 +122,7 @@ func (m Model) View() tea.View {
 }
 
 // serverFromEndpoint returns the host:port (or path) portion of a dial
-// spec, used for the window title prefix. For ssh specs with a user@
-// prefix, the user is stripped. Unknown / empty specs are returned
-// unchanged.
+// spec, used for the window title prefix.
 func serverFromEndpoint(endpoint string) string {
 	if endpoint == "" {
 		return ""
@@ -315,14 +135,7 @@ func serverFromEndpoint(endpoint string) string {
 }
 
 // windowTitle composes the outer-terminal window title for the active
-// session+region. Format:
-//
-//	"<title> • nx <server>"             when sessionName == "main"
-//	"<title> • nx <session>@<server>"   otherwise
-//
-// The title falls back to the region name when the PTY has not set one;
-// if there is no active region, only the "• nx <server>" suffix is shown.
-// When there is no active session/endpoint, returns "nxterm".
+// session+region.
 func windowTitle(main *MainLayer) string {
 	session := main.activeSessionLayer()
 	if session == nil {
