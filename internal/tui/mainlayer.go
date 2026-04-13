@@ -16,11 +16,11 @@ import (
 	"nxtermd/pkg/layer"
 )
 
-// MainLayer owns the event loop, command mode, connection lifecycle,
+// NxtermModel owns the event loop, command mode, connection lifecycle,
 // and global commands. It is NOT a layer — it sits above the stack
 // and dispatches messages into it. SessionManagerLayer at the base
 // of the stack handles session management and terminal routing.
-type MainLayer struct {
+type NxtermModel struct {
 	server   *Server
 	pipeW    io.Writer
 	registry *Registry
@@ -66,20 +66,21 @@ type MainLayer struct {
 	focusBuf []byte
 }
 
-func NewMainLayer(
+// NewNxtermModel creates the top-level application model.
+func NewNxtermModel(
 	server *Server, pipeW io.Writer, registry *Registry,
 	logRing *LogRingBuffer,
 	endpoint, version, changelog, sessionName string,
 	statusBarMargin int,
 	connectFn func(endpoint, session string),
-) *MainLayer {
+) *NxtermModel {
 	hostname, _ := os.Hostname()
 	treeStore := &TreeStore{}
 	tasks := layer.NewTaskRunner[RenderState]()
 
 	sm := NewSessionManagerLayer(server, registry, treeStore, tasks, logRing, endpoint, version, changelog, hostname, sessionName, statusBarMargin)
 
-	m := &MainLayer{
+	m := &NxtermModel{
 		server:         server,
 		pipeW:          pipeW,
 		registry:       registry,
@@ -98,12 +99,12 @@ func NewMainLayer(
 }
 
 // enterCommandMode is called when the prefix key is detected.
-func (m *MainLayer) enterCommandMode() {
+func (m *NxtermModel) enterCommandMode() {
 	m.commandMode = true
 	m.commandBuffer = m.commandBuffer[:0]
 }
 
-func (m *MainLayer) exitCommandMode() {
+func (m *NxtermModel) exitCommandMode() {
 	m.commandMode = false
 	m.commandBuffer = m.commandBuffer[:0]
 }
@@ -124,7 +125,7 @@ func rawSeqToChordKey(seq []byte) string {
 }
 
 // handleCommandInput processes raw bytes while in command mode.
-func (m *MainLayer) handleCommandInput(raw []byte) tea.Cmd {
+func (m *NxtermModel) handleCommandInput(raw []byte) tea.Cmd {
 	pos := 0
 	for pos < len(raw) {
 		_, _, n, _ := ansi.DecodeSequence(raw[pos:], ansi.NormalState, nil)
@@ -168,9 +169,9 @@ func resendRemainder(raw []byte, pos int) tea.Cmd {
 	return func() tea.Msg { return RawInputMsg(rest) }
 }
 
-// Init returns the initial command. If disconnected, pushes the connect
-// overlay; otherwise starts the hint timer.
-func (m *MainLayer) Init() tea.Cmd {
+// init returns the initial command. If disconnected, pushes the connect
+// overlay; otherwise starts the hint timer. Called by Init in model.go.
+func (m *NxtermModel) init() tea.Cmd {
 	if len(m.sm.sessions) == 0 {
 		recents := LoadRecents()
 		return func() tea.Msg {
@@ -180,18 +181,18 @@ func (m *MainLayer) Init() tea.Cmd {
 	return tea.Tick(3*time.Second, func(time.Time) tea.Msg { return showHintMsg{} })
 }
 
-func (m *MainLayer) quit() (tea.Msg, tea.Cmd) {
+func (m *NxtermModel) quit() (tea.Msg, tea.Cmd) {
 	m.sm.Deactivate()
 	return nil, tea.Quit
 }
 
-func (m *MainLayer) detach() (tea.Msg, tea.Cmd) {
+func (m *NxtermModel) detach() (tea.Msg, tea.Cmd) {
 	m.sm.Deactivate()
 	m.Detached = true
 	return nil, tea.Quit
 }
 
-func (m *MainLayer) handleCmd(msg MainCmd) (tea.Msg, tea.Cmd, bool) {
+func (m *NxtermModel) handleCmd(msg MainCmd) (tea.Msg, tea.Cmd, bool) {
 	push := func(l layer.Layer[RenderState]) (tea.Msg, tea.Cmd, bool) {
 		return nil, func() tea.Msg { return PushLayerMsg{Layer: l} }, true
 	}
@@ -247,7 +248,7 @@ func (m *MainLayer) handleCmd(msg MainCmd) (tea.Msg, tea.Cmd, bool) {
 
 // ── Event loop ──────────────────────────────────────────────────────────
 
-func (m *MainLayer) Run(p *tea.Program, rawCh <-chan RawInputMsg,
+func (m *NxtermModel) Run(p *tea.Program, rawCh <-chan RawInputMsg,
 	dialFn func(string) (net.Conn, error), connected bool) error {
 
 	if err := p.Start(); err != nil {
@@ -334,7 +335,7 @@ func (m *MainLayer) Run(p *tea.Program, rawCh <-chan RawInputMsg,
 	}
 }
 
-func (m *MainLayer) stepFocusSequence() error {
+func (m *NxtermModel) stepFocusSequence() error {
 	if !needsFocusRouting(m.stack) {
 		rest := m.focusBuf
 		m.focusBuf = nil
@@ -369,7 +370,7 @@ func (m *MainLayer) stepFocusSequence() error {
 	}
 }
 
-func (m *MainLayer) processRawInput(raw RawInputMsg) error {
+func (m *NxtermModel) processRawInput(raw RawInputMsg) error {
 	if m.commandMode {
 		cmd := m.handleCommandInput([]byte(raw))
 		return m.execCmdSync(cmd)
@@ -397,7 +398,7 @@ func (m *MainLayer) processRawInput(raw RawInputMsg) error {
 	return nil
 }
 
-func (m *MainLayer) execCmdSync(cmd tea.Cmd) error {
+func (m *NxtermModel) execCmdSync(cmd tea.Cmd) error {
 	if cmd == nil {
 		return nil
 	}
@@ -419,7 +420,7 @@ func (m *MainLayer) execCmdSync(cmd tea.Cmd) error {
 	if _, ok := msg.(tea.QuitMsg); ok {
 		return tea.ErrProgramQuit
 	}
-	// Intercept MainCmd before the stack — MainLayer is not on the stack.
+	// Intercept MainCmd before the stack — NxtermModel is not on the stack.
 	if mc, ok := msg.(MainCmd); ok {
 		resp, cmd, _ := m.handleCmd(mc)
 		if _, ok := resp.(tea.QuitMsg); ok {
@@ -438,7 +439,7 @@ func (m *MainLayer) execCmdSync(cmd tea.Cmd) error {
 	return nil
 }
 
-func (m *MainLayer) processServerMsg(msg protocol.Message) {
+func (m *NxtermModel) processServerMsg(msg protocol.Message) {
 	if msg.ReqID > 0 {
 		if taskID, ok := m.pendingReplies[msg.ReqID]; ok {
 			delete(m.pendingReplies, msg.ReqID)
@@ -465,7 +466,7 @@ func (m *MainLayer) processServerMsg(msg protocol.Message) {
 	m.stack.Update(msg.Payload)
 }
 
-func (m *MainLayer) drainUntil(match func(source string, msg any) bool) (any, error) {
+func (m *NxtermModel) drainUntil(match func(source string, msg any) bool) (any, error) {
 	for {
 		if len(m.focusBuf) > 0 {
 			if err := m.stepFocusSequence(); err != nil {
@@ -512,7 +513,7 @@ func (m *MainLayer) drainUntil(match func(source string, msg any) bool) (any, er
 	}
 }
 
-func (m *MainLayer) initialSetup() {
+func (m *NxtermModel) initialSetup() {
 	if _, err := m.drainUntil(func(source string, msg any) bool {
 		_, ok := msg.(tea.WindowSizeMsg)
 		return source == "tea" && ok
@@ -532,7 +533,7 @@ func (m *MainLayer) initialSetup() {
 	})
 }
 
-func (m *MainLayer) reconnectLoop(initial DisconnectedMsg) {
+func (m *NxtermModel) reconnectLoop(initial DisconnectedMsg) {
 	m.sm.SetRetryAt(initial.RetryAt)
 	m.stack.Update(SetConnStatusMsg{Status: "reconnecting"})
 	m.program.Render()
@@ -581,7 +582,7 @@ func (m *MainLayer) reconnectLoop(initial DisconnectedMsg) {
 	}
 }
 
-func (m *MainLayer) connectOverlay(dialFn func(string) (net.Conn, error)) {
+func (m *NxtermModel) connectOverlay(dialFn func(string) (net.Conn, error)) {
 	for {
 		msg, err := m.drainUntil(func(source string, msg any) bool {
 			if source != "tea" {

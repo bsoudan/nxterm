@@ -216,7 +216,7 @@ func runFrontend(_ context.Context, cmd *cli.Command) error {
 	}
 
 	// connectFn dials a server and starts a Server.Run goroutine.
-	// Used by MainLayer for "open-session" during an active session.
+	// Used by NxtermModel for "open-session" during an active session.
 	connectFn := func(ep, session string) {
 		go func() {
 			c, err := dialFn(ep)
@@ -232,9 +232,9 @@ func runFrontend(_ context.Context, cmd *cli.Command) error {
 			newSrv.Run(c, reconnDialFn)
 		}()
 	}
-	main := NewMainLayer(server, pipeW, registry, logRing, initEndpoint, version, changelog, sessionName, cfg.GetStatusBarMargin(), connectFn)
+	main := NewNxtermModel(server, pipeW, registry, logRing, initEndpoint, version, changelog, sessionName, cfg.GetStatusBarMargin(), connectFn)
 
-	p = tea.NewProgram(teaModel{main},
+	p = tea.NewProgram(main,
 		tea.WithInput(pipeR),
 		tea.WithColorProfile(colorprofile.TrueColor),
 	)

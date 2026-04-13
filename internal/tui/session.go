@@ -18,7 +18,7 @@ type tab struct {
 }
 
 // SessionLayer manages one named session's regions and terminals.
-// MainLayer owns the session list and forwards messages here.
+// SessionManagerLayer owns the session list and forwards messages here.
 type SessionLayer struct {
 	server   *Server
 	registry *Registry
@@ -29,7 +29,7 @@ type SessionLayer struct {
 	tabs      []tab
 	activeTab int
 
-	connStatus string // set by MainLayer on disconnect/reconnect
+	connStatus string // set by SessionManagerLayer on disconnect/reconnect
 	status     string
 	err        string
 
@@ -180,7 +180,7 @@ func NewSessionLayer(
 }
 
 // Reconnect re-sends the SessionConnectRequest to refresh the region list.
-// Called by MainLayer after a connection is restored.
+// Called by SessionManagerLayer after a connection is restored.
 func (s *SessionLayer) Reconnect() {
 	height := s.termHeight - 1 - s.statusBarMargin
 	if height < 1 {
@@ -201,7 +201,7 @@ func (s *SessionLayer) KillAllRegions() {
 }
 
 // Activate subscribes to the active region. Called when this session
-// becomes the active session (e.g., MainLayer switches to it).
+// becomes the active session (e.g., SessionManagerLayer switches to it).
 func (s *SessionLayer) Activate() tea.Cmd {
 	if t := s.activeTerm(); t != nil {
 		s.status = "subscribing..."
@@ -247,7 +247,7 @@ func (s *SessionLayer) prevTab() {
 
 // Update implements the Layer interface.
 // Update implements the Layer interface. Handles session-specific messages.
-// Global messages (disconnect, reconnect, detach, etc.) are handled by MainLayer.
+// Global messages (disconnect, reconnect, detach, etc.) are handled by SessionManagerLayer.
 func (s *SessionLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 	switch msg := msg.(type) {
 	case RawInputMsg:
@@ -530,7 +530,7 @@ func (s *SessionLayer) renderTabBar(width int) string {
 }
 
 // Status implements the Layer interface. Returns scrollback mode or session name.
-// Reconnecting status is handled by MainLayer.
+// Reconnecting status is handled by SessionManagerLayer.
 var (
 	statusFaint      = lipgloss.NewStyle().Faint(true)
 	statusBoldRed    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1"))

@@ -11,15 +11,16 @@ import (
 	"nxtermd/pkg/layer"
 )
 
-// teaModel adapts MainLayer to bubbletea's Model interface.
-// It has no state of its own — everything lives on MainLayer.
-type teaModel struct{ *MainLayer }
+// NxtermModel implements tea.Model via Init/Update/View defined here.
+// The event loop (Run), command mode, and connection lifecycle are in
+// mainlayer.go.
 
-func (m teaModel) Init() tea.Cmd {
-	return tea.Batch(m.MainLayer.Init(), m.tasks.ListenCmd())
+func (m *NxtermModel) Init() tea.Cmd {
+	initCmd := m.init()
+	return tea.Batch(initCmd, m.tasks.ListenCmd())
 }
 
-func (m teaModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *NxtermModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Handle tree sync messages before anything else.
 	switch tmsg := msg.(type) {
 	case protocol.TreeSnapshot:
@@ -60,13 +61,13 @@ func (m teaModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// MainCmd is handled directly — MainLayer is not on the stack.
+	// MainCmd is handled directly — NxtermModel is not on the stack.
 	if mc, ok := msg.(MainCmd); ok {
 		_, cmd, _ := m.handleCmd(mc)
 		return m, cmd
 	}
 
-	// System messages handled by MainLayer.
+	// System messages.
 	switch msg := msg.(type) {
 	case reconnectTickMsg:
 		if m.sm.connStatus == "reconnecting" {
@@ -99,7 +100,7 @@ func (m teaModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m teaModel) View() tea.View {
+func (m *NxtermModel) View() tea.View {
 	width, height := m.termWidth, m.termHeight
 	if width <= 0 {
 		width = 80
@@ -113,7 +114,7 @@ func (m teaModel) View() tea.View {
 	statusStyle := lipgloss.Style{}
 	rs := RenderState{}
 
-	// Command mode status comes from MainLayer (not on the stack).
+	// Command mode status comes from NxtermModel (not on the stack).
 	rs.CommandMode = m.commandMode
 	if m.commandMode {
 		if len(m.commandBuffer) > 0 {
@@ -220,4 +221,3 @@ func renderStatusBar(status, version string, style lipgloss.Style, showVersion b
 
 	return result, displayWidth
 }
-
