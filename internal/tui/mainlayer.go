@@ -82,8 +82,9 @@ type MainLayer struct {
 	Detached bool
 
 	// program and rawCh are set by Run and used by the event loop.
-	program *tea.Program
-	rawCh   <-chan RawInputMsg
+	program       *tea.Program
+	rawCh         <-chan RawInputMsg
+	quitRequested bool
 }
 
 func NewMainLayer(
@@ -732,14 +733,17 @@ func (m *MainLayer) Run(p *tea.Program, rawCh <-chan RawInputMsg,
 		srv := m.server
 		select {
 		case msg := <-p.Msgs():
-			_, err := p.Handle(msg)
-			if err != nil {
-				_, stopErr := p.Stop(nil)
-				return stopErr
+			if _, err := p.Handle(msg); err != nil {
+				p.Stop(nil)
+				return nil
 			}
 
 		case raw := <-rawCh:
 			m.processRawInput(raw)
+			if m.quitRequested {
+				p.Stop(nil)
+				return nil
+			}
 			p.Render()
 
 		case msg := <-srv.Inbound:
@@ -753,8 +757,8 @@ func (m *MainLayer) Run(p *tea.Program, rawCh <-chan RawInputMsg,
 			}
 
 		case <-p.Context().Done():
-			_, err := p.Stop(nil)
-			return err
+			p.Stop(nil)
+			return nil
 		}
 	}
 }
@@ -840,11 +844,34 @@ func (m *MainLayer) execCmdSync(cmd tea.Cmd) {
 	if msg == nil {
 		return
 	}
+	// Handle batch commands (from handleCommandInput when there's
+	// remaining input after the matched chord).
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, c := range batch {
+			m.execCmdSync(c)
+		}
+		return
+	}
 	if raw, ok := msg.(RawInputMsg); ok {
 		m.processRawInput(raw)
 		return
 	}
-	m.program.Send(msg)
+	// Handle quit/detach messages directly — they can't go through
+	// bubbletea's message pipeline from inside the main loop.
+	if _, ok := msg.(DetachMsg); ok {
+		m.Detached = true
+		m.quitRequested = true
+		return
+	}
+	if _, ok := msg.(tea.QuitMsg); ok {
+		m.quitRequested = true
+		return
+	}
+	// Dispatch through the layer stack.
+	_, nextCmd, _ := m.Update(msg)
+	if nextCmd != nil {
+		m.execCmdSync(nextCmd)
+	}
 }
 
 // processServerMsg handles a protocol message from the server.
