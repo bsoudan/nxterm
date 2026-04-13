@@ -78,7 +78,7 @@ func NewNxtermModel(
 	treeStore := &TreeStore{}
 	tasks := layer.NewTaskRunner[RenderState]()
 
-	sm := NewSessionManagerLayer(server, registry, treeStore, tasks, logRing, endpoint, version, changelog, hostname, sessionName, statusBarMargin)
+	sm := NewSessionManagerLayer(server, registry, treeStore, tasks, endpoint, version, hostname, sessionName, statusBarMargin)
 
 	m := &NxtermModel{
 		server:         server,

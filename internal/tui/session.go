@@ -20,8 +20,8 @@ type tab struct {
 // SessionLayer manages one named session's regions and terminals.
 // SessionManagerLayer owns the session list and forwards messages here.
 type SessionLayer struct {
-	server   *Server
-	registry *Registry
+	server    *Server
+	registry  *Registry
 	treeStore *TreeStore
 
 	programs []protocol.ProgramInfo
@@ -33,12 +33,8 @@ type SessionLayer struct {
 	status     string
 	err        string
 
-	logRing       *LogRingBuffer
-	localHostname string
-	endpoint      string
-	version       string
-	changelog     string
-	sessionName   string
+	endpoint    string
+	sessionName string
 
 	termWidth       int
 	termHeight      int
@@ -159,8 +155,8 @@ func (s *SessionLayer) syncFromTree(tree protocol.Tree) {
 // NewSessionLayer creates a session layer with the given dependencies.
 func NewSessionLayer(
 	server *Server, registry *Registry,
-	treeStore *TreeStore, logRing *LogRingBuffer,
-	endpoint, version, changelog, hostname, sessionName string,
+	treeStore *TreeStore,
+	endpoint, sessionName string,
 	statusBarMargin int,
 ) *SessionLayer {
 	return &SessionLayer{
@@ -168,10 +164,6 @@ func NewSessionLayer(
 		registry:        registry,
 		treeStore:       treeStore,
 		endpoint:        endpoint,
-		version:         version,
-		changelog:       changelog,
-		localHostname:   hostname,
-		logRing:         logRing,
 		sessionName:     sessionName,
 		statusBarMargin: statusBarMargin,
 		connStatus:      "connected",

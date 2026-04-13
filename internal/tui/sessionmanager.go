@@ -35,11 +35,9 @@ type SessionManagerLayer struct {
 	sessions      []*SessionLayer
 	activeSession int
 
-	logRing         *LogRingBuffer
 	localHostname   string
 	endpoint        string
 	version         string
-	changelog       string
 	sessionName     string
 	statusBarMargin int
 
@@ -62,8 +60,7 @@ type SessionManagerLayer struct {
 func NewSessionManagerLayer(
 	server *Server, registry *Registry, treeStore *TreeStore,
 	tasks *layer.TaskRunner[RenderState],
-	logRing *LogRingBuffer,
-	endpoint, version, changelog, hostname, sessionName string,
+	endpoint, version, hostname, sessionName string,
 	statusBarMargin int,
 ) *SessionManagerLayer {
 	sm := &SessionManagerLayer{
@@ -71,17 +68,15 @@ func NewSessionManagerLayer(
 		registry:        registry,
 		treeStore:       treeStore,
 		tasks:           tasks,
-		logRing:         logRing,
 		localHostname:   hostname,
 		endpoint:        endpoint,
 		version:         version,
-		changelog:       changelog,
 		sessionName:     sessionName,
 		statusBarMargin: statusBarMargin,
 		connStatus:      "connected",
 	}
 	if endpoint != "" {
-		session := NewSessionLayer(server, registry, treeStore, logRing, endpoint, version, changelog, hostname, sessionName, statusBarMargin)
+		session := NewSessionLayer(server, registry, treeStore, endpoint, sessionName, statusBarMargin)
 		sm.sessions = []*SessionLayer{session}
 	}
 	return sm
@@ -159,7 +154,7 @@ func (sm *SessionManagerLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 		if msg.Session != "" {
 			sm.sessionName = msg.Session
 		}
-		session := NewSessionLayer(sm.server, sm.registry, sm.treeStore, sm.logRing, sm.endpoint, sm.version, sm.changelog, sm.localHostname, sm.sessionName, sm.statusBarMargin)
+		session := NewSessionLayer(sm.server, sm.registry, sm.treeStore, sm.endpoint, sm.sessionName, sm.statusBarMargin)
 		session.termWidth = sm.termWidth
 		session.termHeight = sm.termHeight
 		sm.sessions = []*SessionLayer{session}
