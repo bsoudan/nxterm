@@ -42,6 +42,7 @@ type Region interface {
 
 	ScrollbackLen() int
 	IsNative() bool
+	NeedsInput() bool
 
 	// Subscriber management — backed by the region actor.
 	AddSubscriber(c *Client) Snapshot
@@ -95,6 +96,7 @@ func (r *PTYRegion) SetSession(s string) { r.session = s }
 func (r *PTYRegion) Width() int          { return int(r.width.Load()) }
 func (r *PTYRegion) Height() int         { return int(r.height.Load()) }
 func (r *PTYRegion) IsNative() bool      { return false }
+func (r *PTYRegion) NeedsInput() bool    { return true }
 
 // Snapshot returns the current screen state, composited with the overlay
 // if one is active.

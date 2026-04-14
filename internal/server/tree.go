@@ -123,7 +123,8 @@ func (t *ServerTree) SetRegion(r Region) {
 	node := protocol.RegionNode{
 		ID: r.ID(), Name: r.Name(), Cmd: r.Cmd(), Pid: r.Pid(),
 		Session: r.Session(), Width: r.Width(), Height: r.Height(),
-		Native: r.IsNative(), ScrollbackLen: r.ScrollbackLen(),
+		Native: r.IsNative(), NeedsInput: r.NeedsInput(),
+		ScrollbackLen: r.ScrollbackLen(),
 	}
 	// Preserve StackID if the entry already exists (set by SetRegionStackID).
 	if existing, ok := t.regions[r.ID()]; ok {

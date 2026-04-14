@@ -49,6 +49,7 @@ type RegionNode struct {
 	Width         int    `json:"width"`
 	Height        int    `json:"height"`
 	Native        bool   `json:"native,omitempty"`
+	NeedsInput    bool   `json:"needs_input,omitempty"`
 	ScrollbackLen int    `json:"scrollback_len,omitempty"`
 }
 
