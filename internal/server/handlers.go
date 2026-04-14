@@ -75,6 +75,8 @@ var messageHandlers = map[string]msgHandler{
 	"upgrade_check_request":   withMsg(handleUpgradeCheck),
 	"server_upgrade_request":  withReplyOnly(handleServerUpgrade),
 	"client_binary_request":   withMsg(handleClientBinaryDownload),
+	"add_region_request":      withMsg(handleAddRegion),
+	"region_render":           withMsgOnly(handleRegionRender),
 	"overlay_register":        withMsg(handleOverlayRegister),
 	"overlay_render":          withMsgOnly(handleOverlayRender),
 	"overlay_clear":           withMsgOnly(handleOverlayClear),
@@ -487,7 +489,48 @@ func handleRemoveProgram(s *Server, _ *Client, msg protocol.RemoveProgramRequest
 	})
 }
 
-// ── Overlay handlers ─────────────────────────────────────────────────────────
+// ── Stack region handlers ────────────────────────────────────────────────────
+
+func handleAddRegion(s *Server, c *Client, msg protocol.AddRegionRequest, reply func(any)) {
+	resp := make(chan addRegionResult, 1)
+	if !s.send(addRegionReq{client: c, stackID: msg.StackID, position: msg.Position, resp: resp}) {
+		return
+	}
+	result := <-resp
+	if result.err != "" {
+		reply(protocol.AddRegionResponse{
+			Type:    "add_region_response",
+			StackID: msg.StackID,
+			Error:   true,
+			Message: result.err,
+		})
+		return
+	}
+	reply(protocol.AddRegionResponse{
+		Type:     "add_region_response",
+		RegionID: result.regionID,
+		StackID:  msg.StackID,
+		Width:    result.width,
+		Height:   result.height,
+	})
+}
+
+func handleRegionRender(s *Server, c *Client, msg protocol.RegionRender) {
+	region := s.FindRegion(msg.RegionID)
+	if region == nil {
+		return
+	}
+	vr, ok := region.(*VirtualRegion)
+	if !ok {
+		return
+	}
+	if vr.ownerID != c.id {
+		return
+	}
+	vr.Render(msg.Cells, msg.CursorRow, msg.CursorCol, msg.Modes)
+}
+
+// ── Overlay handlers (deprecated) ───────────────────────────────────────────
 
 func handleOverlayRegister(s *Server, c *Client, msg protocol.OverlayRegisterRequest, reply func(any)) {
 	resp := make(chan overlayRegisterResult, 1)

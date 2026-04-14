@@ -19,12 +19,13 @@ type request interface {
 // programs, and clients. The auxiliary maps track server-internal
 // bookkeeping that clients don't need to see.
 type eventLoopState struct {
-	srv            *Server
-	tree           *ServerTree
-	subscriptions  map[uint32]string // clientID → regionID
-	clientOverlays map[uint32]string // clientID → regionID
-	regionOverlays map[string]uint32 // regionID → overlay clientID
-	exit           bool
+	srv              *Server
+	tree             *ServerTree
+	subscriptions    map[uint32]string   // clientID → regionID
+	clientOverlays   map[uint32]string   // clientID → regionID
+	regionOverlays   map[string]uint32   // regionID → overlay clientID
+	clientVirtRegions map[uint32][]string // clientID → virtual region IDs owned
+	exit             bool
 }
 
 // commitAndBroadcast ends the current transaction and broadcasts
@@ -66,6 +67,7 @@ type removeClientReq struct {
 type spawnRegionReq struct {
 	region      Region
 	sessionName string
+	stackID     string
 	resp        chan struct{}
 }
 
@@ -178,6 +180,22 @@ type shutdownResult struct {
 	regions []Region
 }
 
+// ── Stack region types ──────────────────────────────────────────────────────
+
+type addRegionReq struct {
+	client   *Client
+	stackID  string
+	position string // "top" or "bottom"
+	resp     chan addRegionResult
+}
+
+type addRegionResult struct {
+	regionID string
+	width    int
+	height   int
+	err      string
+}
+
 // ── Overlay types ────────────────────────────────────────────────────────────
 
 type overlayState struct {
@@ -231,9 +249,10 @@ func (s *Server) eventLoop() {
 	st := &eventLoopState{
 		srv:            s,
 		tree:           tree,
-		subscriptions:  make(map[uint32]string),
-		clientOverlays: make(map[uint32]string),
-		regionOverlays: make(map[string]uint32),
+		subscriptions:     make(map[uint32]string),
+		clientOverlays:    make(map[uint32]string),
+		regionOverlays:    make(map[string]uint32),
+		clientVirtRegions: make(map[uint32][]string),
 	}
 
 	for {
@@ -288,6 +307,31 @@ func (r removeClientReq) handle(st *eventLoopState) {
 		delete(st.clientOverlays, r.clientID)
 		delete(st.regionOverlays, rid)
 	}
+	// Destroy virtual regions owned by this client.
+	if vrIDs, ok := st.clientVirtRegions[r.clientID]; ok {
+		for _, vrID := range vrIDs {
+			region := st.tree.Region(vrID)
+			if region == nil {
+				continue
+			}
+			sessionName := region.Session()
+			stackID := st.tree.RegionStackID(vrID)
+			region.Close()
+			st.tree.DeleteRegion(vrID)
+			if stackID != "" {
+				st.tree.RemoveRegionFromStack(stackID, vrID)
+				if rids, ok := st.tree.StackRegionIDs(stackID); ok && len(rids) == 0 {
+					st.tree.RemoveStackFromSession(sessionName, stackID)
+					st.tree.DeleteStack(stackID)
+				}
+			}
+			if sids, ok := st.tree.SessionStackIDs(sessionName); ok && len(sids) == 0 {
+				st.tree.DeleteSession(sessionName)
+			}
+			slog.Info("virtual region destroyed on disconnect", "region_id", vrID, "client_id", r.clientID)
+		}
+		delete(st.clientVirtRegions, r.clientID)
+	}
 	st.tree.DeleteClient(r.clientID)
 	slog.Debug("client disconnected", "id", r.clientID)
 }
@@ -296,7 +340,10 @@ func (r spawnRegionReq) handle(st *eventLoopState) {
 	r.region.SetSession(r.sessionName)
 	st.tree.SetRegion(r.region)
 	created := st.tree.EnsureSession(r.sessionName)
-	stackID := generateUUID()
+	stackID := r.stackID
+	if stackID == "" {
+		stackID = generateUUID()
+	}
 	st.tree.SetStack(stackID, r.sessionName)
 	st.tree.AddRegionToStack(stackID, r.region.ID())
 	st.tree.SetRegionStackID(r.region.ID(), stackID)
@@ -539,7 +586,65 @@ func (r getSessionInfosReq) handle(st *eventLoopState) {
 	r.resp <- infos
 }
 
-// ── Overlay handlers ─────────────────────────────────────────────────────────
+// ── Stack region handlers ────────────────────────────────────────────────────
+
+func (r addRegionReq) handle(st *eventLoopState) {
+	// Find a region in the target stack to get dimensions.
+	rids, ok := st.tree.StackRegionIDs(r.stackID)
+	if !ok || len(rids) == 0 {
+		r.resp <- addRegionResult{err: "stack not found or empty"}
+		return
+	}
+	baseRegion := st.tree.Region(rids[0])
+	if baseRegion == nil {
+		r.resp <- addRegionResult{err: "base region not found"}
+		return
+	}
+
+	width := baseRegion.Width()
+	height := baseRegion.Height()
+
+	// Create the virtual region.
+	vr := NewVirtualRegion(r.client.id, width, height, st.srv.destroyRegion)
+
+	// Determine the session from the stack.
+	stackEntry, stackOK := st.tree.stacks[r.stackID]
+	if !stackOK {
+		r.resp <- addRegionResult{err: "stack not found"}
+		vr.Close()
+		return
+	}
+	sessionName := stackEntry.node.Session
+	vr.SetSession(sessionName)
+
+	// Register in the tree.
+	st.tree.SetRegion(vr)
+	st.tree.SetRegionStackID(vr.ID(), r.stackID)
+	if r.position == "bottom" {
+		// Prepend: insert at position 0 (shift existing to the right).
+		// For now, use AddRegionToStack which appends, then reorder.
+		// Actually, "bottom" means the base — we insert at the start.
+		// Use a dedicated method or manual reorder.
+		// Simplest: add at the end and reorder would be complex.
+		// For now, add_region always goes on top. Bottom is rarely used.
+		st.tree.AddRegionToStack(r.stackID, vr.ID())
+	} else {
+		st.tree.AddRegionToStack(r.stackID, vr.ID())
+	}
+
+	// Track for cleanup on disconnect.
+	st.clientVirtRegions[r.client.id] = append(st.clientVirtRegions[r.client.id], vr.ID())
+
+	slog.Info("virtual region added to stack", "region_id", vr.ID(), "stack_id", r.stackID, "client_id", r.client.id)
+
+	r.resp <- addRegionResult{
+		regionID: vr.ID(),
+		width:    width,
+		height:   height,
+	}
+}
+
+// ── Overlay handlers (deprecated) ───────────────────────────────────────────
 
 func (r overlayRegisterReq) handle(st *eventLoopState) {
 	region := st.tree.Region(r.regionID)

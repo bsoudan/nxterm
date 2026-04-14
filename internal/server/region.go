@@ -301,14 +301,14 @@ func (r *PTYRegion) ActorDone() <-chan struct{} {
 
 // ── Construction ─────────────────────────────────────────────────────────────
 
-func NewRegion(cmdStr string, args []string, env map[string]string, width, height int, socketAddr string, destroyFn func(string)) (Region, error) {
+func NewRegion(cmdStr string, args []string, env map[string]string, width, height int, socketAddr, stackID string, destroyFn func(string)) (Region, error) {
 	id := generateUUID()
 	name := extractName(cmdStr)
 
 	cmdObj := exec.Command(cmdStr, args...)
 	cmdObj.Env = append(os.Environ(), "TERM=xterm-256color", "PS1=nxterm$ ")
 	if socketAddr != "" {
-		cmdObj.Env = append(cmdObj.Env, "NXTERMD_SOCKET="+socketAddr, "NXTERMD_REGIONID="+id)
+		cmdObj.Env = append(cmdObj.Env, "NXTERMD_SOCKET="+socketAddr, "NXTERMD_REGIONID="+id, "NXTERMD_STACKID="+stackID)
 	}
 	for k, v := range env {
 		cmdObj.Env = append(cmdObj.Env, k+"="+v)

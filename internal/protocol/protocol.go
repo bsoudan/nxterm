@@ -380,7 +380,36 @@ type TerminalEvents struct {
 	Events   []TerminalEvent `json:"events"`
 }
 
-// ── Overlay protocol ────────────────────────────────────────────────────────
+// ── Stack region protocol ────────────────────────────────────────────────────
+
+type AddRegionRequest struct {
+	Type     string `json:"type,omitempty"`
+	StackID  string `json:"stack_id"`
+	Position string `json:"position"` // "top" or "bottom"
+}
+
+type AddRegionResponse struct {
+	Type     string `json:"type,omitempty"`
+	RegionID string `json:"region_id"`
+	StackID  string `json:"stack_id"`
+	Width    int    `json:"width"`
+	Height   int    `json:"height"`
+	Error    bool   `json:"error"`
+	Message  string `json:"message"`
+}
+
+// RegionRender updates a virtual region's screen content. Sent by the
+// owning client (native app) to push new cell data to subscribers.
+type RegionRender struct {
+	Type      string         `json:"type,omitempty"`
+	RegionID  string         `json:"region_id"`
+	Cells     [][]ScreenCell `json:"cells"`
+	CursorRow uint16         `json:"cursor_row"`
+	CursorCol uint16         `json:"cursor_col"`
+	Modes     map[int]bool   `json:"modes,omitempty"`
+}
+
+// ── Overlay protocol (deprecated — use add_region + region_render) ──────────
 
 type OverlayRegisterRequest struct {
 	Type     string `json:"type,omitempty"`
@@ -471,6 +500,7 @@ var payloadParsers = map[string]func([]byte) (any, error){
 	"server_upgrade_response":   parseAs[ServerUpgradeResponse],
 	"client_binary_chunk":       parseAs[ClientBinaryChunk],
 	"client_binary_response":    parseAs[ClientBinaryResponse],
+	"add_region_response":       parseAs[AddRegionResponse],
 	"overlay_register_response": parseAs[OverlayRegisterResponse],
 	"overlay_input":             parseAs[OverlayInput],
 	"tree_snapshot":             parseAs[TreeSnapshot],
@@ -566,6 +596,8 @@ var typeTagMap = map[reflect.Type]string{
 	reflect.TypeOf(ServerUpgradeRequest{}):   "server_upgrade_request",
 	reflect.TypeOf(ClientBinaryRequest{}):    "client_binary_request",
 	reflect.TypeOf(Disconnect{}):             "disconnect",
+	reflect.TypeOf(AddRegionRequest{}):        "add_region_request",
+	reflect.TypeOf(RegionRender{}):            "region_render",
 	reflect.TypeOf(OverlayRegisterRequest{}): "overlay_register",
 	reflect.TypeOf(OverlayRender{}):          "overlay_render",
 	reflect.TypeOf(OverlayClear{}):           "overlay_clear",

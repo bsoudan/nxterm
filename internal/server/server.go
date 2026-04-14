@@ -193,13 +193,14 @@ func (s *Server) SpawnRegion(sessionName, cmd string, args []string, env map[str
 	if height == 0 {
 		height = 24
 	}
-	region, err := NewRegion(cmd, args, env, int(width), int(height), s.socketAddr(), s.destroyRegion)
+	stackID := generateUUID()
+	region, err := NewRegion(cmd, args, env, int(width), int(height), s.socketAddr(), stackID, s.destroyRegion)
 	if err != nil {
 		return nil, err
 	}
 
 	resp := make(chan struct{}, 1)
-	if !s.send(spawnRegionReq{region: region, sessionName: sessionName, resp: resp}) {
+	if !s.send(spawnRegionReq{region: region, sessionName: sessionName, stackID: stackID, resp: resp}) {
 		region.Close()
 		return nil, fmt.Errorf("server shutting down")
 	}
