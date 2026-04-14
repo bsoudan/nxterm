@@ -469,14 +469,23 @@ func (m *NxtermModel) processServerMsg(msg protocol.Message) {
 	switch tmsg := msg.Payload.(type) {
 	case protocol.TreeSnapshot:
 		m.treeStore.HandleSnapshot(tmsg)
-		m.stack.Update(TreeChangedMsg{Tree: m.treeStore.Tree()})
+		changed := TreeChangedMsg{Tree: m.treeStore.Tree()}
+		m.tasks.CheckFilters(changed)
+		m.stack.Update(changed)
 		return
 	case protocol.TreeEvents:
 		if !m.treeStore.HandleEvents(tmsg) {
 			m.server.Send(protocol.Tagged(protocol.TreeResyncRequest{}))
 			return
 		}
-		m.stack.Update(TreeChangedMsg{Tree: m.treeStore.Tree()})
+		changed := TreeChangedMsg{Tree: m.treeStore.Tree()}
+		m.tasks.CheckFilters(changed)
+		m.stack.Update(changed)
+		return
+	}
+
+	// Check task filters (Subscribe + WaitFor) before layer dispatch.
+	if m.tasks.CheckFilters(msg.Payload) {
 		return
 	}
 
@@ -524,6 +533,7 @@ func (m *NxtermModel) drainUntil(match func(source string, msg any) bool) (any, 
 			}
 
 		case msg := <-m.server.Lifecycle:
+			m.tasks.CheckFilters(msg)
 			if match("lifecycle", msg) {
 				return msg, nil
 			}

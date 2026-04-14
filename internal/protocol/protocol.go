@@ -326,19 +326,10 @@ type ServerUpgradeResponse struct {
 	Message string `json:"message"`
 }
 
-// ServerUpgradeStatus is broadcast from the server to all connected
-// clients during a live upgrade. One message is sent at each phase so
-// the client dialog can track progress and only finalize the upgrade
-// after Phase == UpgradePhaseShuttingDown has been observed.
-type ServerUpgradeStatus struct {
-	Type    string `json:"type,omitempty"`
-	Phase   string `json:"phase"`
-	Message string `json:"message,omitempty"`
-}
-
-// Upgrade phases, in the order they are broadcast during a successful
-// upgrade. UpgradePhaseFailed is sent instead of the later phases when
-// the handoff is rolled back.
+// Upgrade phases, in the order they occur during a successful upgrade.
+// The server sets these on the tree's UpgradeNode so connected clients
+// can track progress via tree events. UpgradePhaseFailed is set instead
+// of the later phases when the handoff is rolled back.
 const (
 	UpgradePhaseStarting         = "starting"
 	UpgradePhaseSpawned          = "spawned"
@@ -478,7 +469,6 @@ var payloadParsers = map[string]func([]byte) (any, error){
 	"remove_program_response":   parseAs[RemoveProgramResponse],
 	"upgrade_check_response":    parseAs[UpgradeCheckResponse],
 	"server_upgrade_response":   parseAs[ServerUpgradeResponse],
-	"server_upgrade_status":     parseAs[ServerUpgradeStatus],
 	"client_binary_chunk":       parseAs[ClientBinaryChunk],
 	"client_binary_response":    parseAs[ClientBinaryResponse],
 	"overlay_register_response": parseAs[OverlayRegisterResponse],
@@ -574,7 +564,6 @@ var typeTagMap = map[reflect.Type]string{
 	reflect.TypeOf(RemoveProgramRequest{}):   "remove_program_request",
 	reflect.TypeOf(UpgradeCheckRequest{}):    "upgrade_check_request",
 	reflect.TypeOf(ServerUpgradeRequest{}):   "server_upgrade_request",
-	reflect.TypeOf(ServerUpgradeStatus{}):    "server_upgrade_status",
 	reflect.TypeOf(ClientBinaryRequest{}):    "client_binary_request",
 	reflect.TypeOf(Disconnect{}):             "disconnect",
 	reflect.TypeOf(OverlayRegisterRequest{}): "overlay_register",

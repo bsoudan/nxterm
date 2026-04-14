@@ -25,14 +25,18 @@ func (m *NxtermModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch tmsg := msg.(type) {
 	case protocol.TreeSnapshot:
 		m.treeStore.HandleSnapshot(tmsg)
-		cmd := m.stack.Update(TreeChangedMsg{Tree: m.treeStore.Tree()})
+		changed := TreeChangedMsg{Tree: m.treeStore.Tree()}
+		m.tasks.CheckFilters(changed)
+		cmd := m.stack.Update(changed)
 		return m, cmd
 	case protocol.TreeEvents:
 		if !m.treeStore.HandleEvents(tmsg) {
 			m.server.Send(protocol.Tagged(protocol.TreeResyncRequest{}))
 			return m, nil
 		}
-		cmd := m.stack.Update(TreeChangedMsg{Tree: m.treeStore.Tree()})
+		changed := TreeChangedMsg{Tree: m.treeStore.Tree()}
+		m.tasks.CheckFilters(changed)
+		cmd := m.stack.Update(changed)
 		return m, cmd
 	}
 

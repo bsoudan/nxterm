@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -309,11 +310,11 @@ func TestLiveUpgradeSimple(t *testing.T) {
 	}
 }
 
-// TestLiveUpgradeStatusBroadcast verifies that the server broadcasts a
-// ServerUpgradeStatus message at each phase of a live upgrade, ending
-// with Phase=shutting_down followed by the connection closing. This
-// is the raw-wire test for the phase-tracking that the upgrade dialog
-// relies on.
+// TestLiveUpgradeStatusBroadcast verifies that the server publishes
+// upgrade phases on the tree's UpgradeNode at each step of a live
+// upgrade, ending with Phase=shutting_down followed by the connection
+// closing. This is the raw-wire test for the phase-tracking that the
+// upgrade dialog relies on.
 func TestLiveUpgradeStatusBroadcast(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -345,7 +346,9 @@ func TestLiveUpgradeStatusBroadcast(t *testing.T) {
 		t.Fatalf("kill -USR2: %v", err)
 	}
 
-	// Collect status phases until the server closes the connection.
+	// Collect upgrade phases from tree events until the server closes
+	// the connection. Each phase is set on /upgrade in a tree_events
+	// message.
 	var phases []string
 	timeout := time.After(10 * time.Second)
 loop:
@@ -355,12 +358,21 @@ loop:
 			if !ok {
 				break loop
 			}
-			status, ok := msg.Payload.(protocol.ServerUpgradeStatus)
+			events, ok := msg.Payload.(protocol.TreeEvents)
 			if !ok {
 				continue
 			}
-			phases = append(phases, status.Phase)
-			t.Logf("status: %s — %s", status.Phase, status.Message)
+			for _, op := range events.Ops {
+				if op.Path != "/upgrade" || op.Op != "set" {
+					continue
+				}
+				var node protocol.UpgradeNode
+				if json.Unmarshal(op.Value, &node) != nil {
+					continue
+				}
+				phases = append(phases, node.Phase)
+				t.Logf("status: %s — %s", node.Phase, node.Message)
+			}
 		case <-timeout:
 			t.Fatalf("timeout waiting for status messages; got phases: %v", phases)
 		}

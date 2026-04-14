@@ -19,32 +19,30 @@ import (
 const upgradeTimeout = 60 * time.Second
 
 // HandleUpgrade performs a live upgrade by spawning a new binary and
-// handing off all listeners, PTY FDs, and terminal state. It also
-// broadcasts a ServerUpgradeStatus message at each phase so connected
-// clients can track progress and reliably distinguish the real handoff
-// from an incidental reconnect.
+// handing off all listeners, PTY FDs, and terminal state. Upgrade
+// progress is published on the tree's UpgradeNode so connected clients
+// can track phases via tree events.
 func (s *Server) HandleUpgrade(specs []string, sshCfg transport.SSHListenerConfig) error {
-	// Take a stable snapshot of the connected clients up front. We
-	// keep these clients connected throughout the upgrade so they can
-	// receive the broadcast; they are closed at the very end, right
-	// before this function returns. Any client that happens to connect
-	// in the narrow window before stopAccepting is reached will simply
-	// miss the early phase broadcasts — harmless, since they'll see
-	// the final shutting_down broadcast (if still present in the
-	// post-drain map) or just a disconnect.
-	clients := s.snapshotClients()
-	s.broadcastUpgradeStatus(clients, protocol.UpgradePhaseStarting, "starting upgrade")
+	// Alias for brevity. Pre-drain calls pass nil tree/clients to
+	// route through the event loop; post-drain calls pass the drained
+	// tree and client snapshot for direct mutation.
+	phase := s.setUpgradePhase
+	fail := func(tree *ServerTree, clients map[uint32]*Client, msg string) {
+		phase(tree, clients, protocol.UpgradePhaseFailed, msg)
+	}
+
+	phase(nil, nil, protocol.UpgradePhaseStarting, "starting upgrade")
 
 	newBin, err := os.Executable()
 	if err != nil {
-		s.failUpgrade(clients, fmt.Sprintf("os.Executable: %v", err))
+		fail(nil, nil, fmt.Sprintf("os.Executable: %v", err))
 		return fmt.Errorf("os.Executable: %w", err)
 	}
 	slog.Info("upgrade: starting", "binary", newBin)
 
 	fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM, 0)
 	if err != nil {
-		s.failUpgrade(clients, fmt.Sprintf("socketpair: %v", err))
+		fail(nil, nil, fmt.Sprintf("socketpair: %v", err))
 		return fmt.Errorf("socketpair: %w", err)
 	}
 	parentFD, childFD := fds[0], fds[1]
@@ -57,13 +55,13 @@ func (s *Server) HandleUpgrade(specs []string, sshCfg transport.SSHListenerConfi
 	if err := cmd.Start(); err != nil {
 		unix.Close(parentFD)
 		unix.Close(childFD)
-		s.failUpgrade(clients, fmt.Sprintf("exec new binary: %v", err))
+		fail(nil, nil, fmt.Sprintf("exec new binary: %v", err))
 		return fmt.Errorf("exec new binary: %w", err)
 	}
 	childFile.Close()
 	unix.Close(childFD)
 	slog.Info("upgrade: new process started", "pid", cmd.Process.Pid)
-	s.broadcastUpgradeStatus(clients, protocol.UpgradePhaseSpawned,
+	phase(nil, nil, protocol.UpgradePhaseSpawned,
 		fmt.Sprintf("new process started (pid %d)", cmd.Process.Pid))
 
 	parentFile := os.NewFile(uintptr(parentFD), "upgrade-parent")
@@ -71,7 +69,7 @@ func (s *Server) HandleUpgrade(specs []string, sshCfg transport.SSHListenerConfi
 	parentFile.Close()
 	if err != nil {
 		cmd.Process.Kill()
-		s.failUpgrade(clients, fmt.Sprintf("file conn: %v", err))
+		fail(nil, nil, fmt.Sprintf("file conn: %v", err))
 		return fmt.Errorf("file conn: %w", err)
 	}
 	conn := parentNetConn.(*net.UnixConn)
@@ -82,7 +80,7 @@ func (s *Server) HandleUpgrade(specs []string, sshCfg transport.SSHListenerConfi
 		f, err := transport.ListenerFile(ln)
 		if err != nil {
 			cmd.Process.Kill()
-			s.failUpgrade(clients, fmt.Sprintf("extract listener FD: %v", err))
+			fail(nil, nil, fmt.Sprintf("extract listener FD: %v", err))
 			return fmt.Errorf("extract listener FD: %w", err)
 		}
 		listenerFDs = append(listenerFDs, int(f.Fd()))
@@ -94,24 +92,23 @@ func (s *Server) HandleUpgrade(specs []string, sshCfg transport.SSHListenerConfi
 		FDCount: len(listenerFDs),
 	}, listenerFDs); err != nil {
 		cmd.Process.Kill()
-		s.failUpgrade(clients, fmt.Sprintf("send listener FDs: %v", err))
+		fail(nil, nil, fmt.Sprintf("send listener FDs: %v", err))
 		return fmt.Errorf("send listener FDs: %w", err)
 	}
 	slog.Info("upgrade: sent listener FDs", "count", len(listenerFDs))
-	s.broadcastUpgradeStatus(clients, protocol.UpgradePhaseSentListenerFDs,
+	phase(nil, nil, protocol.UpgradePhaseSentListenerFDs,
 		fmt.Sprintf("sent %d listener fd(s)", len(listenerFDs)))
 
 	slog.Info("upgrade: stopping accept loops...")
 	s.stopAccepting()
-	s.broadcastUpgradeStatus(clients, protocol.UpgradePhaseStoppedAccepting, "stopped accepting new connections")
+	phase(nil, nil, protocol.UpgradePhaseStoppedAccepting, "stopped accepting new connections")
 
 	slog.Info("upgrade: draining event loop...")
 	result := s.drainForUpgrade()
 	slog.Info("upgrade: event loop drained")
-	// Use result.clients from now on — it captures anyone who connected
-	// between our initial snapshot and stopAccepting.
-	clients = result.clients
-	s.broadcastUpgradeStatus(clients, protocol.UpgradePhaseDrained, "event loop drained")
+	// From here the event loop is paused — use direct tree mutation.
+	tree, clients := result.tree, result.clients
+	phase(tree, clients, protocol.UpgradePhaseDrained, "event loop drained")
 
 	// Stop all PTY readLoops before snapshotting screen state. With the
 	// readLoops stopped, no more bytes can mutate hscreen, so the
@@ -128,7 +125,7 @@ func (s *Server) HandleUpgrade(specs []string, sshCfg transport.SSHListenerConfi
 		}
 	})
 	slog.Info("upgrade: stopped PTY readLoops", "pty_regions", regionCount)
-	s.broadcastUpgradeStatus(clients, protocol.UpgradePhaseStoppedReadLoops,
+	phase(tree, clients, protocol.UpgradePhaseStoppedReadLoops,
 		fmt.Sprintf("stopped %d pty read loop(s)", regionCount))
 
 	// Dup PTY FDs for handoff. Native regions don't have PTYs.
@@ -145,7 +142,7 @@ func (s *Server) HandleUpgrade(specs []string, sshCfg transport.SSHListenerConfi
 	if err != nil {
 		s.resumeAfterFailedUpgrade(result)
 		cmd.Process.Kill()
-		s.failUpgrade(clients, fmt.Sprintf("marshal state: %v", err))
+		fail(nil, nil, fmt.Sprintf("marshal state: %v", err))
 		return fmt.Errorf("marshal state: %w", err)
 	}
 	if err := sendMsg(conn, upgradeMsg{
@@ -154,11 +151,11 @@ func (s *Server) HandleUpgrade(specs []string, sshCfg transport.SSHListenerConfi
 	}, nil); err != nil {
 		s.resumeAfterFailedUpgrade(result)
 		cmd.Process.Kill()
-		s.failUpgrade(clients, fmt.Sprintf("send state: %v", err))
+		fail(nil, nil, fmt.Sprintf("send state: %v", err))
 		return fmt.Errorf("send state: %w", err)
 	}
 	slog.Info("upgrade: sent state", "bytes", len(stateJSON))
-	s.broadcastUpgradeStatus(clients, protocol.UpgradePhaseSentState,
+	phase(tree, clients, protocol.UpgradePhaseSentState,
 		fmt.Sprintf("sent state (%d bytes)", len(stateJSON)))
 
 	var ptyFDs []int
@@ -176,17 +173,17 @@ func (s *Server) HandleUpgrade(specs []string, sshCfg transport.SSHListenerConfi
 	}, ptyFDs); err != nil {
 		s.resumeAfterFailedUpgrade(result)
 		cmd.Process.Kill()
-		s.failUpgrade(clients, fmt.Sprintf("send pty FDs: %v", err))
+		fail(nil, nil, fmt.Sprintf("send pty FDs: %v", err))
 		return fmt.Errorf("send pty FDs: %w", err)
 	}
 	slog.Info("upgrade: sent PTY FDs", "count", len(ptyFDs))
-	s.broadcastUpgradeStatus(clients, protocol.UpgradePhaseSentPTYFDs,
+	phase(tree, clients, protocol.UpgradePhaseSentPTYFDs,
 		fmt.Sprintf("sent %d pty fd(s)", len(ptyFDs)))
 
 	if err := sendMsg(conn, upgradeMsg{Type: "handoff_complete"}, nil); err != nil {
 		s.resumeAfterFailedUpgrade(result)
 		cmd.Process.Kill()
-		s.failUpgrade(clients, fmt.Sprintf("send handoff_complete: %v", err))
+		fail(nil, nil, fmt.Sprintf("send handoff_complete: %v", err))
 		return fmt.Errorf("send handoff_complete: %w", err)
 	}
 
@@ -195,22 +192,22 @@ func (s *Server) HandleUpgrade(specs []string, sshCfg transport.SSHListenerConfi
 		slog.Error("upgrade: no response from new process", "err", err)
 		s.resumeAfterFailedUpgrade(result)
 		cmd.Process.Kill()
-		s.failUpgrade(clients, fmt.Sprintf("waiting for ready: %v", err))
+		fail(nil, nil, fmt.Sprintf("waiting for ready: %v", err))
 		return fmt.Errorf("waiting for ready: %w", err)
 	}
 	if resp.Type == "error" {
 		slog.Error("upgrade: new process reported error", "message", resp.Message)
 		s.resumeAfterFailedUpgrade(result)
 		cmd.Process.Kill()
-		s.failUpgrade(clients, fmt.Sprintf("new process error: %s", resp.Message))
+		fail(nil, nil, fmt.Sprintf("new process error: %s", resp.Message))
 		return fmt.Errorf("new process error: %s", resp.Message)
 	}
-	s.broadcastUpgradeStatus(clients, protocol.UpgradePhaseReady, "new server is ready")
+	phase(tree, clients, protocol.UpgradePhaseReady, "new server is ready")
 
 	// Tell clients we're about to close the connections, then drain the
 	// write buffers briefly so the message actually goes out over the
 	// wire before Close() frees the writeCh. Only then do we close.
-	s.broadcastUpgradeStatus(clients, protocol.UpgradePhaseShuttingDown, "old server shutting down")
+	phase(tree, clients, protocol.UpgradePhaseShuttingDown, "old server shutting down")
 	flushAndCloseClients(clients)
 
 	slog.Info("upgrade: success, old process exiting")
@@ -266,37 +263,30 @@ func (s *Server) stopAccepting() {
 	s.noAccept.Store(true)
 }
 
-// snapshotClients takes a copy of the current client map via the event
-// loop. The copy is safe to iterate from outside the event loop.
-func (s *Server) snapshotClients() map[uint32]*Client {
-	resp := make(chan map[uint32]*Client, 1)
-	if !s.send(snapshotClientsReq{resp: resp}) {
-		return map[uint32]*Client{}
+// setUpgradePhase updates the tree's UpgradeNode and broadcasts the
+// change to clients. When tree is nil the event loop is still running,
+// so the update is routed through it as a setUpgradeReq. When tree is
+// non-nil the event loop is paused and we mutate the tree directly.
+func (s *Server) setUpgradePhase(tree *ServerTree, clients map[uint32]*Client, phase, message string) {
+	node := protocol.UpgradeNode{Active: true, Phase: phase, Message: message}
+	if tree == nil {
+		resp := make(chan struct{}, 1)
+		if !s.send(setUpgradeReq{node: node, resp: resp}) {
+			return
+		}
+		<-resp
+		return
 	}
-	return <-resp
-}
-
-// broadcastUpgradeStatus sends a ServerUpgradeStatus message to every
-// client in the snapshot. SendMessage is non-blocking; the message may
-// be dropped if the client's write channel is full, which is fine for
-// status updates (the important one — shutting_down — is sent last and
-// followed by flushAndCloseClients which waits for writeCh to drain).
-func (s *Server) broadcastUpgradeStatus(clients map[uint32]*Client, phase, message string) {
-	msg := protocol.ServerUpgradeStatus{
-		Type:    "server_upgrade_status",
-		Phase:   phase,
-		Message: message,
+	tree.StartTx()
+	tree.SetUpgrade(node)
+	v, ops := tree.CommitTx()
+	if len(ops) == 0 {
+		return
 	}
+	msg := protocol.TreeEvents{Type: "tree_events", Version: v, Ops: ops}
 	for _, c := range clients {
 		c.SendMessage(msg)
 	}
-}
-
-// failUpgrade broadcasts a failure status to clients. Used on any
-// error path out of HandleUpgrade. Does not close the clients —
-// they remain connected after a failed upgrade.
-func (s *Server) failUpgrade(clients map[uint32]*Client, message string) {
-	s.broadcastUpgradeStatus(clients, protocol.UpgradePhaseFailed, message)
 }
 
 // flushAndCloseClients drains each client's write channel so any
@@ -340,10 +330,17 @@ func (s *Server) resumeAfterFailedUpgrade(result upgradeResult) {
 
 type upgradeReq struct{ resp chan upgradeResult }
 type resumeUpgradeReq struct{}
-type snapshotClientsReq struct{ resp chan map[uint32]*Client }
 
-func (r snapshotClientsReq) handle(st *eventLoopState) {
-	r.resp <- st.tree.ClientMap()
+type setUpgradeReq struct {
+	node protocol.UpgradeNode
+	resp chan struct{}
+}
+
+func (r setUpgradeReq) handle(st *eventLoopState) {
+	st.tree.SetUpgrade(r.node)
+	if r.resp != nil {
+		r.resp <- struct{}{}
+	}
 }
 
 func (r upgradeReq) handle(st *eventLoopState) {

@@ -62,7 +62,7 @@ func cleanupDownload(dl *Download, server *Server) {
 }
 
 // phaseStatusLine returns the human-readable line to display in the
-// upgrade dialog for a given ServerUpgradeStatus phase.
+// upgrade dialog for a given UpgradeNode phase.
 func phaseStatusLine(phase string) string {
 	switch phase {
 	case protocol.UpgradePhaseStarting:
@@ -145,18 +145,17 @@ func upgradeTask(t *TermdHandle, server *Server,
 			return
 		}
 
-		// Follow the server's ServerUpgradeStatus stream until we see
-		// the terminal phase (shutting_down or failed). A persistent
-		// Subscribe is required here instead of WaitFor — phases arrive
-		// in rapid succession and the single-shot WaitFor filter races
-		// with the task goroutine, dropping messages between matches.
+		// Follow upgrade progress via the tree's UpgradeNode. A
+		// persistent Subscribe is required — phases arrive in rapid
+		// succession and single-shot WaitFor would drop messages.
 		statusCh, unsubStatus, err := t.Subscribe(func(m any) bool {
-			_, ok := m.(protocol.ServerUpgradeStatus)
+			_, ok := m.(TreeChangedMsg)
 			return ok
 		})
 		if err != nil {
 			return
 		}
+		var lastPhase string
 		shutdownSeen := false
 		for !shutdownSeen {
 			raw, ok := <-statusCh
@@ -164,15 +163,19 @@ func upgradeTask(t *TermdHandle, server *Server,
 				unsubStatus()
 				return
 			}
-			status := raw.(protocol.ServerUpgradeStatus)
+			upgrade := raw.(TreeChangedMsg).Tree.Upgrade
+			if !upgrade.Active || upgrade.Phase == lastPhase {
+				continue
+			}
+			lastPhase = upgrade.Phase
 			overlay.Lines = infoLines[:len(infoLines)-1]
-			overlay.Lines = append(overlay.Lines, "  "+phaseStatusLine(status.Phase))
-			overlay.StatusText = phaseStatusLine(status.Phase)
+			overlay.Lines = append(overlay.Lines, "  "+phaseStatusLine(upgrade.Phase))
+			overlay.StatusText = phaseStatusLine(upgrade.Phase)
 
-			switch status.Phase {
+			switch upgrade.Phase {
 			case protocol.UpgradePhaseFailed:
 				unsubStatus()
-				ShowError(overlay, t.Handle, status.Message)
+				ShowError(overlay, t.Handle, upgrade.Message)
 				return
 			case protocol.UpgradePhaseShuttingDown:
 				shutdownSeen = true
