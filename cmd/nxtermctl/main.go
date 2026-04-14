@@ -203,24 +203,21 @@ func cmdStatus(_ context.Context, cmd *cli.Command) error {
 	}
 	defer cl.Close()
 
-	_ = cl.Send(protocol.StatusRequest{})
-	resp, err := recvType[protocol.StatusResponse](cl)
+	snap, err := recvType[protocol.TreeSnapshot](cl)
 	if err != nil {
 		return err
 	}
-	if resp.Error {
-		return fmt.Errorf("%s", resp.Message)
-	}
 
-	d := time.Duration(resp.UptimeSeconds) * time.Second
-	fmt.Printf("Hostname:  %s\n", resp.Hostname)
-	fmt.Printf("Version:   %s\n", resp.Version)
-	fmt.Printf("PID:       %d\n", resp.Pid)
-	fmt.Printf("Uptime:    %s\n", d.String())
-	fmt.Printf("Listeners: %s\n", resp.SocketPath)
-	fmt.Printf("Clients:   %d\n", resp.NumClients)
-	fmt.Printf("Regions:   %d\n", resp.NumRegions)
-	fmt.Printf("Sessions:  %d\n", resp.NumSessions)
+	srv := snap.Tree.Server
+	uptime := time.Since(time.Unix(srv.StartTime, 0)).Truncate(time.Second)
+	fmt.Printf("Hostname:  %s\n", srv.Hostname)
+	fmt.Printf("Version:   %s\n", srv.Version)
+	fmt.Printf("PID:       %d\n", srv.Pid)
+	fmt.Printf("Uptime:    %s\n", uptime.String())
+	fmt.Printf("Listeners: %s\n", srv.SocketPath)
+	fmt.Printf("Clients:   %d\n", len(snap.Tree.Clients))
+	fmt.Printf("Regions:   %d\n", len(snap.Tree.Regions))
+	fmt.Printf("Sessions:  %d\n", len(snap.Tree.Sessions))
 	return nil
 }
 

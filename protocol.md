@@ -253,38 +253,6 @@ RegionInfo fields:
 
 ---
 
-### status_request
-
-Query the server's status.
-
-```json
-{ "type": "status_request" }
-```
-
-| Field | Type   | Description          |
-|-------|--------|----------------------|
-| type  | string | `"status_request"`   |
-
-### status_response
-
-```json
-{ "type": "status_response", "pid": 1234, "uptime_seconds": 3600, "socket_path": "/tmp/nxtermd.sock", "num_clients": 2, "num_regions": 1, "error": false, "message": "" }
-```
-
-| Field          | Type   | Description                        |
-|----------------|--------|------------------------------------|
-| type           | string | `"status_response"`                |
-| pid            | int32  | Server process ID                  |
-| uptime_seconds | int64  | Server uptime in seconds           |
-| socket_path    | string | Path to the Unix socket            |
-| num_clients    | uint32 | Number of connected clients        |
-| num_regions    | uint32 | Number of active regions           |
-| num_sessions   | uint32 | Number of active sessions          |
-| error          | bool   | True on failure                    |
-| message        | string | Error description, or `""`         |
-
----
-
 ### get_screen_request
 
 Fetch the current screen contents of a region without subscribing.

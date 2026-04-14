@@ -56,10 +56,6 @@ type ListSessionsRequest struct {
 	Type string `json:"type,omitempty"`
 }
 
-type StatusRequest struct {
-	Type string `json:"type,omitempty"`
-}
-
 type GetScreenRequest struct {
 	Type     string `json:"type,omitempty"`
 	RegionID string `json:"region_id"`
@@ -202,21 +198,6 @@ type ListRegionsResponse struct {
 	Regions []RegionInfo `json:"regions"`
 	Error   bool         `json:"error"`
 	Message string       `json:"message"`
-}
-
-type StatusResponse struct {
-	Type          string       `json:"type"`
-	Hostname      string       `json:"hostname"`
-	Version       string       `json:"version"`
-	Pid           int          `json:"pid"`
-	UptimeSeconds int64        `json:"uptime_seconds"`
-	SocketPath    string       `json:"socket_path"`
-	NumClients    int          `json:"num_clients"`
-	NumRegions    int          `json:"num_regions"`
-	NumSessions   int          `json:"num_sessions"`
-	Regions       []RegionInfo `json:"regions,omitempty"`
-	Error         bool         `json:"error"`
-	Message       string       `json:"message"`
 }
 
 type GetScreenResponse struct {
@@ -483,7 +464,6 @@ var payloadParsers = map[string]func([]byte) (any, error){
 	"screen_update":             parseAs[ScreenUpdate],
 	"region_destroyed":          parseAs[RegionDestroyed],
 	"list_regions_response":     parseAs[ListRegionsResponse],
-	"status_response":           parseAs[StatusResponse],
 	"get_screen_response":       parseAs[GetScreenResponse],
 	"kill_region_response":      parseAs[KillRegionResponse],
 	"list_clients_response":     parseAs[ListClientsResponse],
@@ -581,7 +561,6 @@ var typeTagMap = map[reflect.Type]string{
 	reflect.TypeOf(InputMsg{}):               "input",
 	reflect.TypeOf(ResizeRequest{}):          "resize_request",
 	reflect.TypeOf(ListRegionsRequest{}):     "list_regions_request",
-	reflect.TypeOf(StatusRequest{}):          "status_request",
 	reflect.TypeOf(GetScreenRequest{}):       "get_screen_request",
 	reflect.TypeOf(KillRegionRequest{}):      "kill_region_request",
 	reflect.TypeOf(ListClientsRequest{}):     "list_clients_request",

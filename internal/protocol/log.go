@@ -47,10 +47,6 @@ func LogProtocolMsg(direction string, msg any) {
 		slog.Debug(direction, "type", "list_regions_request")
 	case ListRegionsResponse:
 		slog.Debug(direction, "type", "list_regions_response", "regions", len(m.Regions), "error", m.Error)
-	case StatusRequest:
-		slog.Debug(direction, "type", "status_request")
-	case StatusResponse:
-		slog.Debug(direction, "type", "status_response", "pid", m.Pid, "uptime", m.UptimeSeconds, "clients", m.NumClients, "regions", m.NumRegions)
 	case GetScreenRequest:
 		slog.Debug(direction, "type", "get_screen_request", "region_id", m.RegionID)
 	case GetScreenResponse:

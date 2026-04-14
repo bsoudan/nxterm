@@ -21,6 +21,7 @@ type Tree struct {
 
 type ServerNode struct {
 	Version    string `json:"version"`
+	Hostname   string `json:"hostname"`
 	Pid        int    `json:"pid"`
 	StartTime  int64  `json:"start_time"`
 	SocketPath string `json:"socket_path"`

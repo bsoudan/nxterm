@@ -262,17 +262,12 @@ func (sm *SessionManagerLayer) handleCmd(msg SessionManagerCmd) (tea.Msg, tea.Cm
 				caps.Modes = t.Modes()
 			}
 		}
-		sl := NewStatusLayer(caps)
-		sm.tasks.Run(func(h *layer.Handle[RenderState]) {
-			t := &TermdHandle{Handle: h}
-			resp, err := t.Request(protocol.StatusRequest{})
-			if err != nil {
-				return
-			}
-			if sr, ok := resp.(protocol.StatusResponse); ok {
-				sl.SetStatus(&sr)
-			}
-		})
+		var tree *protocol.Tree
+		if sm.treeStore.Valid() {
+			t := sm.treeStore.Tree()
+			tree = &t
+		}
+		sl := NewStatusLayer(caps, tree)
 		return push(sl)
 	default:
 		return nil, nil, true

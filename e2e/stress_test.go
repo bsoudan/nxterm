@@ -515,7 +515,6 @@ var rawOps = []struct {
 	{"list_regions", 20},
 	{"list_sessions", 15},
 	{"list_clients", 15},
-	{"status", 15},
 	{"spawn_region", 10},
 	{"kill_region", 5},
 	{"get_screen", 10},
@@ -668,8 +667,6 @@ func (rc *rawClient) run(ctx context.Context) {
 			rc.sendJSON(map[string]any{"type": "list_sessions_request"})
 		case "list_clients":
 			rc.sendJSON(map[string]any{"type": "list_clients_request"})
-		case "status":
-			rc.sendJSON(map[string]any{"type": "status_request"})
 		case "spawn_region":
 			if rc.regionCount() < maxRegionsPerRawClient {
 				rc.sendJSON(map[string]any{

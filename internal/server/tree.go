@@ -48,10 +48,11 @@ type clientEntry struct {
 	node   protocol.ClientNode
 }
 
-func NewServerTree(version string, startTime int64, socketPath string) *ServerTree {
+func NewServerTree(version string, hostname string, startTime int64, socketPath string) *ServerTree {
 	return &ServerTree{
 		server: protocol.ServerNode{
 			Version:    version,
+			Hostname:   hostname,
 			Pid:        os.Getpid(),
 			StartTime:  startTime,
 			SocketPath: socketPath,

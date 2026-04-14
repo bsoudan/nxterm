@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -12,8 +13,8 @@ import (
 
 // StatusLayer displays server and terminal status in a centered dialog.
 type StatusLayer struct {
-	status *protocol.StatusResponse
-	caps   StatusCaps
+	tree *protocol.Tree
+	caps StatusCaps
 }
 
 // StatusCaps captures terminal capability data at open time.
@@ -35,12 +36,8 @@ type StatusCaps struct {
 	ServerUpgradeVer   string
 }
 
-func NewStatusLayer(caps StatusCaps) *StatusLayer {
-	return &StatusLayer{caps: caps}
-}
-
-func (s *StatusLayer) SetStatus(resp *protocol.StatusResponse) {
-	s.status = resp
+func NewStatusLayer(caps StatusCaps, tree *protocol.Tree) *StatusLayer {
+	return &StatusLayer{caps: caps, tree: tree}
 }
 
 func (s *StatusLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
@@ -150,37 +147,7 @@ func (s *StatusLayer) View(width, height int, rs *RenderState) []*lipgloss.Layer
 	}
 	lines = append(lines, "")
 
-	srvHeader := "nxtermd:"
-	if s.caps.ServerUpgradeAvail {
-		srvHeader += " (upgrade available: " + s.caps.ServerUpgradeVer + ")"
-	}
-	lines = append(lines, srvHeader)
-	if s.status != nil {
-		d := time.Duration(s.status.UptimeSeconds) * time.Second
-		lines = append(lines, fmt.Sprintf("  Hostname:  %s", s.status.Hostname))
-		lines = append(lines, fmt.Sprintf("  Version:   %s", s.status.Version))
-		lines = append(lines, fmt.Sprintf("  PID:       %d", s.status.Pid))
-		lines = append(lines, fmt.Sprintf("  Uptime:    %s", d.String()))
-		lines = append(lines, fmt.Sprintf("  Listeners: %s", s.status.SocketPath))
-		lines = append(lines, fmt.Sprintf("  Clients:   %d", s.status.NumClients))
-		lines = append(lines, fmt.Sprintf("  Regions:   %d", s.status.NumRegions))
-
-		for _, r := range s.status.Regions {
-			lines = append(lines, "")
-			kind := "pty"
-			if r.Native {
-				kind = "native"
-			}
-			lines = append(lines, fmt.Sprintf("region %s:", r.Name))
-			lines = append(lines, fmt.Sprintf("  Cmd:        %s", r.Cmd))
-			lines = append(lines, fmt.Sprintf("  PID:        %d", r.Pid))
-			lines = append(lines, fmt.Sprintf("  Size:       %dx%d", r.Width, r.Height))
-			lines = append(lines, fmt.Sprintf("  Scrollback: %d lines", r.ScrollbackLen))
-			lines = append(lines, fmt.Sprintf("  Type:       %s", kind))
-		}
-	} else {
-		lines = append(lines, "  loading...")
-	}
+	lines = append(lines, s.renderServerTree()...)
 
 	content := strings.Join(lines, "\n")
 
@@ -207,6 +174,85 @@ func (s *StatusLayer) View(width, height int, rs *RenderState) []*lipgloss.Layer
 	}
 
 	return overlayLayers(dialog, x, y, 1)
+}
+
+func (s *StatusLayer) renderServerTree() []string {
+	var lines []string
+
+	srvHeader := "nxtermd:"
+	if s.caps.ServerUpgradeAvail {
+		srvHeader += " (upgrade available: " + s.caps.ServerUpgradeVer + ")"
+	}
+	lines = append(lines, srvHeader)
+
+	if s.tree == nil {
+		lines = append(lines, "  (no tree)")
+		return lines
+	}
+
+	srv := s.tree.Server
+	uptime := time.Since(time.Unix(srv.StartTime, 0))
+	lines = append(lines, fmt.Sprintf("  Hostname:  %s", srv.Hostname))
+	lines = append(lines, fmt.Sprintf("  Version:   %s", srv.Version))
+	lines = append(lines, fmt.Sprintf("  PID:       %d", srv.Pid))
+	lines = append(lines, fmt.Sprintf("  Uptime:    %s", uptime.Truncate(time.Second).String()))
+	lines = append(lines, fmt.Sprintf("  Listeners: %s", srv.SocketPath))
+	lines = append(lines, fmt.Sprintf("  Clients:   %d", len(s.tree.Clients)))
+	lines = append(lines, fmt.Sprintf("  Regions:   %d", len(s.tree.Regions)))
+
+	// Sessions and their regions.
+	sessionNames := make([]string, 0, len(s.tree.Sessions))
+	for name := range s.tree.Sessions {
+		sessionNames = append(sessionNames, name)
+	}
+	sort.Strings(sessionNames)
+
+	for _, name := range sessionNames {
+		sess := s.tree.Sessions[name]
+		lines = append(lines, "")
+		lines = append(lines, fmt.Sprintf("session %s:", name))
+		for _, rid := range sess.RegionIDs {
+			r, ok := s.tree.Regions[rid]
+			if !ok {
+				lines = append(lines, fmt.Sprintf("  %s (unknown)", rid))
+				continue
+			}
+			kind := "pty"
+			if r.Native {
+				kind = "native"
+			}
+			lines = append(lines, fmt.Sprintf("  %s: %s (%s, %dx%d)", r.Name, r.Cmd, kind, r.Width, r.Height))
+		}
+	}
+
+	// Clients.
+	if len(s.tree.Clients) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, "clients:")
+		clientIDs := make([]string, 0, len(s.tree.Clients))
+		for id := range s.tree.Clients {
+			clientIDs = append(clientIDs, id)
+		}
+		sort.Strings(clientIDs)
+		for _, id := range clientIDs {
+			c := s.tree.Clients[id]
+			desc := fmt.Sprintf("  #%s", id)
+			if c.Username != "" || c.Hostname != "" {
+				desc += " " + c.Username + "@" + c.Hostname
+			}
+			if c.Process != "" {
+				desc += " (" + c.Process + ")"
+			}
+			if c.SubscribedRegionID != "" {
+				if r, ok := s.tree.Regions[c.SubscribedRegionID]; ok {
+					desc += " -> " + r.Name
+				}
+			}
+			lines = append(lines, desc)
+		}
+	}
+
+	return lines
 }
 
 func (s *StatusLayer) WantsKeyboardInput() bool { return true }

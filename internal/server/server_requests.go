@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"log/slog"
+	"os"
 
 	"nxtermd/internal/config"
 	"nxtermd/internal/protocol"
@@ -91,16 +92,6 @@ type killRegionReq struct {
 type killClientReq struct {
 	clientID uint32
 	resp     chan *Client
-}
-
-type statusCounts struct {
-	numClients  int
-	numRegions  int
-	numSessions int
-}
-
-type getStatusReq struct {
-	resp chan statusCounts
 }
 
 type lookupProgramReq struct {
@@ -228,7 +219,8 @@ type inputRouteReq struct {
 // ── Event loop ───────────────────────────────────────────────────────────────
 
 func (s *Server) eventLoop() {
-	tree := NewServerTree(s.version, s.startTime.Unix(), s.listenerAddrs())
+	hostname, _ := os.Hostname()
+	tree := NewServerTree(s.version, hostname, s.startTime.Unix(), s.listenerAddrs())
 
 	// Populate programs from config (no tx — no clients yet).
 	for _, p := range s.initPrograms {
@@ -351,14 +343,6 @@ func (r killRegionReq) handle(st *eventLoopState) {
 
 func (r killClientReq) handle(st *eventLoopState) {
 	r.resp <- st.tree.Client(r.clientID)
-}
-
-func (r getStatusReq) handle(st *eventLoopState) {
-	r.resp <- statusCounts{
-		numClients:  st.tree.NumClients(),
-		numRegions:  st.tree.NumRegions(),
-		numSessions: st.tree.NumSessions(),
-	}
 }
 
 func (r lookupProgramReq) handle(st *eventLoopState) {

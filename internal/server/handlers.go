@@ -61,7 +61,6 @@ var messageHandlers = map[string]msgHandler{
 	"input":                   withMsgOnly(handleInput),
 	"resize_request":          withMsg(handleResize),
 	"list_regions_request":    withMsg(handleListRegions),
-	"status_request":          withReplyOnly(handleStatus),
 	"get_screen_request":      withMsg(handleGetScreen),
 	"get_scrollback_request":  withMsg(handleGetScrollback),
 	"kill_region_request":     withMsg(handleKillRegion),
@@ -272,10 +271,6 @@ func handleListRegions(s *Server, _ *Client, msg protocol.ListRegionsRequest, re
 		Error:   false,
 		Message: "",
 	})
-}
-
-func handleStatus(s *Server, _ *Client, reply func(any)) {
-	reply(s.getStatus())
 }
 
 func handleGetScrollback(s *Server, _ *Client, msg protocol.GetScrollbackRequest, reply func(any)) {

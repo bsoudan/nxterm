@@ -350,32 +350,6 @@ func compositeSnapshot(base Snapshot, ov *overlayState) Snapshot {
 	return result
 }
 
-func (s *Server) getStatus() protocol.StatusResponse {
-	resp := make(chan statusCounts, 1)
-	if !s.send(getStatusReq{resp: resp}) {
-		return protocol.StatusResponse{Type: "status_response", Error: true, Message: "server shutting down"}
-	}
-	counts := <-resp
-
-	regions := s.getRegionInfos("")
-
-	hostname, _ := os.Hostname()
-	return protocol.StatusResponse{
-		Type:          "status_response",
-		Hostname:      hostname,
-		Version:       s.version,
-		Pid:           os.Getpid(),
-		UptimeSeconds: int64(time.Since(s.startTime).Seconds()),
-		SocketPath:    s.listenerAddrs(),
-		NumClients:    counts.numClients,
-		NumRegions:    counts.numRegions,
-		NumSessions:   counts.numSessions,
-		Regions:       regions,
-		Error:         false,
-		Message:       "",
-	}
-}
-
 // socketAddr returns the address of the first listener, for passing to
 // child processes as NXTERMD_SOCKET.
 func (s *Server) socketAddr() string {
