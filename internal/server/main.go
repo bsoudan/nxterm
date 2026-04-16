@@ -164,19 +164,38 @@ func listenSpecs(cmd *cli.Command, cfg config.ServerConfig) ([]string, error) {
 	return specs, nil
 }
 
-func sshConfig(cmd *cli.Command, cfg config.ServerConfig) transport.SSHListenerConfig {
-	sshHostKey := cmd.String("ssh-host-key")
-	if sshHostKey == "" {
-		sshHostKey = cfg.SSH.HostKey
+// applyCLIOverrides folds command-line flags back into cfg so the
+// returned ServerConfig represents the fully effective configuration
+// (file values overridden by any flags the user provided). Downstream
+// code — including live upgrade, which ships cfg to the new process —
+// can then treat cfg as the single source of truth.
+func applyCLIOverrides(cmd *cli.Command, cfg config.ServerConfig) config.ServerConfig {
+	if v := cmd.String("ssh-host-key"); v != "" {
+		cfg.SSH.HostKey = v
 	}
-	sshAuthKeys := cmd.String("ssh-auth-keys")
-	if sshAuthKeys == "" {
-		sshAuthKeys = cfg.SSH.AuthorizedKeys
+	if v := cmd.String("ssh-auth-keys"); v != "" {
+		cfg.SSH.AuthorizedKeys = v
 	}
+	if cmd.Bool("ssh-no-auth") {
+		cfg.SSH.NoAuth = true
+	}
+	if cmd.Bool("debug") {
+		cfg.Debug = true
+	}
+	if trace := cmd.StringSlice("trace"); len(trace) > 0 {
+		cfg.Trace = append(append([]string(nil), cfg.Trace...), trace...)
+	}
+	if v := cmd.String("pprof"); v != "" {
+		cfg.Pprof = v
+	}
+	return cfg
+}
+
+func sshConfigFromCfg(cfg config.ServerConfig) transport.SSHListenerConfig {
 	return transport.SSHListenerConfig{
-		HostKeyPath:        sshHostKey,
-		AuthorizedKeysPath: sshAuthKeys,
-		NoAuth:             cmd.Bool("ssh-no-auth") || cfg.SSH.NoAuth,
+		HostKeyPath:        cfg.SSH.HostKey,
+		AuthorizedKeysPath: cfg.SSH.AuthorizedKeys,
+		NoAuth:             cfg.SSH.NoAuth,
 	}
 }
 
@@ -187,12 +206,12 @@ func runServer(_ context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("config: %w", err)
 	}
 
-	config.SetTraceFlags(cmd.StringSlice("trace")...)
+	// Fold CLI flags into cfg so it fully represents the effective config.
+	cfg = applyCLIOverrides(cmd, cfg)
 	config.SetTraceFlags(cfg.Trace...)
 
-	debug := cmd.Bool("debug") || cfg.Debug || config.TraceEnabled("wire")
 	level := slog.LevelInfo
-	if debug {
+	if cfg.Debug || config.TraceEnabled("wire") {
 		level = slog.LevelDebug
 	}
 	handler := nxlog.NewHandler(os.Stderr, level, nil)
@@ -200,19 +219,15 @@ func runServer(_ context.Context, cmd *cli.Command) error {
 
 	transport.InstallStackDump("nxtermd")
 
-	pprofAddr := cmd.String("pprof")
-	if pprofAddr == "" {
-		pprofAddr = cfg.Pprof
-	}
-	if pprofAddr != "" {
-		startPprof(pprofAddr)
+	if cfg.Pprof != "" {
+		startPprof(cfg.Pprof)
 	}
 
-	sshCfg := sshConfig(cmd, cfg)
+	sshCfg := sshConfigFromCfg(cfg)
 
 	// Live upgrade receiver mode.
 	if upgradeFD := cmd.Int("upgrade-fd"); upgradeFD > 0 {
-		return runUpgradeReceiver(int(upgradeFD), sshCfg)
+		return runUpgradeReceiver(int(upgradeFD))
 	}
 
 	specs, err := listenSpecs(cmd, cfg)
@@ -256,7 +271,7 @@ func runServer(_ context.Context, cmd *cli.Command) error {
 			switch sig {
 			case syscall.SIGUSR2:
 				slog.Info("received upgrade signal (SIGUSR2)")
-				if err := srv.HandleUpgrade(specs, sshCfg); err != nil {
+				if err := srv.HandleUpgrade(specs); err != nil {
 					slog.Error("live upgrade failed", "err", err)
 					continue // server keeps running
 				}
@@ -322,9 +337,9 @@ func cmdLiveUpgrade(_ context.Context, cmd *cli.Command) error {
 	return nil
 }
 
-func runUpgradeReceiver(fd int, sshCfg transport.SSHListenerConfig) error {
+func runUpgradeReceiver(fd int) error {
 	slog.Info("starting in upgrade receiver mode", "fd", fd)
-	srv, _, specs, err := RecvUpgrade(fd, sshCfg, version)
+	srv, _, specs, err := RecvUpgrade(fd, version)
 	if err != nil {
 		return fmt.Errorf("upgrade recv: %w", err)
 	}
@@ -341,7 +356,7 @@ func runUpgradeReceiver(fd int, sshCfg transport.SSHListenerConfig) error {
 			switch sig {
 			case syscall.SIGUSR2:
 				slog.Info("received upgrade signal (SIGUSR2)")
-				if err := srv.HandleUpgrade(specs, sshCfg); err != nil {
+				if err := srv.HandleUpgrade(specs); err != nil {
 					slog.Error("live upgrade failed", "err", err)
 					continue
 				}

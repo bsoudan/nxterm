@@ -8,20 +8,24 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+	"nxtermd/internal/config"
+	"nxtermd/internal/transport"
 	te "nxtermd/pkg/te"
 )
 
 // --- Upgrade state types ---
 
 type UpgradeState struct {
-	Version       string                       `json:"version"`
-	ListenerSpecs []string                     `json:"listener_specs"`
-	Sessions      []SessionState               `json:"sessions"`
-	Regions       []RegionState                `json:"regions"`
-	Programs      map[string]ProgramConfigJSON `json:"programs"`
-	SessionsCfg   SessionsCfgJSON              `json:"sessions_cfg"`
-	NextClientID  uint32                       `json:"next_client_id"`
-	BinariesDir   string                       `json:"binaries_dir,omitempty"`
+	Version       string               `json:"version"`
+	ListenerSpecs []string             `json:"listener_specs"`
+	Sessions      []SessionState       `json:"sessions"`
+	Regions       []RegionState        `json:"regions"`
+	NextClientID  uint32               `json:"next_client_id"`
+	// Config carries the effective ServerConfig (file + CLI-flag
+	// overrides) with the current runtime program set folded into
+	// Config.Programs. The new process uses this as its authoritative
+	// configuration — no config-file reread, no CLI-flag forwarding.
+	Config *config.ServerConfig `json:"config"`
 }
 
 type SessionState struct {
@@ -40,18 +44,6 @@ type RegionState struct {
 	Screen  *te.HistoryState `json:"screen"`
 }
 
-type ProgramConfigJSON struct {
-	Name string            `json:"name"`
-	Cmd  string            `json:"cmd"`
-	Args []string          `json:"args,omitempty"`
-	Env  map[string]string `json:"env,omitempty"`
-}
-
-type SessionsCfgJSON struct {
-	DefaultName     string   `json:"default_name,omitempty"`
-	DefaultPrograms []string `json:"default_programs,omitempty"`
-}
-
 // --- Wire protocol ---
 //
 // Messages are sent as JSON via WriteMsgUnix. When file descriptors
@@ -65,6 +57,10 @@ type upgradeMsg struct {
 	FDCount   int             `json:"fd_count,omitempty"`
 	State     json.RawMessage `json:"state,omitempty"`
 	Message   string          `json:"message,omitempty"`
+	// SSHCfg accompanies listener_fds so the new process can reconstruct
+	// dssh listeners without needing the full ServerConfig yet — the
+	// full config arrives later in the state message.
+	SSHCfg *transport.SSHListenerConfig `json:"ssh_cfg,omitempty"`
 }
 
 // sendMsg sends a length-prefixed JSON message, optionally with FDs via SCM_RIGHTS.

@@ -22,7 +22,7 @@ const upgradeTimeout = 60 * time.Second
 // handing off all listeners, PTY FDs, and terminal state. Upgrade
 // progress is published on the tree's UpgradeNode so connected clients
 // can track phases via tree events.
-func (s *Server) HandleUpgrade(specs []string, sshCfg transport.SSHListenerConfig) error {
+func (s *Server) HandleUpgrade(specs []string) error {
 	// Alias for brevity. Pre-drain calls pass nil tree/clients to
 	// route through the event loop; post-drain calls pass the drained
 	// tree and client snapshot for direct mutation.
@@ -48,17 +48,7 @@ func (s *Server) HandleUpgrade(specs []string, sshCfg transport.SSHListenerConfi
 	parentFD, childFD := fds[0], fds[1]
 
 	childFile := os.NewFile(uintptr(childFD), "upgrade-child")
-	args := []string{"--upgrade-fd", "3"}
-	if sshCfg.HostKeyPath != "" {
-		args = append(args, "--ssh-host-key", sshCfg.HostKeyPath)
-	}
-	if sshCfg.AuthorizedKeysPath != "" {
-		args = append(args, "--ssh-auth-keys", sshCfg.AuthorizedKeysPath)
-	}
-	if sshCfg.NoAuth {
-		args = append(args, "--ssh-no-auth")
-	}
-	cmd := exec.Command(newBin, args...)
+	cmd := exec.Command(newBin, "--upgrade-fd", "3")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.ExtraFiles = []*os.File{childFile}
@@ -96,10 +86,16 @@ func (s *Server) HandleUpgrade(specs []string, sshCfg transport.SSHListenerConfi
 		listenerFDs = append(listenerFDs, int(f.Fd()))
 		defer f.Close()
 	}
+	sshCfg := transport.SSHListenerConfig{
+		HostKeyPath:        s.cfg.SSH.HostKey,
+		AuthorizedKeysPath: s.cfg.SSH.AuthorizedKeys,
+		NoAuth:             s.cfg.SSH.NoAuth,
+	}
 	if err := sendMsg(conn, upgradeMsg{
 		Type:    "listener_fds",
 		Specs:   specs,
 		FDCount: len(listenerFDs),
+		SSHCfg:  &sshCfg,
 	}, listenerFDs); err != nil {
 		cmd.Process.Kill()
 		fail(nil, nil, fmt.Sprintf("send listener FDs: %v", err))
@@ -225,22 +221,22 @@ func (s *Server) HandleUpgrade(specs []string, sshCfg transport.SSHListenerConfi
 }
 
 func buildUpgradeState(s *Server, result upgradeResult, specs []string) *UpgradeState {
+	// Start from the effective config and overlay the current runtime
+	// state. BinariesDir gets its resolved form (so the new process
+	// doesn't re-resolve against a different executable path). Programs
+	// come from the tree so any nxtermctl-added programs survive.
+	cfg := s.cfg
+	cfg.Upgrade.BinariesDir = s.binariesDir
+	cfg.Programs = cfg.Programs[:0:0]
+	result.tree.ForEachProgram(func(_ string, p config.ProgramConfig) {
+		cfg.Programs = append(cfg.Programs, p)
+	})
 	state := &UpgradeState{
 		Version:       s.version,
 		ListenerSpecs: specs,
 		NextClientID:  s.nextClientID.Load(),
-		Programs:      make(map[string]ProgramConfigJSON),
-		BinariesDir:   s.binariesDir,
+		Config:        &cfg,
 	}
-	state.SessionsCfg = SessionsCfgJSON{
-		DefaultName:     s.sessionsCfg.DefaultName,
-		DefaultPrograms: s.sessionsCfg.DefaultPrograms,
-	}
-	result.tree.ForEachProgram(func(name string, p config.ProgramConfig) {
-		state.Programs[name] = ProgramConfigJSON{
-			Name: p.Name, Cmd: p.Cmd, Args: p.Args, Env: p.Env,
-		}
-	})
 	result.tree.ForEachSession(func(name string, regionIDs []string) {
 		ss := SessionState{Name: name}
 		ss.RegionIDs = append(ss.RegionIDs, regionIDs...)

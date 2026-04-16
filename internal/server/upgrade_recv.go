@@ -8,14 +8,13 @@ import (
 	"os"
 	"syscall"
 
-	"nxtermd/internal/config"
 	"nxtermd/internal/transport"
 )
 
 // RecvUpgrade receives a live upgrade handoff from an old nxtermd process.
 // The version parameter is the new binary's compiled-in version, which
 // takes precedence over the version in the upgrade state (from the old binary).
-func RecvUpgrade(fd int, sshCfg transport.SSHListenerConfig, version string) (*Server, []net.Listener, []string, error) {
+func RecvUpgrade(fd int, version string) (*Server, []net.Listener, []string, error) {
 	file := os.NewFile(uintptr(fd), "upgrade-recv")
 	netConn, err := net.FileConn(file)
 	file.Close()
@@ -25,7 +24,10 @@ func RecvUpgrade(fd int, sshCfg transport.SSHListenerConfig, version string) (*S
 	conn := netConn.(*net.UnixConn)
 	defer conn.Close()
 
-	// 1. Receive listener FDs.
+	// 1. Receive listener FDs. The old process ships its effective
+	//    SSHListenerConfig alongside so we can reconstruct dssh
+	//    listeners with the right host-key/auth before the full
+	//    ServerConfig arrives in the state message.
 	msg, files, err := recvMsg(conn, 0)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("recv listener msg: %w", err)
@@ -33,6 +35,10 @@ func RecvUpgrade(fd int, sshCfg transport.SSHListenerConfig, version string) (*S
 	if msg.Type != "listener_fds" {
 		return nil, nil, nil, fmt.Errorf("expected listener_fds, got %s", msg.Type)
 	}
+	if msg.SSHCfg == nil {
+		return nil, nil, nil, fmt.Errorf("listener_fds missing ssh_cfg")
+	}
+	sshCfg := *msg.SSHCfg
 	specs := msg.Specs
 	slog.Info("upgrade-recv: got listener FDs", "count", len(files), "specs", specs)
 
@@ -84,24 +90,16 @@ func RecvUpgrade(fd int, sshCfg transport.SSHListenerConfig, version string) (*S
 		return nil, nil, nil, fmt.Errorf("expected handoff_complete, got %s", msg.Type)
 	}
 
-	// 5. Reconstruct server.
-	// Re-read the config file so configuration changes take effect
-	// without requiring a full restart.
-	cfg, err := config.LoadServerConfig("")
-	if err != nil {
-		slog.Warn("upgrade-recv: failed to reload config, using inherited state", "err", err)
-		cfg = config.ServerConfig{}
-		cfg.Sessions.DefaultName = state.SessionsCfg.DefaultName
-		cfg.Sessions.DefaultPrograms = state.SessionsCfg.DefaultPrograms
-		cfg.Upgrade.BinariesDir = state.BinariesDir
-		for _, p := range state.Programs {
-			cfg.Programs = append(cfg.Programs, config.ProgramConfig{
-				Name: p.Name, Cmd: p.Cmd, Args: p.Args, Env: p.Env,
-			})
-		}
+	// 5. Reconstruct server using the config handed to us by the old
+	//    process (effective config = file + CLI flags + runtime program
+	//    edits). We no longer re-read the config file during upgrade —
+	//    consistency with the running server matters more than picking
+	//    up mid-process edits, and CLI-flag overrides would be lost on
+	//    a file reload anyway.
+	if state.Config == nil {
+		return nil, nil, nil, fmt.Errorf("upgrade state missing config")
 	}
-
-	srv := NewServer(listeners, version, cfg)
+	srv := NewServer(listeners, version, *state.Config)
 	srv.nextClientID.Store(state.NextClientID)
 
 	for _, rs := range state.Regions {

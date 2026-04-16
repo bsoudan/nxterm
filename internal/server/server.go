@@ -23,6 +23,10 @@ type Server struct {
 	startTime    time.Time
 	nextClientID atomic.Uint32
 	sessionsCfg  config.SessionsConfig
+	// cfg is the effective server configuration (config file with CLI
+	// flag overrides applied). Preserved intact so a live upgrade can
+	// hand the same config to the new process.
+	cfg config.ServerConfig
 
 	requests     chan request
 	done         chan struct{}
@@ -79,6 +83,7 @@ func NewServer(listeners []net.Listener, version string, cfg config.ServerConfig
 		listeners:    listeners,
 		startTime:    time.Now(),
 		sessionsCfg:  sessionsCfg,
+		cfg:          cfg,
 		requests:     make(chan request, 256),
 		done:         make(chan struct{}),
 		shutdownResp: make(chan shutdownResult, 1),
