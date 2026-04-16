@@ -1065,24 +1065,38 @@ func TestScrollbackOutputDuringScroll(t *testing.T) {
 	}
 
 	// Collect from the top, then page down through everything.
-	// Stop when we reach the bottom (offset=0 or offset < halfPage).
-	collectScreen()
-	for range 30 {
-		nxt.Write([]byte{0x04}) // ctrl+d = page down
-		time.Sleep(50 * time.Millisecond)
-
+	// Wait for the offset to decrease after each page down so we don't
+	// collect the same screen twice if the render hasn't caught up yet.
+	readOffset := func() int {
 		screen := nxt.ScreenLines()
 		status := screen[0]
-		var offset int
 		for _, part := range strings.Fields(status) {
 			if strings.HasPrefix(part, "[") && strings.HasSuffix(part, "]") {
+				var offset int
 				fmt.Sscanf(part, "[%d/", &offset)
+				return offset
 			}
+		}
+		return -1
+	}
+	collectScreen()
+	prevOffset := readOffset()
+	for range 30 {
+		nxt.Write([]byte{0x04}) // ctrl+d = page down
+		deadline := time.Now().Add(2 * time.Second)
+		var offset int
+		for time.Now().Before(deadline) {
+			offset = readOffset()
+			if offset != prevOffset {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
 		}
 		collectScreen()
 		if offset <= 0 {
 			break // at the bottom, no point paging further
 		}
+		prevOffset = offset
 	}
 
 	// Check no line appears more than 3 times (overlap between pages
