@@ -480,6 +480,13 @@ func TestLiveUpgradeNoDataLoss(t *testing.T) {
 		if j == 0 {
 			continue
 		}
+		// Only trust tokens followed by a delimiter. The last token on
+		// screen may be truncated ("i=7269" shown as "i=72" because the
+		// screen ended mid-write), which would otherwise look like a
+		// counter discontinuity.
+		if j >= len(flat) {
+			break
+		}
 		n, err := strconv.Atoi(flat[:j])
 		if err == nil {
 			seen = append(seen, n)
