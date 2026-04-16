@@ -167,9 +167,9 @@ func (s *Server) HandleUpgrade(specs []string) error {
 	var ptyFDs []int
 	var regionIDs []string
 	for _, rs := range state.Regions {
-		if f, ok := ptyDups[rs.ID]; ok && f != nil {
+		if f, ok := ptyDups[rs.Node.ID]; ok && f != nil {
 			ptyFDs = append(ptyFDs, int(f.Fd()))
-			regionIDs = append(regionIDs, rs.ID)
+			regionIDs = append(regionIDs, rs.Node.ID)
 		}
 	}
 	if err := sendMsg(conn, upgradeMsg{
@@ -238,22 +238,22 @@ func buildUpgradeState(s *Server, result upgradeResult, specs []string) *Upgrade
 		Config:        &cfg,
 	}
 	result.tree.ForEachSession(func(name string, regionIDs []string) {
-		ss := SessionState{Name: name}
-		ss.RegionIDs = append(ss.RegionIDs, regionIDs...)
-		state.Sessions = append(state.Sessions, ss)
+		state.Sessions = append(state.Sessions, protocol.SessionNode{
+			Name:      name,
+			RegionIDs: append([]string(nil), regionIDs...),
+		})
 	})
 	// Only serialize PTY regions — native regions are killed on upgrade.
-	result.tree.ForEachRegion(func(_ string, r Region) {
+	result.tree.ForEachRegion(func(id string, r Region) {
 		pr, ok := r.(*PTYRegion)
 		if !ok {
 			slog.Info("upgrade: skipping native region", "region_id", r.ID())
 			return
 		}
-		histState := pr.actor.hscreen.MarshalState()
+		node := result.tree.RegionNode(id)
 		state.Regions = append(state.Regions, RegionState{
-			ID: pr.id, Name: pr.name, Cmd: pr.cmd, Pid: pr.pid,
-			Session: pr.session, Width: pr.actor.width, Height: pr.actor.height,
-			Screen: histState,
+			Node:   node,
+			Screen: pr.actor.hscreen.MarshalState(),
 		})
 	})
 	return state

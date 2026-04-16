@@ -103,20 +103,20 @@ func RecvUpgrade(fd int, version string) (*Server, []net.Listener, []string, err
 	srv.nextClientID.Store(state.NextClientID)
 
 	for _, rs := range state.Regions {
-		ptmxFile, ok := ptyByRegion[rs.ID]
+		ptmxFile, ok := ptyByRegion[rs.Node.ID]
 		if !ok {
-			slog.Warn("upgrade-recv: no PTY FD for region", "region_id", rs.ID)
+			slog.Warn("upgrade-recv: no PTY FD for region", "region_id", rs.Node.ID)
 			continue
 		}
-		region := RestoreRegion(rs.ID, rs.Name, rs.Cmd, rs.Session, rs.Pid, rs.Width, rs.Height, ptmxFile, rs.Screen, srv.destroyRegion)
+		region := RestoreRegion(rs.Node, ptmxFile, rs.Screen, srv.destroyRegion)
 		resp := make(chan struct{})
-		srv.send(restoreRegionReq{region: region, session: rs.Session, resp: resp})
+		srv.send(restoreRegionReq{region: region, session: rs.Node.Session, resp: resp})
 		<-resp
 	}
 
 	for _, rs := range state.Regions {
-		if rs.Pid > 0 {
-			syscall.Kill(rs.Pid, syscall.SIGWINCH)
+		if rs.Node.Pid > 0 {
+			syscall.Kill(rs.Node.Pid, syscall.SIGWINCH)
 		}
 	}
 

@@ -350,29 +350,29 @@ func NewRegion(cmdStr string, args []string, env map[string]string, width, heigh
 
 // RestoreRegion reconstructs a PTYRegion from serialized state and a PTY FD.
 // Used by the new process during live upgrade.
-func RestoreRegion(id, name, cmd, session string, pid, width, height int, ptmxFile *os.File, histState *te.HistoryState, destroyFn func(string)) Region {
-	hscreen := te.NewHistoryScreen(width, height, scrollbackSize)
+func RestoreRegion(node protocol.RegionNode, ptmxFile *os.File, histState *te.HistoryState, destroyFn func(string)) Region {
+	hscreen := te.NewHistoryScreen(node.Width, node.Height, scrollbackSize)
 	hscreen.UnmarshalState(histState)
 	hscreen.Screen.WriteProcessInput = func(data string) {
 		ptmxFile.Write([]byte(data))
 	}
 
 	if err := setNonblockPollable(ptmxFile); err != nil {
-		slog.Warn("restore: setNonblockPollable failed", "region_id", id, "err", err)
+		slog.Warn("restore: setNonblockPollable failed", "region_id", node.ID, "err", err)
 	}
 
-	actor := newRegionActor(id, ptmxFile, nil, width, height, hscreen, destroyFn)
+	actor := newRegionActor(node.ID, ptmxFile, nil, node.Width, node.Height, hscreen, destroyFn)
 
 	r := &PTYRegion{
-		id:      id,
-		name:    name,
-		cmd:     cmd,
-		pid:     pid,
-		session: session,
+		id:      node.ID,
+		name:    node.Name,
+		cmd:     node.Cmd,
+		pid:     node.Pid,
+		session: node.Session,
 		actor:   actor,
 	}
-	r.width.Store(int32(width))
-	r.height.Store(int32(height))
+	r.width.Store(int32(node.Width))
+	r.height.Store(int32(node.Height))
 
 	actor.start()
 	return r

@@ -247,6 +247,13 @@ func (t *ServerTree) Region(id string) Region {
 	return nil
 }
 
+func (t *ServerTree) RegionNode(id string) protocol.RegionNode {
+	if e, ok := t.regions[id]; ok {
+		return e.node
+	}
+	return protocol.RegionNode{}
+}
+
 func (t *ServerTree) Client(id uint32) *Client {
 	if e, ok := t.clients[clientIDStr(id)]; ok {
 		return e.client

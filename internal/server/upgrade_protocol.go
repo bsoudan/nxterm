@@ -9,6 +9,7 @@ import (
 
 	"golang.org/x/sys/unix"
 	"nxtermd/internal/config"
+	"nxtermd/internal/protocol"
 	"nxtermd/internal/transport"
 	te "nxtermd/pkg/te"
 )
@@ -16,11 +17,11 @@ import (
 // --- Upgrade state types ---
 
 type UpgradeState struct {
-	Version       string               `json:"version"`
-	ListenerSpecs []string             `json:"listener_specs"`
-	Sessions      []SessionState       `json:"sessions"`
-	Regions       []RegionState        `json:"regions"`
-	NextClientID  uint32               `json:"next_client_id"`
+	Version       string                `json:"version"`
+	ListenerSpecs []string              `json:"listener_specs"`
+	Sessions      []protocol.SessionNode `json:"sessions"`
+	Regions       []RegionState         `json:"regions"`
+	NextClientID  uint32                `json:"next_client_id"`
 	// Config carries the effective ServerConfig (file + CLI-flag
 	// overrides) with the current runtime program set folded into
 	// Config.Programs. The new process uses this as its authoritative
@@ -28,20 +29,12 @@ type UpgradeState struct {
 	Config *config.ServerConfig `json:"config"`
 }
 
-type SessionState struct {
-	Name      string   `json:"name"`
-	RegionIDs []string `json:"region_ids"`
-}
-
+// RegionState pairs the tree's RegionNode (structural metadata) with
+// the screen state that the tree doesn't carry (too large for live
+// sync). Together they're enough to reconstruct a PTYRegion.
 type RegionState struct {
-	ID      string           `json:"id"`
-	Name    string           `json:"name"`
-	Cmd     string           `json:"cmd"`
-	Pid     int              `json:"pid"`
-	Session string           `json:"session"`
-	Width   int              `json:"width"`
-	Height  int              `json:"height"`
-	Screen  *te.HistoryState `json:"screen"`
+	Node   protocol.RegionNode `json:"node"`
+	Screen *te.HistoryState    `json:"screen"`
 }
 
 // --- Wire protocol ---
