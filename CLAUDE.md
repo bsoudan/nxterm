@@ -41,26 +41,23 @@ The server uses a **single event loop** for all mutable state (regions, clients,
 - **Client** (`client.go`): wraps a `net.Conn`. Has a dedicated `writeLoop` goroutine that drains a `writeCh` channel, with backpressure detection (drops data and sends warnings if the client falls behind). A `readLoop` goroutine reads JSON messages and dispatches them to the server event loop.
 - **Session** (`session.go`): groups regions. A session is created on first `session_connect_request` and spawns configured default programs.
 - **EventProxy** (`event_proxy.go`): sits between the VT parser and the client write path. Captures terminal events into a batch, handles synchronized output mode (mode 2026) by buffering events until sync completes, then sending a full snapshot instead.
+- **ServerTree** (`tree.go`): transactional mutation of regions/sessions/programs/clients. `StartTx()` → mutations → `CommitTx()` → returns version + accumulated `TreeOp[]`. After commit, `TreeEvents` are broadcasted to all clients for real-time sync.
 - **Live upgrade** (`upgrade.go`, `upgrade_protocol.go`, `upgrade_recv.go`): supports zero-downtime server replacement. The old server serializes all state (regions, clients, sessions) to the new process over a Unix socket, including PTY file descriptors.
 
-### TUI (`internal/tui/`, `internal/ui/`, `cmd/nxterm/`)
+### TUI (`internal/tui/`, `cmd/nxterm/`)
 
-Built on **bubbletea v2** with **lipgloss v2** for rendering. `internal/tui/` contains the CLI entry point and connection setup. `internal/ui/` contains the bubbletea model and layer stack.
+Built on **bubbletea v2** with **lipgloss v2** for rendering.
 
-- **Model** (`internal/ui/model.go`): top-level bubbletea model that owns a **layer stack**. Messages propagate top-down through layers; the first layer that handles a message stops propagation.
-- **Layer interface** (`internal/ui/layer.go`): all UI components implement `Layer` (Update/View/Activate/Deactivate). Layers return `[]*lipgloss.Layer` slices that get composited together.
-- **MainLayer** (`internal/ui/mainlayer.go`): the base layer — manages the tab bar, terminal viewport, and region subscriptions.
-- **Terminal** (`internal/ui/terminal.go`): local VT screen that replays `terminal_events` from the server to maintain a synchronized copy of the remote terminal.
-- **Raw input** (`internal/ui/rawio.go`): after bubbletea Init completes, stdin is read directly and forwarded as `RawInputMsg` to avoid bubbletea's input parsing. This preserves exact terminal escape sequences for the remote PTY.
-- **Server connection** (`internal/ui/server.go`): manages the WebSocket/Unix/TCP connection to the server, with automatic reconnection (exponential backoff, 100ms–60s).
-- **Overlay layers**: `connectlayer.go` (session picker), `commandlayer.go` (command palette), `helplayer.go`, `programlayer.go` (spawn program), `scrollablelayer.go` (scrollback), `statuslayer.go`.
-- **Tasks** (`internal/ui/task.go`): synchronous goroutine abstraction over bubbletea's async event loop. A task is a goroutine that communicates with bubbletea through a channel bridge managed by `TaskRunner` in Model. Tasks call `Request()` to make server roundtrips, `WaitFor(filter)` to wait for messages, and `PushLayer()`/`PopLayer()` to manage overlays — all as blocking calls. The `WaitFor` filter returns `(deliver, handled bool)` mirroring the layer pattern: `deliver` routes the message to the task, `handled` controls whether layers also see it. Use tasks for multi-step async workflows (e.g. upgrade); simple single-step overlays (help, picker, input) should stay as plain layers.
+- **Model** (`model.go`): top-level bubbletea model that owns a **layer stack**. Messages propagate top-down through layers; the first layer that handles a message stops propagation.
+- **Layer interface** (`layer.go`): all UI components implement `TermdLayer` (extends `pkg/layer.Layer`). Layers return `[]*lipgloss.Layer` slices that get composited together.
+- **MainLayer** (`mainlayer.go`): the base layer — manages the tab bar, terminal viewport, and region subscriptions.
+- **Raw input** (`rawio.go`): after bubbletea Init completes, stdin is read directly and forwarded as `RawInputMsg` to avoid bubbletea's input parsing. This preserves exact terminal escape sequences for the remote PTY.
+- **Tasks** (`pkg/layer/task.go`): synchronous goroutine abstraction over bubbletea's async event loop. Tasks call `Request()` for server roundtrips, `WaitFor(filter)` to wait for messages, and `PushLayer()`/`PopLayer()` to manage overlays — all as blocking calls. Use tasks for multi-step async workflows (e.g. upgrade); simple single-step overlays should stay as plain layers.
+- **Overlay layers**: `connectlayer.go` (session picker), `commandpalette.go`, `helplayer.go`, `commandlayer.go`.
 
 ### Protocol (`internal/protocol/`, `protocol.md`)
 
-Newline-delimited JSON over any transport. Request/response pattern: every request has a corresponding response with `error` bool + `message` string. Exceptions: `identify` and `input` are fire-and-forget. Server-initiated messages (`screen_update`, `terminal_events`, `region_created`, `region_destroyed`) have no response.
-
-The protocol is documented in `protocol.md`.
+Newline-delimited JSON over any transport. Request/response pattern: every request has a corresponding response with `error` bool + `message` string. Exceptions: `identify` and `input` are fire-and-forget. Server-initiated messages (`screen_update`, `terminal_events`, `region_created`, `region_destroyed`) have no response. The protocol is documented in `protocol.md`.
 
 ### Transport (`internal/transport/`)
 
@@ -78,6 +75,7 @@ CLI admin tool for the server. Connects using `internal/client` and sends protoc
 
 TOML configuration. Server: `~/.config/nxtermd/server.toml`. Frontend: `~/.config/nxterm/config.toml`.
 
+
 ## Coding
 
 * Never build code in tests — put build commands in the Makefile and use that.
@@ -90,9 +88,9 @@ TOML configuration. Server: `~/.config/nxtermd/server.toml`. Frontend: `~/.confi
 
 * Structure Go files with the most important code first (types, constructors, main logic before helpers).
 
-* Prefer e2e tests over unit tests. Unit tests are for tricky code and edge cases that e2e can't easily reach. Don't write redundant tests covering the same path from different angles.
+* Prefer actor goroutines over shared state. Give mutable state a single owning goroutine and communicate via typed request/response channels instead of protecting it with mutexes. See `server.eventLoop()` and the region actor pattern.
 
-* Don't write tests that just exercise the standard library.
+* In the TUI, prefer the task abstraction (`pkg/layer/task.go`) over threading multi-step logic through bubbletea's async message loop. Tasks let you write sequential code (Request → WaitFor → PushLayer) that reads linearly instead of scattering steps across Update callbacks.
 
 * Consolidate duplicated code before committing, not as a follow-up.
 
@@ -106,7 +104,21 @@ TOML configuration. Server: `~/.config/nxtermd/server.toml`. Frontend: `~/.confi
 
 * When a fix is unverified or an assumption is uncertain, say so. Do not make premature commits.
 
-* When asked to remove something, remove it. Don't argue to keep it.
+* After each major change or new feature, re-read CLAUDE.md and update it if necessary.
+
+
+## Testing
+
+* Prefer e2e tests over unit tests. Unit tests are for tricky code and edge cases that e2e can't easily reach. Don't write redundant tests covering the same path from different angles.
+
+* When fixing a bug, first write a failing test case, then fix the bug and ensure the failed test case now passes.
+
+* Don't write tests that just exercise the standard library.
+
+* All new features require an e2e test -- either extend an existing test case to cover the new feature, or add a new e2e test.
+
+* When writing new tests, aim for reasonable test coverage.
+
 
 ## Environment
 
