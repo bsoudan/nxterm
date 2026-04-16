@@ -48,7 +48,17 @@ func (s *Server) HandleUpgrade(specs []string, sshCfg transport.SSHListenerConfi
 	parentFD, childFD := fds[0], fds[1]
 
 	childFile := os.NewFile(uintptr(childFD), "upgrade-child")
-	cmd := exec.Command(newBin, "--upgrade-fd", "3")
+	args := []string{"--upgrade-fd", "3"}
+	if sshCfg.HostKeyPath != "" {
+		args = append(args, "--ssh-host-key", sshCfg.HostKeyPath)
+	}
+	if sshCfg.AuthorizedKeysPath != "" {
+		args = append(args, "--ssh-auth-keys", sshCfg.AuthorizedKeysPath)
+	}
+	if sshCfg.NoAuth {
+		args = append(args, "--ssh-no-auth")
+	}
+	cmd := exec.Command(newBin, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.ExtraFiles = []*os.File{childFile}
