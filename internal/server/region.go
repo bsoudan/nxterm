@@ -11,7 +11,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"syscall"
-	"time"
 	"unicode/utf8"
 	"unsafe"
 
@@ -162,24 +161,18 @@ func (r *PTYRegion) Resize(width, height uint16) error {
 	}
 }
 
-// WriteInput writes directly to the PTY master. This is thread-safe
-// (kernel PTY write) and does not go through the actor.
+// WriteInput writes directly to the backend. For PTY regions this is a
+// thread-safe kernel write and does not go through the actor.
 func (r *PTYRegion) WriteInput(data []byte) {
-	if _, err := r.actor.ptmx.Write(data); err != nil {
-		slog.Debug("write input error", "region_id", r.id, "err", err)
-	}
+	r.actor.backend.WriteInput(data)
 }
 
 func (r *PTYRegion) Kill() {
-	if r.actor.cmdObj != nil {
-		r.actor.cmdObj.Process.Signal(syscall.SIGKILL)
-	} else if r.pid > 0 {
-		syscall.Kill(r.pid, syscall.SIGKILL)
-	}
+	r.actor.backend.Kill()
 }
 
 func (r *PTYRegion) Close() {
-	r.actor.ptmx.Close()
+	r.actor.backend.Close()
 }
 
 // AddSubscriber adds a client to this region's subscriber set and
@@ -246,17 +239,12 @@ func (r *PTYRegion) ClearOverlay(clientID uint32) {
 // caller must call StopActor first; the dup'd FD goes to the new
 // process, while the original is left in place for Close() to clean up.
 func (r *PTYRegion) DetachPTY() *os.File {
-	var newFD int
-	err := withPTYFd(r.actor.ptmx, func(fd int) error {
-		var derr error
-		newFD, derr = syscall.Dup(fd)
-		return derr
-	})
+	f, err := r.actor.backend.DetachForUpgrade()
 	if err != nil {
 		slog.Error("DetachPTY: dup failed", "region_id", r.id, "err", err)
 		return nil
 	}
-	return os.NewFile(uintptr(newFD), r.actor.ptmx.Name())
+	return f
 }
 
 // StopActor stops the actor goroutine and its readLoop. Used during
@@ -279,12 +267,11 @@ func (r *PTYRegion) StopActor() error {
 // ResumeActor restarts the actor after a failed upgrade rollback.
 // The caller must have called StopActor first.
 func (r *PTYRegion) ResumeActor(destroyFn func(string)) error {
-	if err := r.actor.ptmx.SetReadDeadline(time.Time{}); err != nil {
-		return fmt.Errorf("clear read deadline: %w", err)
+	if err := r.actor.backend.ResumeReader(); err != nil {
+		return fmt.Errorf("resume reader: %w", err)
 	}
 	a := r.actor
 	a.destroyFn = destroyFn
-	a.readerDone = make(chan struct{})
 	a.actorDone = make(chan struct{})
 	a.msgs = make(chan regionMsg, actorChanSize)
 	a.stopped = false
@@ -325,12 +312,14 @@ func NewRegion(cmdStr string, args []string, env map[string]string, width, heigh
 		return nil, fmt.Errorf("set ptmx winsize: %w", err)
 	}
 
+	backend := newPTYBackend(id, ptmx, cmdObj, cmdObj.Process.Pid)
+
 	hscreen := te.NewHistoryScreen(width, height, scrollbackSize)
 	hscreen.Screen.WriteProcessInput = func(data string) {
-		ptmx.Write([]byte(data))
+		backend.WriteInput([]byte(data))
 	}
 
-	actor := newRegionActor(id, ptmx, cmdObj, width, height, hscreen, destroyFn)
+	actor := newRegionActor(id, backend, width, height, hscreen, destroyFn)
 
 	r := &PTYRegion{
 		id:    id,
@@ -351,17 +340,19 @@ func NewRegion(cmdStr string, args []string, env map[string]string, width, heigh
 // RestoreRegion reconstructs a PTYRegion from serialized state and a PTY FD.
 // Used by the new process during live upgrade.
 func RestoreRegion(node protocol.RegionNode, ptmxFile *os.File, histState *te.HistoryState, destroyFn func(string)) Region {
+	backend := newPTYBackend(node.ID, ptmxFile, nil, node.Pid)
+
 	hscreen := te.NewHistoryScreen(node.Width, node.Height, scrollbackSize)
 	hscreen.UnmarshalState(histState)
 	hscreen.Screen.WriteProcessInput = func(data string) {
-		ptmxFile.Write([]byte(data))
+		backend.WriteInput([]byte(data))
 	}
 
 	if err := setNonblockPollable(ptmxFile); err != nil {
 		slog.Warn("restore: setNonblockPollable failed", "region_id", node.ID, "err", err)
 	}
 
-	actor := newRegionActor(node.ID, ptmxFile, nil, node.Width, node.Height, hscreen, destroyFn)
+	actor := newRegionActor(node.ID, backend, node.Width, node.Height, hscreen, destroyFn)
 
 	r := &PTYRegion{
 		id:      node.ID,

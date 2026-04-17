@@ -1,18 +1,16 @@
 package server
 
-// actor.go implements the per-region actor goroutine. Each PTY region runs
-// a single actor goroutine that owns all mutable screen state, subscribers,
+// actor.go implements the per-region actor goroutine. Each region runs a
+// single actor goroutine that owns all mutable screen state, subscribers,
 // and overlay data. No mutex is needed — all access is serialized through
-// the actor's message channel.
+// the actor's message channel. The data source is abstracted by
+// regionBackend, so PTY-backed and native (driver-backed) regions share
+// the same actor implementation.
 
 import (
-	"errors"
 	"log/slog"
 	"os"
-	"os/exec"
-	"time"
 
-	"golang.org/x/sys/unix"
 	te "nxtermd/pkg/te"
 	"nxtermd/internal/protocol"
 )
@@ -22,14 +20,55 @@ type regionMsg interface {
 	handleRegion(a *regionActor)
 }
 
+// regionBackend is the data source for a region. PTY-backed regions use
+// ptyBackend; native (driver-backed) regions will use nativeBackend.
+type regionBackend interface {
+	// Start spawns any backend goroutines. Output flows into msgs as
+	// ptyDataMsg; backend termination flows as childExitedMsg.
+	Start(msgs chan<- regionMsg, actorDone <-chan struct{})
+
+	// WriteInput writes client-sourced input to the backend. Thread-safe;
+	// called from the region's WriteInput without going through the actor.
+	WriteInput(data []byte)
+
+	// Resize updates backend sizing.
+	Resize(rows, cols uint16) error
+
+	// SaveTermios / RestoreTermios capture backend-specific terminal
+	// mode state around overlays. Native backends should no-op.
+	SaveTermios()
+	RestoreTermios()
+
+	// Stop interrupts the backend's read path so actor shutdown can
+	// proceed. Used by live upgrade.
+	Stop() error
+
+	// ResumeReader reopens the backend's read path after Stop. Used by
+	// live-upgrade rollback.
+	ResumeReader() error
+
+	// Close releases backend resources.
+	Close() error
+
+	// Kill signals the backend's child process if any. No-op for native.
+	Kill()
+
+	// DetachForUpgrade returns a file handle for transfer to a new
+	// server process. Returns an error for backends that can't be
+	// transferred (e.g. native).
+	DetachForUpgrade() (*os.File, error)
+
+	// Done is closed when the backend's read path has exited.
+	Done() <-chan struct{}
+}
+
 const actorChanSize = 256
 
-// regionActor owns all mutable state for a single PTY region.
+// regionActor owns all mutable state for a single region.
 type regionActor struct {
 	// Identity — immutable after construction.
 	id        string
-	ptmx      *os.File
-	cmdObj    *exec.Cmd
+	backend   regionBackend
 	destroyFn func(regionID string)
 
 	// Mutable state — accessed only by the actor goroutine.
@@ -40,19 +79,17 @@ type regionActor struct {
 	proxy   *EventProxy
 	stream  *te.Stream
 
-	subscribers  map[uint32]*Client
-	overlay      *overlayState
-	savedTermios *unix.Termios
+	subscribers map[uint32]*Client
+	overlay     *overlayState
 
 	// Channels.
-	msgs       chan regionMsg
-	readerDone chan struct{}
-	actorDone  chan struct{}
-	stopped    bool
+	msgs      chan regionMsg
+	actorDone chan struct{}
+	stopped   bool
 }
 
 func newRegionActor(
-	id string, ptmx *os.File, cmdObj *exec.Cmd,
+	id string, backend regionBackend,
 	width, height int, hscreen *te.HistoryScreen,
 	destroyFn func(string),
 ) *regionActor {
@@ -60,8 +97,7 @@ func newRegionActor(
 	stream := te.NewStream(proxy, false)
 	return &regionActor{
 		id:          id,
-		ptmx:        ptmx,
-		cmdObj:      cmdObj,
+		backend:     backend,
 		destroyFn:   destroyFn,
 		width:       width,
 		height:      height,
@@ -71,14 +107,12 @@ func newRegionActor(
 		stream:      stream,
 		subscribers: make(map[uint32]*Client),
 		msgs:        make(chan regionMsg, actorChanSize),
-		readerDone:  make(chan struct{}),
 		actorDone:   make(chan struct{}),
 	}
 }
 
 func (a *regionActor) start() {
-	go a.readLoop()
-	go a.waitLoop()
+	a.backend.Start(a.msgs, a.actorDone)
 	go a.run()
 }
 
@@ -93,47 +127,6 @@ func (a *regionActor) run() {
 		if a.stopped {
 			return
 		}
-	}
-}
-
-func (a *regionActor) readLoop() {
-	defer close(a.readerDone)
-	buf := make([]byte, 4096)
-	var carry [maxCarry]byte
-	var carryN int
-	for {
-		n, err := a.ptmx.Read(buf)
-		if n > 0 {
-			data, cn := sequenceSafe(carry[:carryN], buf[:n], carry[:])
-			carryN = cn
-			if len(data) > 0 {
-				// Copy because data may alias buf or carry.
-				cp := make([]byte, len(data))
-				copy(cp, data)
-				select {
-				case a.msgs <- ptyDataMsg{data: cp}:
-				case <-a.actorDone:
-					return
-				}
-			}
-		}
-		if err != nil {
-			if !errors.Is(err, os.ErrDeadlineExceeded) {
-				slog.Debug("readLoop exiting", "region_id", a.id, "err", err)
-			}
-			return
-		}
-	}
-}
-
-func (a *regionActor) waitLoop() {
-	if a.cmdObj != nil {
-		a.cmdObj.Wait()
-	}
-	<-a.readerDone
-	select {
-	case a.msgs <- childExitedMsg{}:
-	case <-a.actorDone:
 	}
 }
 
@@ -255,37 +248,10 @@ func (a *regionActor) broadcastToSubscribers() {
 	}
 }
 
-func (a *regionActor) saveTermios() {
-	err := withPTYFd(a.ptmx, func(fd int) error {
-		t, err := unix.IoctlGetTermios(fd, unix.TCGETS)
-		if err != nil {
-			return err
-		}
-		a.savedTermios = t
-		return nil
-	})
-	if err != nil {
-		slog.Debug("SaveTermios failed", "region_id", a.id, "err", err)
-	}
-}
-
-func (a *regionActor) restoreTermios() {
-	if a.savedTermios == nil {
-		return
-	}
-	err := withPTYFd(a.ptmx, func(fd int) error {
-		return unix.IoctlSetTermios(fd, unix.TCSETS, a.savedTermios)
-	})
-	if err != nil {
-		slog.Debug("RestoreTermios failed", "region_id", a.id, "err", err)
-	}
-	a.savedTermios = nil
-}
-
 // clearOverlayInternal clears the overlay and sends a plain snapshot to subscribers.
 func (a *regionActor) clearOverlayInternal() {
 	a.overlay = nil
-	a.restoreTermios()
+	a.backend.RestoreTermios()
 	slog.Info("overlay cleared", "region_id", a.id)
 	if len(a.subscribers) > 0 {
 		snapMsg := newScreenUpdate(a.id, a.snapshot())
@@ -379,7 +345,7 @@ type resizeMsg struct {
 }
 
 func (m resizeMsg) handleRegion(a *regionActor) {
-	if err := setWinsize(a.ptmx, m.height, m.width); err != nil {
+	if err := a.backend.Resize(m.height, m.width); err != nil {
 		m.resp <- err
 		return
 	}
@@ -396,7 +362,7 @@ type overlayRegisterMsg struct {
 }
 
 func (m overlayRegisterMsg) handleRegion(a *regionActor) {
-	a.saveTermios()
+	a.backend.SaveTermios()
 	a.overlay = &overlayState{
 		clientID: m.client.id,
 		regionID: a.id,
@@ -441,12 +407,7 @@ func (m overlayClearMsg) handleRegion(a *regionActor) {
 type stopActorMsg struct{ resp chan struct{} }
 
 func (m stopActorMsg) handleRegion(a *regionActor) {
-	a.ptmx.SetReadDeadline(time.Unix(1, 0))
-	select {
-	case <-a.readerDone:
-	case <-time.After(2 * time.Second):
-		slog.Warn("readLoop did not exit within 2s", "region_id", a.id)
-	}
+	a.backend.Stop()
 	m.resp <- struct{}{}
 	a.stopped = true
 }
