@@ -27,7 +27,7 @@
           pname = "nxtermd";
           inherit version;
           src = ./.;
-          vendorHash = "sha256-JuH/77R/QWuGGy1Q602EAQ9TAfn35ZGaJ58LIOrb730=";
+          vendorHash = "sha256-gYFKr6x24vNpcnyEY8wBsWnPi7Wa/NEcIBh0EmZ5nCU=";
           subPackages = [ "cmd/nxtermd" "cmd/nxterm" "cmd/nxtermctl" ];
           env.CGO_ENABLED = 0;
           ldflags = [ "-s" "-w" "-X main.version=${version}" ];
@@ -105,6 +105,7 @@
           ];
 
           shellHook = ''
+            export CODEX_HOME=$PWD/.codex-home
             export CLAUDE_CONFIG_DIR=$PWD/.claude-config
             export PATH="$PWD/.local/bin:$PATH"
             export GOPATH="$PWD/.local/go"
@@ -135,3 +136,4 @@
       }
     );
 }
+
