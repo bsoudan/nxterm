@@ -89,9 +89,9 @@ func (t *TerminalLayer) contentHeight() int {
 func (t *TerminalLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 	switch msg := msg.(type) {
 	case protocol.ScreenUpdate:
-		return nil, t.handleScreenUpdate(msg.Lines, msg.Cells, msg.CursorRow, msg.CursorCol, msg.Modes, msg.Title, msg.IconName, msg.ScrollbackLen), true
+		return nil, t.handleScreenUpdate(msg.Lines, msg.Cells, msg.CursorRow, msg.CursorCol, msg.Modes, msg.Title, msg.IconName, msg.ScrollbackLen, msg.ScrollbackTotal), true
 	case protocol.GetScreenResponse:
-		return nil, t.handleScreenUpdate(msg.Lines, msg.Cells, msg.CursorRow, msg.CursorCol, msg.Modes, msg.Title, msg.IconName, msg.ScrollbackLen), true
+		return nil, t.handleScreenUpdate(msg.Lines, msg.Cells, msg.CursorRow, msg.CursorCol, msg.Modes, msg.Title, msg.IconName, msg.ScrollbackLen, msg.ScrollbackTotal), true
 	case protocol.TerminalEvents:
 		return nil, t.handleTerminalEvents(msg.Events), true
 	case protocol.ResizeResponse:
@@ -142,7 +142,7 @@ func (t *TerminalLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 	}
 }
 
-func (t *TerminalLayer) handleScreenUpdate(lines []string, cells [][]protocol.ScreenCell, cursorRow, cursorCol uint16, modes map[int]bool, title, iconName string, serverScrollback int) tea.Cmd {
+func (t *TerminalLayer) handleScreenUpdate(lines []string, cells [][]protocol.ScreenCell, cursorRow, cursorCol uint16, modes map[int]bool, title, iconName string, serverScrollback int, serverTotal uint64) tea.Cmd {
 	height := t.contentHeight()
 	if t.termHeight <= 0 {
 		height = 23
@@ -165,16 +165,25 @@ func (t *TerminalLayer) handleScreenUpdate(lines []string, cells [][]protocol.Sc
 	// snapshot. Trim to the server's count to avoid duplicates at the
 	// history/screen boundary.
 	var prevHistory [][]te.Cell
+	var prevTotalAdded uint64
 	if t.hscreen != nil {
 		prevHistory = t.hscreen.History()
+		prevTotalAdded = t.hscreen.TotalAdded()
 		if serverScrollback > 0 && len(prevHistory) > serverScrollback {
 			prevHistory = prevHistory[:serverScrollback]
 		}
 	}
 	t.hscreen = te.NewHistoryScreen(width, height, 10000)
+	// Preserve client's monotonic row counter across the hscreen reset
+	// so subsequent events continue advancing from the right base. Don't
+	// adopt serverTotal blindly: the client's count reflects which rows
+	// events actually delivered, and overwriting it would misalign the
+	// implicit seqs of preserved scrollback rows.
+	t.hscreen.SetTotalAdded(prevTotalAdded)
 	if len(prevHistory) > 0 {
 		t.hscreen.PrependHistory(prevHistory)
 	}
+	_ = serverTotal
 	if len(cells) > 0 {
 		initScreenFromCells(t.hscreen.Screen, cells)
 	} else {

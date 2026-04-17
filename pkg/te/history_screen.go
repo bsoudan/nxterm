@@ -54,6 +54,11 @@ type History struct {
 	Ratio    float64
 	Size     int
 	Position int
+	// TotalAdded is a monotonic count of rows ever appended to Top
+	// (never decreases, even when rows evict). Used by clients/servers
+	// to reconcile scrollback state by absolute sequence number rather
+	// than buffer length.
+	TotalAdded uint64
 }
 
 // HistoryScreen wraps Screen to maintain scrollback history.
@@ -634,6 +639,7 @@ func (h *HistoryScreen) indexInternal() {
 	top, bottom := h.scrollRegion()
 	if h.Cursor.Row == bottom {
 		h.history.Top.append(h.Buffer[top])
+		h.history.TotalAdded++
 	}
 	h.Screen.Index()
 }
@@ -717,6 +723,21 @@ func (h *HistoryScreen) History() [][]Cell {
 // Scrollback returns the number of lines in the scrollback buffer.
 func (h *HistoryScreen) Scrollback() int {
 	return len(h.history.Top.items)
+}
+
+// TotalAdded returns the monotonic count of rows ever appended to the
+// scrollback (never decreases even when rows evict). Paired with
+// Scrollback() it yields the absolute-sequence range of rows currently
+// retained: [TotalAdded()-uint64(Scrollback()), TotalAdded()).
+func (h *HistoryScreen) TotalAdded() uint64 {
+	return h.history.TotalAdded
+}
+
+// SetTotalAdded assigns the monotonic counter. Used by clients to adopt
+// the server's value on connect or ScreenUpdate, so client-side event
+// replay advances the same seq space.
+func (h *HistoryScreen) SetTotalAdded(n uint64) {
+	h.history.TotalAdded = n
 }
 
 // PrependHistory inserts lines at the beginning of the scrollback buffer.

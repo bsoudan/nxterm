@@ -17,12 +17,13 @@ import (
 )
 
 type Server struct {
-	version      string
-	binariesDir  string
-	listeners    []net.Listener
-	startTime    time.Time
-	nextClientID atomic.Uint32
-	sessionsCfg  config.SessionsConfig
+	version        string
+	binariesDir    string
+	listeners      []net.Listener
+	startTime      time.Time
+	nextClientID   atomic.Uint32
+	sessionsCfg    config.SessionsConfig
+	scrollbackSize int
 	// cfg is the effective server configuration (config file with CLI
 	// flag overrides applied). Preserved intact so a live upgrade can
 	// hand the same config to the new process.
@@ -77,17 +78,23 @@ func NewServer(listeners []net.Listener, version string, cfg config.ServerConfig
 		}
 	}
 
+	scrollbackSize := cfg.Scrollback.Size
+	if scrollbackSize <= 0 {
+		scrollbackSize = DefaultScrollbackSize
+	}
+
 	s := &Server{
-		version:      version,
-		binariesDir:  resolveBinariesDir(cfg.Upgrade.BinariesDir),
-		listeners:    listeners,
-		startTime:    time.Now(),
-		sessionsCfg:  sessionsCfg,
-		cfg:          cfg,
-		requests:     make(chan request, 256),
-		done:         make(chan struct{}),
-		shutdownResp: make(chan shutdownResult, 1),
-		initPrograms: programs,
+		version:        version,
+		binariesDir:    resolveBinariesDir(cfg.Upgrade.BinariesDir),
+		listeners:      listeners,
+		startTime:      time.Now(),
+		sessionsCfg:    sessionsCfg,
+		scrollbackSize: scrollbackSize,
+		cfg:            cfg,
+		requests:       make(chan request, 256),
+		done:           make(chan struct{}),
+		shutdownResp:   make(chan shutdownResult, 1),
+		initPrograms:   programs,
 	}
 	s.nextClientID.Store(1)
 
@@ -198,7 +205,7 @@ func (s *Server) SpawnRegion(sessionName, cmd string, args []string, env map[str
 	if height == 0 {
 		height = 24
 	}
-	region, err := NewRegion(cmd, args, env, int(width), int(height), s.socketAddr(), s.destroyRegion)
+	region, err := NewRegion(cmd, args, env, int(width), int(height), s.scrollbackSize, s.socketAddr(), s.destroyRegion)
 	if err != nil {
 		return nil, err
 	}
@@ -225,7 +232,7 @@ func (s *Server) SpawnNativeRegion(driver *Client, sessionName, name string, wid
 	if height == 0 {
 		height = 24
 	}
-	region := NewNativeRegion(driver, name, int(width), int(height), s.destroyRegion)
+	region := NewNativeRegion(driver, name, int(width), int(height), s.scrollbackSize, s.destroyRegion)
 
 	resp := make(chan struct{}, 1)
 	if !s.send(spawnRegionReq{region: region, sessionName: sessionName, resp: resp}) {
@@ -312,16 +319,17 @@ func (s *Server) removeClient(id uint32) {
 // sync across snapshot, overlay, and subscribe paths.
 func newScreenUpdate(regionID string, snap Snapshot) protocol.ScreenUpdate {
 	return protocol.ScreenUpdate{
-		Type:          "screen_update",
-		RegionID:      regionID,
-		CursorRow:     snap.CursorRow,
-		CursorCol:     snap.CursorCol,
-		Lines:         snap.Lines,
-		Cells:         snap.Cells,
-		Modes:         snap.Modes,
-		Title:         snap.Title,
-		IconName:      snap.IconName,
-		ScrollbackLen: snap.ScrollbackLen,
+		Type:            "screen_update",
+		RegionID:        regionID,
+		CursorRow:       snap.CursorRow,
+		CursorCol:       snap.CursorCol,
+		Lines:           snap.Lines,
+		Cells:           snap.Cells,
+		Modes:           snap.Modes,
+		Title:           snap.Title,
+		IconName:        snap.IconName,
+		ScrollbackLen:   snap.ScrollbackLen,
+		ScrollbackTotal: snap.ScrollbackTotal,
 	}
 }
 

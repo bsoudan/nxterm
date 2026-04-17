@@ -9,6 +9,7 @@ type HistoryState struct {
 	Ratio       float64     `json:"ratio"`
 	Size        int         `json:"size"`
 	Position    int         `json:"position"`
+	TotalAdded  uint64      `json:"total_added,omitempty"`
 }
 
 // MarshalState exports the complete history screen state.
@@ -20,6 +21,7 @@ func (h *HistoryScreen) MarshalState() *HistoryState {
 		Ratio:       h.history.Ratio,
 		Size:        h.history.Size,
 		Position:    h.history.Position,
+		TotalAdded:  h.history.TotalAdded,
 	}
 }
 
@@ -39,4 +41,5 @@ func (h *HistoryScreen) UnmarshalState(st *HistoryState) {
 	h.history.Ratio = st.Ratio
 	h.history.Size = st.Size
 	h.history.Position = st.Position
+	h.history.TotalAdded = st.TotalAdded
 }

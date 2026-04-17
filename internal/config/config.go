@@ -45,18 +45,26 @@ type UpgradeConfig struct {
 	BinariesDir string `toml:"binaries-dir"`
 }
 
+// ScrollbackConfig holds per-region scrollback buffer settings.
+type ScrollbackConfig struct {
+	// Size is the maximum number of lines retained in each region's
+	// scrollback buffer. 0 means use the server default.
+	Size int `toml:"size"`
+}
+
 // ServerConfig represents nxtermd/server.toml.
 type ServerConfig struct {
-	Listen    []string        `toml:"listen"`
-	Debug     bool            `toml:"debug"`
-	Trace     []string        `toml:"trace"`
-	Pprof     string          `toml:"pprof"`
-	Programs  []ProgramConfig `toml:"programs"`
-	SSH       SSHConfig       `toml:"ssh"`
-	Termctl   TermctlConfig   `toml:"termctl"`
-	Sessions  SessionsConfig  `toml:"sessions"`
-	Discovery DiscoveryConfig `toml:"discovery"`
-	Upgrade   UpgradeConfig   `toml:"upgrade"`
+	Listen     []string         `toml:"listen"`
+	Debug      bool             `toml:"debug"`
+	Trace      []string         `toml:"trace"`
+	Pprof      string           `toml:"pprof"`
+	Programs   []ProgramConfig  `toml:"programs"`
+	SSH        SSHConfig        `toml:"ssh"`
+	Termctl    TermctlConfig    `toml:"termctl"`
+	Sessions   SessionsConfig   `toml:"sessions"`
+	Discovery  DiscoveryConfig  `toml:"discovery"`
+	Upgrade    UpgradeConfig    `toml:"upgrade"`
+	Scrollback ScrollbackConfig `toml:"scrollback"`
 }
 
 // SSHConfig holds SSH-specific server settings.

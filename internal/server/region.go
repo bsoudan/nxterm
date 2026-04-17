@@ -33,7 +33,7 @@ type Region interface {
 	Height() int
 
 	Snapshot() Snapshot
-	GetScrollback() [][]protocol.ScreenCell
+	GetScrollback() ScrollbackResult
 	WriteInput([]byte)
 	Resize(width, height uint16) error
 	Kill()
@@ -54,18 +54,21 @@ type Region interface {
 }
 
 type Snapshot struct {
-	Lines         []string
-	CursorRow     uint16
-	CursorCol     uint16
-	Cells         [][]protocol.ScreenCell
-	Modes         map[int]bool
-	Title         string
-	IconName      string
-	ScrollbackLen int
+	Lines           []string
+	CursorRow       uint16
+	CursorCol       uint16
+	Cells           [][]protocol.ScreenCell
+	Modes           map[int]bool
+	Title           string
+	IconName        string
+	ScrollbackLen   int
+	ScrollbackTotal uint64
 }
 
-// scrollbackSize is the maximum number of lines kept in the scrollback buffer.
-const scrollbackSize = 10000
+// DefaultScrollbackSize is the default maximum number of lines kept in
+// each region's scrollback buffer when no override is configured via
+// ServerConfig.Scrollback.Size.
+const DefaultScrollbackSize = 10000
 
 // PTYRegion wraps a PTY region backed by an actor goroutine. The actor
 // owns all mutable state (screen, subscribers, overlay). PTYRegion is a
@@ -112,18 +115,18 @@ func (r *PTYRegion) Snapshot() Snapshot {
 	}
 }
 
-func (r *PTYRegion) GetScrollback() [][]protocol.ScreenCell {
-	resp := make(chan [][]protocol.ScreenCell, 1)
+func (r *PTYRegion) GetScrollback() ScrollbackResult {
+	resp := make(chan ScrollbackResult, 1)
 	select {
 	case r.actor.msgs <- scrollbackMsg{resp: resp}:
 	case <-r.actor.actorDone:
-		return nil
+		return ScrollbackResult{}
 	}
 	select {
 	case sb := <-resp:
 		return sb
 	case <-r.actor.actorDone:
-		return nil
+		return ScrollbackResult{}
 	}
 }
 
@@ -286,7 +289,7 @@ func (r *PTYRegion) ActorDone() <-chan struct{} {
 
 // ── Construction ─────────────────────────────────────────────────────────────
 
-func NewRegion(cmdStr string, args []string, env map[string]string, width, height int, socketAddr string, destroyFn func(string)) (Region, error) {
+func NewRegion(cmdStr string, args []string, env map[string]string, width, height, scrollbackSize int, socketAddr string, destroyFn func(string)) (Region, error) {
 	id := generateUUID()
 	name := extractName(cmdStr)
 
@@ -342,7 +345,10 @@ func NewRegion(cmdStr string, args []string, env map[string]string, width, heigh
 func RestoreRegion(node protocol.RegionNode, ptmxFile *os.File, histState *te.HistoryState, destroyFn func(string)) Region {
 	backend := newPTYBackend(node.ID, ptmxFile, nil, node.Pid)
 
-	hscreen := te.NewHistoryScreen(node.Width, node.Height, scrollbackSize)
+	// Capacity is overwritten by UnmarshalState (preserves the serialized
+	// state's capacity across upgrade), so the value passed here is a
+	// placeholder.
+	hscreen := te.NewHistoryScreen(node.Width, node.Height, DefaultScrollbackSize)
 	hscreen.UnmarshalState(histState)
 	hscreen.Screen.WriteProcessInput = func(data string) {
 		backend.WriteInput([]byte(data))

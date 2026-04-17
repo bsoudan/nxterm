@@ -61,18 +61,18 @@ func (r *NativeRegion) Snapshot() Snapshot {
 	}
 }
 
-func (r *NativeRegion) GetScrollback() [][]protocol.ScreenCell {
-	resp := make(chan [][]protocol.ScreenCell, 1)
+func (r *NativeRegion) GetScrollback() ScrollbackResult {
+	resp := make(chan ScrollbackResult, 1)
 	select {
 	case r.actor.msgs <- scrollbackMsg{resp: resp}:
 	case <-r.actor.actorDone:
-		return nil
+		return ScrollbackResult{}
 	}
 	select {
 	case sb := <-resp:
 		return sb
 	case <-r.actor.actorDone:
-		return nil
+		return ScrollbackResult{}
 	}
 }
 
@@ -176,7 +176,7 @@ func (r *NativeRegion) ClearOverlay(clientID uint32) {
 // NewNativeRegion creates a native region driven by the given client. The
 // actor is started immediately; callers should add the returned region to
 // the tree via the event loop.
-func NewNativeRegion(driver *Client, name string, width, height int, destroyFn func(string)) *NativeRegion {
+func NewNativeRegion(driver *Client, name string, width, height, scrollbackSize int, destroyFn func(string)) *NativeRegion {
 	id := generateUUID()
 	backend := newNativeBackend(id, driver)
 

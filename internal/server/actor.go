@@ -164,14 +164,15 @@ func (a *regionActor) snapshot() Snapshot {
 	}
 
 	return Snapshot{
-		Lines:         lines,
-		CursorRow:     uint16(a.screen.Cursor.Row),
-		CursorCol:     uint16(a.screen.Cursor.Col),
-		Cells:         cells,
-		Modes:         modes,
-		Title:         a.screen.Title,
-		IconName:      a.screen.IconName,
-		ScrollbackLen: a.hscreen.Scrollback(),
+		Lines:           lines,
+		CursorRow:       uint16(a.screen.Cursor.Row),
+		CursorCol:       uint16(a.screen.Cursor.Col),
+		Cells:           cells,
+		Modes:           modes,
+		Title:           a.screen.Title,
+		IconName:        a.screen.IconName,
+		ScrollbackLen:   a.hscreen.Scrollback(),
+		ScrollbackTotal: a.hscreen.TotalAdded(),
 	}
 }
 
@@ -368,10 +369,18 @@ func (m snapshotMsg) handleRegion(a *regionActor) {
 	m.resp <- a.compositedSnapshot()
 }
 
-type scrollbackMsg struct{ resp chan [][]protocol.ScreenCell }
+type ScrollbackResult struct {
+	Lines [][]protocol.ScreenCell
+	Total uint64
+}
+
+type scrollbackMsg struct{ resp chan ScrollbackResult }
 
 func (m scrollbackMsg) handleRegion(a *regionActor) {
-	m.resp <- a.getScrollback()
+	m.resp <- ScrollbackResult{
+		Lines: a.getScrollback(),
+		Total: a.hscreen.TotalAdded(),
+	}
 }
 
 type scrollbackLenMsg struct{ resp chan int }

@@ -361,7 +361,8 @@ func handleGetScrollback(s *Server, _ *Client, msg protocol.GetScrollbackRequest
 		return
 	}
 
-	lines := region.GetScrollback()
+	sb := region.GetScrollback()
+	lines := sb.Lines
 	total := len(lines)
 	regionID := region.ID()
 
@@ -372,19 +373,21 @@ func handleGetScrollback(s *Server, _ *Client, msg protocol.GetScrollbackRequest
 		chunk := lines[start:]
 		lines = lines[:start]
 		reply(protocol.GetScrollbackResponse{
-			Type:     "get_scrollback_response",
-			RegionID: regionID,
-			Lines:    chunk,
-			Total:    total,
+			Type:            "get_scrollback_response",
+			RegionID:        regionID,
+			Lines:           chunk,
+			Total:           total,
+			ScrollbackTotal: sb.Total,
 		})
 	}
 
 	reply(protocol.GetScrollbackResponse{
-		Type:     "get_scrollback_response",
-		RegionID: regionID,
-		Lines:    lines,
-		Total:    total,
-		Done:     true,
+		Type:            "get_scrollback_response",
+		RegionID:        regionID,
+		Lines:           lines,
+		Total:           total,
+		Done:            true,
+		ScrollbackTotal: sb.Total,
 	})
 }
 
@@ -403,18 +406,19 @@ func handleGetScreen(s *Server, _ *Client, msg protocol.GetScreenRequest, reply 
 
 	snap := region.Snapshot()
 	reply(protocol.GetScreenResponse{
-		Type:          "get_screen_response",
-		RegionID:      region.ID(),
-		CursorRow:     snap.CursorRow,
-		CursorCol:     snap.CursorCol,
-		Lines:         snap.Lines,
-		Cells:         snap.Cells,
-		Modes:         snap.Modes,
-		Title:         snap.Title,
-		IconName:      snap.IconName,
-		ScrollbackLen: snap.ScrollbackLen,
-		Error:         false,
-		Message:       "",
+		Type:            "get_screen_response",
+		RegionID:        region.ID(),
+		CursorRow:       snap.CursorRow,
+		CursorCol:       snap.CursorCol,
+		Lines:           snap.Lines,
+		Cells:           snap.Cells,
+		Modes:           snap.Modes,
+		Title:           snap.Title,
+		IconName:        snap.IconName,
+		ScrollbackLen:   snap.ScrollbackLen,
+		ScrollbackTotal: snap.ScrollbackTotal,
+		Error:           false,
+		Message:         "",
 	})
 }
 

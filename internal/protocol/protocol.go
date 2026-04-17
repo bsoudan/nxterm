@@ -174,6 +174,12 @@ type ScreenUpdate struct {
 	Title         string         `json:"title,omitempty"`
 	IconName      string         `json:"icon_name,omitempty"`
 	ScrollbackLen int            `json:"scrollback_len,omitempty"`
+	// ScrollbackTotal is the server's monotonic count of rows ever
+	// appended to scrollback. Paired with ScrollbackLen it identifies
+	// the absolute-sequence range currently retained:
+	// [ScrollbackTotal - ScrollbackLen, ScrollbackTotal). Clients use
+	// this to reconcile their local scrollback by seq rather than count.
+	ScrollbackTotal uint64 `json:"scrollback_total,omitempty"`
 }
 
 type RegionDestroyed struct {
@@ -201,16 +207,17 @@ type ListRegionsResponse struct {
 }
 
 type GetScreenResponse struct {
-	Type          string         `json:"type"`
-	RegionID      string         `json:"region_id"`
-	CursorRow     uint16         `json:"cursor_row"`
-	CursorCol     uint16         `json:"cursor_col"`
-	Lines         []string       `json:"lines"`
-	Cells         [][]ScreenCell `json:"cells,omitempty"`
-	Modes         map[int]bool   `json:"modes,omitempty"`
-	Title         string         `json:"title,omitempty"`
-	IconName      string         `json:"icon_name,omitempty"`
-	ScrollbackLen int            `json:"scrollback_len,omitempty"`
+	Type            string         `json:"type"`
+	RegionID        string         `json:"region_id"`
+	CursorRow       uint16         `json:"cursor_row"`
+	CursorCol       uint16         `json:"cursor_col"`
+	Lines           []string       `json:"lines"`
+	Cells           [][]ScreenCell `json:"cells,omitempty"`
+	Modes           map[int]bool   `json:"modes,omitempty"`
+	Title           string         `json:"title,omitempty"`
+	IconName        string         `json:"icon_name,omitempty"`
+	ScrollbackLen   int            `json:"scrollback_len,omitempty"`
+	ScrollbackTotal uint64         `json:"scrollback_total,omitempty"`
 	Error         bool           `json:"error"`
 	Message       string         `json:"message"`
 }
@@ -254,6 +261,13 @@ type GetScrollbackResponse struct {
 	Done     bool           `json:"done"`
 	Error    bool           `json:"error"`
 	Message  string         `json:"message"`
+	// ScrollbackTotal is the server's monotonic "rows ever added"
+	// counter at the time the snapshot was taken. The absolute-sequence
+	// range of the returned scrollback is
+	// [ScrollbackTotal - Total, ScrollbackTotal). Clients use this to
+	// prepend only rows they don't already have in their local
+	// hscreen, instead of trusting buffer lengths.
+	ScrollbackTotal uint64 `json:"scrollback_total,omitempty"`
 }
 
 type UnsubscribeResponse struct {
