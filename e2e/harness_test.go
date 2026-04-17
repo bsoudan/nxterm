@@ -177,6 +177,19 @@ func startFrontend(t *testing.T, socketPath string) *nxtest.T {
 	return startFrontendWithEnv(t, socketPath, testEnv(t))
 }
 
+// startFrontendForSession starts a frontend connected to socketPath and
+// subscribed to sessionName. Used together with nxtest.DialDriver +
+// SpawnNativeRegion so the frontend opens directly onto the
+// driver-created native region, without spawning a shell.
+func startFrontendForSession(t *testing.T, socketPath, sessionName string) *nxtest.T {
+	t.Helper()
+	fe, err := nxtest.StartFrontend(socketPath, testEnv(t), 80, 24, "--session", sessionName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return nxtest.NewFromFrontend(t, fe)
+}
+
 // startFrontendShared starts a frontend connected to the shared server
 // using a unique session name so tests don't interfere with each other.
 func startFrontendShared(t *testing.T) *nxtest.T {
