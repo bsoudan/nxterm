@@ -27,7 +27,11 @@ func Listen(spec string) (net.Listener, error) {
 	case "unix":
 		return listenUnix(addr)
 	case "tcp":
-		return net.Listen("tcp", addr)
+		ln, err := net.Listen("tcp", addr)
+		if err != nil {
+			return nil, err
+		}
+		return &tcpKeepAliveListener{Listener: ln}, nil
 	case "ws":
 		return listenWS(addr)
 	default:
@@ -55,7 +59,12 @@ func DialWithPrompter(spec string, prompter Prompter) (net.Conn, error) {
 	case "unix":
 		return dialUnix(addr)
 	case "tcp":
-		return net.Dial("tcp", addr)
+		c, err := net.Dial("tcp", addr)
+		if err != nil {
+			return nil, err
+		}
+		configureTCPKeepAlive(c)
+		return c, nil
 	case "ws":
 		return dialWS("ws://" + addr)
 	case "wss":
@@ -87,6 +96,9 @@ func Cleanup(spec string) {
 // For SSH and WS listeners, returns the underlying TCP listener's file.
 // The caller must close the returned file after use.
 func ListenerFile(ln net.Listener) (*os.File, error) {
+	if kl, ok := ln.(*tcpKeepAliveListener); ok {
+		ln = kl.Listener
+	}
 	switch l := ln.(type) {
 	case *net.TCPListener:
 		return l.File()
@@ -116,8 +128,10 @@ func ListenFromFile(f *os.File, spec string, sshCfg SSHListenerConfig) (net.List
 		return nil, fmt.Errorf("file listener for %s: %w", spec, err)
 	}
 	switch scheme {
-	case "unix", "tcp":
+	case "unix":
 		return ln, nil
+	case "tcp":
+		return &tcpKeepAliveListener{Listener: ln}, nil
 	case "dssh":
 		return ListenSSHFromListener(ln, sshCfg)
 	case "ws":
