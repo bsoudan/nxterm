@@ -213,20 +213,22 @@ func (a *regionActor) getScrollback() [][]protocol.ScreenCell {
 
 // broadcastToSubscribers sends terminal updates to all subscribers.
 func (a *regionActor) broadcastToSubscribers() {
-	events, needsSnapshot := a.proxy.Flush()
-	if !needsSnapshot && len(events) == 0 {
+	events, needsSnapshot, syncs := a.proxy.Flush()
+	if !needsSnapshot && len(events) == 0 && len(syncs) == 0 {
 		return
 	}
 	if len(a.subscribers) == 0 {
 		return
 	}
 
-	// When an overlay is active, always send a composited snapshot.
+	// When an overlay is active, always send a composited snapshot
+	// instead of raw events.
 	if a.overlay != nil {
 		snapMsg := newScreenUpdate(a.id, a.compositedSnapshot())
 		for _, c := range a.subscribers {
 			c.SendMessage(snapMsg)
 		}
+		a.broadcastSyncs(syncs)
 		return
 	}
 
@@ -235,13 +237,38 @@ func (a *regionActor) broadcastToSubscribers() {
 		for _, c := range a.subscribers {
 			c.SendMessage(snapMsg)
 		}
+		a.broadcastSyncs(syncs)
 		return
 	}
 
+	// Combine events and syncs into one TerminalEvents message so they
+	// arrive in order on the client.
+	combined := events
+	for _, id := range syncs {
+		combined = append(combined, protocol.TerminalEvent{Op: "sync", Data: id})
+	}
 	msg := protocol.TerminalEvents{
 		Type:     "terminal_events",
 		RegionID: a.id,
-		Events:   events,
+		Events:   combined,
+	}
+	for _, c := range a.subscribers {
+		c.SendMessage(msg)
+	}
+}
+
+func (a *regionActor) broadcastSyncs(syncs []string) {
+	if len(syncs) == 0 {
+		return
+	}
+	syncEvents := make([]protocol.TerminalEvent, len(syncs))
+	for i, id := range syncs {
+		syncEvents[i] = protocol.TerminalEvent{Op: "sync", Data: id}
+	}
+	msg := protocol.TerminalEvents{
+		Type:     "terminal_events",
+		RegionID: a.id,
+		Events:   syncEvents,
 	}
 	for _, c := range a.subscribers {
 		c.SendMessage(msg)
@@ -402,6 +429,17 @@ func (m overlayClearMsg) handleRegion(a *regionActor) {
 		return
 	}
 	a.clearOverlayInternal()
+}
+
+// syncMarkerMsg asks the actor to emit a sync marker into the current
+// batch, ordered after any already-received output. It is always
+// followed by broadcastToSubscribers so pending output + marker flow
+// out together.
+type syncMarkerMsg struct{ id string }
+
+func (m syncMarkerMsg) handleRegion(a *regionActor) {
+	a.proxy.EmitSyncMarker(m.id)
+	a.broadcastToSubscribers()
 }
 
 type stopActorMsg struct{ resp chan struct{} }

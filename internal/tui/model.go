@@ -21,6 +21,27 @@ func (m *NxtermModel) Init() tea.Cmd {
 }
 
 func (m *NxtermModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Sync marker injected from stdin (OSC 2459;nx;sync;<id>) or from
+	// server-side terminal_events (SyncMsg emitted by TerminalLayer).
+	// In both cases we just queue the ack for the next render.
+	if sm, ok := msg.(SyncMsg); ok {
+		m.pendingAcks = append(m.pendingAcks, sm.ID)
+		return m, nil
+	}
+
+	// Strip sync markers out of stdin input before layers see it, so
+	// layers never dispatch the OSC as a real keystroke.
+	if ri, ok := msg.(RawInputMsg); ok {
+		remaining, ids := ExtractSyncMarkers([]byte(ri))
+		if len(ids) > 0 {
+			m.pendingAcks = append(m.pendingAcks, ids...)
+			if len(remaining) == 0 {
+				return m, nil
+			}
+			msg = RawInputMsg(remaining)
+		}
+	}
+
 	// Handle tree sync messages before anything else.
 	switch tmsg := msg.(type) {
 	case protocol.TreeSnapshot:
@@ -171,6 +192,19 @@ func (m *NxtermModel) View() tea.View {
 	layers = append(layers, lipgloss.NewLayer(statusContent).X(statusX).Z(2))
 
 	content := lipgloss.NewCompositor(layers...).Render()
+
+	// Append any pending sync acks. Rendered after the frame so they
+	// ride out to the PTY along with the normal render output; OSC
+	// 2459 is terminal-ignorable and does not disturb the visible view.
+	if len(m.pendingAcks) > 0 {
+		var b strings.Builder
+		b.WriteString(content)
+		for _, id := range m.pendingAcks {
+			b.WriteString(FormatSyncAck(id))
+		}
+		content = b.String()
+		m.pendingAcks = nil
+	}
 
 	v := tea.NewView(content)
 	v.AltScreen = true

@@ -64,6 +64,11 @@ type NxtermModel struct {
 	// focusBuf holds raw input buffered for one-at-a-time sequence
 	// processing when a focus-routing layer is active.
 	focusBuf []byte
+
+	// pendingAcks holds sync marker ids whose ack should ride the
+	// next View. Filled from stdin-side (RawInputMsg) and server-side
+	// (TerminalEvent Op="sync") paths; drained by View.
+	pendingAcks []string
 }
 
 // AppContext holds application-level metadata and services shared

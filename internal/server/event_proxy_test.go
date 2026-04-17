@@ -76,7 +76,7 @@ func TestEventProxyReplay(t *testing.T) {
 	input += "nxterm$ "
 
 	stream.FeedBytes([]byte(input))
-	allEvents, _ := proxy.Flush()
+	allEvents, _, _ := proxy.Flush()
 
 	t.Logf("total events captured: %d", len(allEvents))
 
@@ -148,7 +148,7 @@ func TestEventProxyReplayWithAltScreen(t *testing.T) {
 	input += "nxterm$ "
 
 	stream.FeedBytes([]byte(input))
-	allEvents, _ := proxy.Flush()
+	allEvents, _, _ := proxy.Flush()
 
 	t.Logf("total events: %d", len(allEvents))
 
@@ -201,7 +201,7 @@ func TestEventProxyReplayColors(t *testing.T) {
 		ansi.SGR(ansi.AttrExtendedForegroundColor, 2, 255, 128, 0) + "RGB" + ansi.ResetStyle
 	stream.FeedBytes([]byte(input))
 
-	allEvents, _ := proxy.Flush()
+	allEvents, _, _ := proxy.Flush()
 	allEvents = roundTripEvents(allEvents)
 
 	frontendScreen := te.NewScreen(cols, rows)
@@ -242,7 +242,7 @@ func TestSyncOutputSnapshot(t *testing.T) {
 	stream.FeedBytes([]byte("before"))
 
 	// Flush pre-sync events — should return normally
-	preEvents, needsSnap := proxy.Flush()
+	preEvents, needsSnap, _ := proxy.Flush()
 	if needsSnap {
 		t.Fatal("expected no snapshot before sync")
 	}
@@ -260,7 +260,7 @@ func TestSyncOutputSnapshot(t *testing.T) {
 	))
 
 	// Flush should return needsSnapshot=true, no events (snapshot captures everything)
-	events, needsSnap := proxy.Flush()
+	events, needsSnap, _ := proxy.Flush()
 	if !needsSnap {
 		t.Fatal("expected needsSnapshot after sync output")
 	}
@@ -299,7 +299,7 @@ func TestSyncOutputHoldsDuringSync(t *testing.T) {
 	stream.FeedBytes([]byte(ansi.SetModeSynchronizedOutput + "inside sync"))
 
 	// Flush while sync is active — should return nothing
-	events, needsSnap := proxy.Flush()
+	events, needsSnap, _ := proxy.Flush()
 	if needsSnap {
 		t.Fatal("should not need snapshot while still in sync mode")
 	}
@@ -310,7 +310,7 @@ func TestSyncOutputHoldsDuringSync(t *testing.T) {
 	// End sync with no trailing content
 	stream.FeedBytes([]byte(ansi.ResetModeSynchronizedOutput))
 
-	events, needsSnap = proxy.Flush()
+	events, needsSnap, _ = proxy.Flush()
 	if !needsSnap {
 		t.Fatal("expected snapshot after sync end")
 	}

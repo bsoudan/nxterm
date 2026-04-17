@@ -11,21 +11,41 @@ type EventProxy struct {
 	batch        []protocol.TerminalEvent
 	syncMode     bool // true when synchronized output mode (2026) is active
 	syncEndIndex int  // index in batch where sync mode ended (-1 = no sync completed)
+
+	// pendingSyncs holds sync marker ids awaiting emission. Tracked
+	// separately from batch so they survive batch discard on mode-2026
+	// snapshot flush, and stay held while syncMode is active.
+	pendingSyncs []string
 }
 
 func NewEventProxy(screen te.EventHandler) *EventProxy {
 	return &EventProxy{screen: screen, syncEndIndex: -1}
 }
 
-// Flush returns accumulated events and whether a snapshot is needed.
-// If a synchronized output batch completed (mode 2026), needsSnapshot is true
-// and events contains only the events AFTER the sync ended. The caller should
-// send a screen_update snapshot first, then send these trailing events.
-func (p *EventProxy) Flush() (events []protocol.TerminalEvent, needsSnapshot bool) {
+// EmitSyncMarker queues a sync marker for the next Flush. During mode
+// 2026 the marker is held along with the rest of the batch and flushed
+// only after the terminating sequence.
+func (p *EventProxy) EmitSyncMarker(id string) {
+	p.pendingSyncs = append(p.pendingSyncs, id)
+}
+
+// Flush returns accumulated events, whether a snapshot is needed, and
+// any sync markers that should ride the same broadcast. Sync markers
+// are ordered after events/snapshot; callers should send them as
+// trailing TerminalEvents with Op="sync".
+//
+// If a synchronized output batch completed (mode 2026), needsSnapshot
+// is true and events contains only the events AFTER the sync ended.
+// The caller should send a screen_update snapshot first, then the
+// trailing events, then the sync markers.
+func (p *EventProxy) Flush() (events []protocol.TerminalEvent, needsSnapshot bool, syncs []string) {
 	if p.syncMode {
-		// Still in sync mode — hold everything.
-		return nil, false
+		// Still in sync mode — hold everything including syncs.
+		return nil, false, nil
 	}
+
+	syncs = p.pendingSyncs
+	p.pendingSyncs = nil
 
 	if p.syncEndIndex >= 0 {
 		// Sync completed. The snapshot captures the full screen state
@@ -33,15 +53,15 @@ func (p *EventProxy) Flush() (events []protocol.TerminalEvent, needsSnapshot boo
 		// entire batch.
 		p.batch = nil
 		p.syncEndIndex = -1
-		return nil, true
+		return nil, true, syncs
 	}
 
 	if len(p.batch) == 0 {
-		return nil, false
+		return nil, false, syncs
 	}
 	out := p.batch
 	p.batch = nil
-	return out, false
+	return out, false, syncs
 }
 
 func (p *EventProxy) ev(op string) {

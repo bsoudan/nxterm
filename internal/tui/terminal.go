@@ -211,13 +211,33 @@ func (t *TerminalLayer) handleTerminalEvents(events []protocol.TerminalEvent) te
 	if t.hscreen == nil {
 		return nil
 	}
-	needsClear := replayEvents(t.hscreen, events)
+	// Extract sync markers; they are signals, not screen operations.
+	var syncIDs []string
+	filtered := events[:0]
+	for _, ev := range events {
+		if ev.Op == "sync" {
+			syncIDs = append(syncIDs, ev.Data)
+			continue
+		}
+		filtered = append(filtered, ev)
+	}
+	needsClear := replayEvents(t.hscreen, filtered)
 	t.cursorRow = t.hscreen.Cursor.Row
 	t.cursorCol = t.hscreen.Cursor.Col
+	var cmds []tea.Cmd
 	if needsClear {
-		return func() tea.Msg { return tea.ClearScreen() }
+		cmds = append(cmds, func() tea.Msg { return tea.ClearScreen() })
 	}
-	return nil
+	for _, id := range syncIDs {
+		cmds = append(cmds, func() tea.Msg { return SyncMsg{ID: id} })
+	}
+	if len(cmds) == 0 {
+		return nil
+	}
+	if len(cmds) == 1 {
+		return cmds[0]
+	}
+	return tea.Batch(cmds...)
 }
 
 // View implements the Layer interface. Renders terminal content, or

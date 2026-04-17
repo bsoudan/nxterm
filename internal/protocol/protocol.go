@@ -457,6 +457,16 @@ type NativeInput struct {
 	Data     string `json:"data"` // base64
 }
 
+// NativeRegionSync tells the server to emit a sync marker into the
+// terminal_events stream for this region, ordered behind any pending
+// output the driver has already sent. Subscribers see the sync marker
+// as a TerminalEvent with Op="sync" and Data=<id>.
+type NativeRegionSync struct {
+	Type     string `json:"type,omitempty"`
+	RegionID string `json:"region_id"`
+	ID       string `json:"id"`
+}
+
 // ── Parsing ─────────────────────────────────────────────────────────────────
 
 type envelope struct {
@@ -517,6 +527,7 @@ var payloadParsers = map[string]func([]byte) (any, error){
 	"native_region_spawn_request":  parseAs[NativeRegionSpawnRequest],
 	"native_region_spawn_response": parseAs[NativeRegionSpawnResponse],
 	"native_region_output":         parseAs[NativeRegionOutput],
+	"native_region_sync":           parseAs[NativeRegionSync],
 	"native_input":                 parseAs[NativeInput],
 	"tree_snapshot":             parseAs[TreeSnapshot],
 	"tree_events":               parseAs[TreeEvents],
@@ -616,6 +627,7 @@ var typeTagMap = map[reflect.Type]string{
 	reflect.TypeOf(OverlayClear{}):             "overlay_clear",
 	reflect.TypeOf(NativeRegionSpawnRequest{}): "native_region_spawn_request",
 	reflect.TypeOf(NativeRegionOutput{}):       "native_region_output",
+	reflect.TypeOf(NativeRegionSync{}):         "native_region_sync",
 	reflect.TypeOf(TreeSnapshot{}):           "tree_snapshot",
 	reflect.TypeOf(TreeEvents{}):             "tree_events",
 	reflect.TypeOf(TreeResyncRequest{}):      "tree_resync_request",

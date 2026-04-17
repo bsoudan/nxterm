@@ -80,6 +80,7 @@ var messageHandlers = map[string]msgHandler{
 	"overlay_clear":           withMsgOnly(handleOverlayClear),
 	"native_region_spawn_request": withMsg(handleNativeRegionSpawn),
 	"native_region_output":        withMsgOnly(handleNativeRegionOutput),
+	"native_region_sync":          withMsgOnly(handleNativeRegionSync),
 	"tree_resync_request": func(s *Server, c *Client, _ []byte, _ func(any)) {
 		s.send(treeSnapshotReq{clientID: c.id})
 	},
@@ -180,6 +181,27 @@ func handleNativeRegionOutput(s *Server, c *Client, msg protocol.NativeRegionOut
 		return
 	}
 	nr.Feed(data)
+}
+
+func handleNativeRegionSync(s *Server, c *Client, msg protocol.NativeRegionSync) {
+	region := s.FindRegion(msg.RegionID)
+	if region == nil {
+		return
+	}
+	nr, ok := region.(*NativeRegion)
+	if !ok {
+		slog.Debug("native_region_sync for non-native region", "region_id", msg.RegionID)
+		return
+	}
+	if nr.Driver() != c {
+		slog.Debug("native_region_sync from non-owner client",
+			"region_id", msg.RegionID, "client_id", c.id)
+		return
+	}
+	select {
+	case nr.actor.msgs <- syncMarkerMsg{id: msg.ID}:
+	case <-nr.actor.actorDone:
+	}
 }
 
 func handleSpawn(s *Server, c *Client, msg protocol.SpawnRequest, reply func(any)) {
