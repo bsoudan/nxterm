@@ -309,7 +309,7 @@ func TestScrollbackAfterReconnect(t *testing.T) {
 	// Generate output that will go into scrollback.
 	nxt.Write([]byte("for i in $(seq 1 100); do echo \"BEFORE_$i\"; done\r"))
 	nxt.WaitFor("nxterm$", 10*time.Second)
-	nxt.WaitForSilence(200 * time.Millisecond)
+	nxt.Sync("render settle")
 
 	// Kill the client connection to force a reconnect.
 	clientID := findFrontendClientID(t, socketPath)
@@ -317,7 +317,7 @@ func TestScrollbackAfterReconnect(t *testing.T) {
 
 	nxt.WaitFor("reconnecting", 10*time.Second)
 	nxt.WaitFor("nxterm$", 10*time.Second)
-	nxt.WaitForSilence(200 * time.Millisecond)
+	nxt.Sync("render settle")
 
 	// Enter scrollback and scroll to the top.
 	nxt.Write([]byte{0x02, '['})
@@ -362,7 +362,7 @@ func TestScrollbackAfterReconnectLarge(t *testing.T) {
 	// Generate 2000+ lines so the server needs multiple chunks (1000 each).
 	nxt.Write([]byte("seq 1 2000\r"))
 	nxt.WaitFor("nxterm$", 30*time.Second)
-	nxt.WaitForSilence(500 * time.Millisecond)
+	nxt.Sync("render settle 500ms")
 
 	// Kill the client connection to force a reconnect.
 	clientID := findFrontendClientID(t, socketPath)
@@ -370,7 +370,7 @@ func TestScrollbackAfterReconnectLarge(t *testing.T) {
 
 	nxt.WaitFor("reconnecting", 10*time.Second)
 	nxt.WaitFor("nxterm$", 10*time.Second)
-	nxt.WaitForSilence(200 * time.Millisecond)
+	nxt.Sync("render settle")
 
 	// Enter scrollback.
 	nxt.Write([]byte{0x02, '['})
@@ -521,7 +521,11 @@ func TestScrollbackCommandPalette(t *testing.T) {
 	nxterm.Write([]byte{0x02, ':'}).Sync("open command palette")
 	nxterm.WaitFor("scroll-up", 5*time.Second)
 	nxterm.Write([]byte("scroll-up\r")).Sync("execute scroll-up")
-	nxterm.RequireTabBarContains("scrollback")
+	// Command palette submission triggers async scrollback layer push;
+	// wait for the tab bar to reflect scrollback mode.
+	nxterm.WaitForScreen(func(lines []string) bool {
+		return strings.Contains(lines[0], "scrollback")
+	}, "scrollback active after palette command", 5*time.Second)
 	nxterm.Write([]byte("q")).Sync("exit scrollback")
 }
 
@@ -816,7 +820,7 @@ func TestScrollbackNoGapAfterSync(t *testing.T) {
 	// local history and must sync everything from the server.
 	nxt.Write([]byte("for i in $(seq 1 100); do echo \"SYNC_$i\"; done\r"))
 	nxt.WaitFor("nxterm$", 10*time.Second)
-	nxt.WaitForSilence(200 * time.Millisecond)
+	nxt.Sync("render settle")
 
 	// Kill the client to force reconnect.
 	clientID := findFrontendClientID(t, socketPath)
@@ -824,7 +828,7 @@ func TestScrollbackNoGapAfterSync(t *testing.T) {
 
 	nxt.WaitFor("reconnecting", 10*time.Second)
 	nxt.WaitFor("nxterm$", 10*time.Second)
-	nxt.WaitForSilence(200 * time.Millisecond)
+	nxt.Sync("render settle")
 
 	// Enter scrollback — triggers sync.
 	nxt.Write([]byte{0x02, '['})

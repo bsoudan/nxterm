@@ -290,7 +290,7 @@ func TestSessionPersistence(t *testing.T) {
 		}
 		return false
 	}, "output line starting with 'COLOR_PERSIST'", 10*time.Second)
-	nxt1.WaitForSilence(200 * time.Millisecond)
+	nxt1.Sync("render settle")
 
 	// Verify colors are present before detach
 	cells1 := nxt1.ScreenCells()
@@ -330,7 +330,7 @@ reconnect:
 	defer nxt2.Kill()
 
 	nxt2.WaitFor("COLOR_PERSIST", 10*time.Second)
-	nxt2.WaitForSilence(200 * time.Millisecond)
+	nxt2.Sync("render settle")
 
 	// Verify colors survived reattach
 	cells2 := nxt2.ScreenCells()
@@ -471,7 +471,7 @@ func TestAllRegionsDestroyedShowsNoSession(t *testing.T) {
 
 	// Frontend should enter the no-session screen instead of exiting.
 	nxt.WaitFor("no session", 10*time.Second)
-	nxt.WaitForSilence(200 * time.Millisecond)
+	nxt.Sync("render settle")
 
 	// Reconnect from the no-session screen using the connect overlay.
 	connectViaUI(t, nxt, socketPath)
