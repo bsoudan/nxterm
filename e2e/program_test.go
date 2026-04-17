@@ -124,9 +124,9 @@ func TestProgramPickerMultiple(t *testing.T) {
 	nxt := startFrontend(t, socketPath)
 	defer nxt.Kill()
 
-	// Wait for initial tab and let the screen settle
+	// Wait for initial tab, then sync to catch up on any pending render.
 	nxt.WaitFor("$", 10*time.Second)
-	nxt.WaitForSilence(200 * time.Millisecond)
+	nxt.Sync("post-boot settle")
 
 	// Press ctrl+b c to request new tab — should show picker
 	nxt.Write([]byte{0x02, 'c'})

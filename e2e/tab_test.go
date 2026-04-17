@@ -146,8 +146,8 @@ func TestSpawnNoGhostTab(t *testing.T) {
 	nxt.WaitFor("1:bash", 10*time.Second)
 	nxt.WaitFor("nxterm$", 10*time.Second)
 
-	// Wait a moment for any delayed tree events to be processed.
-	time.Sleep(500 * time.Millisecond)
+	// Drain any delayed tree events by issuing a sync barrier on stdin.
+	nxt.Sync("drain post-spawn tree events")
 
 	// The tab bar should show exactly 2 tabs: "1:bash" (inactive) and
 	// " 2 " (active). A ghost tab would show "3:bash" or "3:" as a

@@ -51,31 +51,35 @@ func TestPrefixKeyLiteralCtrlB(t *testing.T) {
 
 func TestPrefixKeyStatusIndicator(t *testing.T) {
 	t.Parallel()
-	nxt := startFrontendShared(t)
-	defer nxt.Kill()
+	socketPath, cleanup := startServer(t)
+	defer cleanup()
 
-	nxt.WaitFor("nxterm$", 10*time.Second)
-	nxt.WaitForSilence(500 * time.Millisecond)
+	driver := nxtest.DialDriver(t, socketPath)
+	region := driver.SpawnNativeRegion("nxtest-pfx", "r1", 80, 24)
 
-	nxt.Write([]byte{0x02})
-	lines := nxt.WaitForScreen(func(lines []string) bool {
-		row, col := nxtest.FindOnScreen(lines, "? ")
-		return row == 0 && col > 50
-	}, "'?' right-justified on row 0", 3*time.Second)
+	nxterm := startFrontendForSession(t, socketPath, "nxtest-pfx")
+	defer nxterm.Kill()
+	region.Sync(nxterm, "TUI boot + subscribe")
 
+	// ctrl+b activates the prefix indicator on row 0.
+	nxterm.Write([]byte{0x02}).Sync("prefix key")
+	lines := nxterm.ScreenLines()
 	row, col := nxtest.FindOnScreen(lines, "? ")
 	t.Logf("'?' at row %d, col %d", row, col)
 	if row != 0 {
 		t.Fatalf("expected prefix indicator on row 0, found on row %d", row)
 	}
+	if col <= 50 {
+		t.Fatalf("expected '?' right-justified (col > 50), found at col %d", col)
+	}
 
-	// Dismiss (press an unbound key) and verify it clears
-	nxt.Write([]byte("z"))
-	nxt.Write([]byte("echo prefix_cleared\r"))
-	nxt.WaitForScreen(func(lines []string) bool {
-		row, _ := nxtest.FindOnScreen(lines[1:], "prefix_cleared")
-		return row >= 0
-	}, "'prefix_cleared' on screen", 10*time.Second)
+	// Press an unbound key to clear the prefix; the indicator disappears.
+	nxterm.Write([]byte("z")).Sync("unbound key clears prefix")
+	lines = nxterm.ScreenLines()
+	row, _ = nxtest.FindOnScreen(lines, "? ")
+	if row == 0 {
+		t.Fatalf("expected prefix indicator cleared, still visible on row 0: %q", lines[0])
+	}
 }
 
 func TestKeybindNativeNextPrevTab(t *testing.T) {
