@@ -348,7 +348,7 @@ func TestTUIUpgradeE2E(t *testing.T) {
 	t.Log("upgrade notification visible in status bar")
 
 	// ── Step 3: Open upgrade dialog (ctrl+b u) ────────────────────────
-	nxt.WaitForSilence(200 * time.Millisecond)
+	nxt.Sync("render settle")
 	nxt.Write([]byte{0x02, 'u'})
 
 	nxt.WaitFor("Press enter to upgrade", 5*time.Second)
@@ -402,7 +402,7 @@ func TestTUIUpgradeE2E(t *testing.T) {
 	t.Log("new client connected with shell prompt")
 
 	// ── Step 8: Verify both versions via the status pane ──────────────
-	nxt.WaitForSilence(500 * time.Millisecond)
+	nxt.Sync("render settle 500ms")
 	nxt.Write([]byte{0x02, 's'})
 
 	// The status pane shows both client and server versions.
@@ -421,7 +421,7 @@ func TestTUIUpgradeE2E(t *testing.T) {
 
 	// Close status pane.
 	nxt.Write([]byte("q"))
-	nxt.WaitForSilence(200 * time.Millisecond)
+	nxt.Sync("render settle")
 
 	// ── Step 9: Verify shell is still alive ───────────────────────────
 	nxt.Write([]byte("echo POST_UPGRADE_ALIVE\r"))

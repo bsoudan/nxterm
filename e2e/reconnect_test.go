@@ -35,7 +35,7 @@ func TestReconnectUnix(t *testing.T) {
 
 	// Should reconnect and show the prompt again
 	nxt.WaitFor("nxterm$", 10*time.Second)
-	nxt.WaitForSilence(200 * time.Millisecond)
+	nxt.Sync("render settle")
 
 	// Verify typing still works after reconnect
 	nxt.Write([]byte("echo after_reconnect\r"))
@@ -68,7 +68,7 @@ func TestReconnectTCP(t *testing.T) {
 	// Should reconnect
 	nxt.WaitFor("reconnecting", 10*time.Second)
 	nxt.WaitFor("nxterm$", 10*time.Second)
-	nxt.WaitForSilence(200 * time.Millisecond)
+	nxt.Sync("render settle")
 
 	// Verify typing works
 	nxt.Write([]byte("echo tcp_reconnected\r"))

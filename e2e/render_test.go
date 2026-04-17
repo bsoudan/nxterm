@@ -96,7 +96,7 @@ func TestCursorMovementAfterProgram(t *testing.T) {
 	nxt.WaitFor("10", 10*time.Second)
 	nxt.Write([]byte("echo SEQ_DONE\r"))
 	nxt.WaitFor("SEQ_DONE", 10*time.Second)
-	nxt.WaitForSilence(200 * time.Millisecond)
+	nxt.Sync("render settle")
 
 	// The prompt should be on a row AFTER the seq output. Find the
 	// LAST occurrence of "10" (the actual seq output line, not the
@@ -152,7 +152,7 @@ func TestColorRendering(t *testing.T) {
 		}
 		return false
 	}, "output line starting with 'RED'", 10*time.Second)
-	nxt.WaitForSilence(200 * time.Millisecond)
+	nxt.Sync("render settle")
 
 	cells := nxt.ScreenCells()
 
@@ -262,7 +262,7 @@ func TestFaintRendering(t *testing.T) {
 		}
 		return false
 	}, "output line starting with 'FNT1'", 10*time.Second)
-	nxt.WaitForSilence(200 * time.Millisecond)
+	nxt.Sync("render settle")
 
 	cells := nxt.ScreenCells()
 
@@ -383,7 +383,7 @@ func TestModifyOtherKeysDoesNotLeakSGR(t *testing.T) {
 		}
 		return false
 	}, "output line starting with 'MARKER'", 10*time.Second)
-	nxt.WaitForSilence(200 * time.Millisecond)
+	nxt.Sync("render settle")
 
 	cells := nxt.ScreenCells()
 	outputRow := -1
@@ -440,7 +440,7 @@ func TestKittyKeyboardSequencesDoNotLeakAsText(t *testing.T) {
 		}
 		return false
 	}, "output line starting with 'MARKER'", 10*time.Second)
-	nxt.WaitForSilence(200 * time.Millisecond)
+	nxt.Sync("render settle")
 
 	cells := nxt.ScreenCells()
 	for row, line := range cells {
@@ -555,7 +555,7 @@ func TestCursorHiddenByDECTCEM(t *testing.T) {
 		}
 		return len(lines[13]) > 19 && lines[13][19] == 'Z'
 	}, "'Z' at outer row 13 col 19", 10*time.Second)
-	nxt.WaitForSilence(200 * time.Millisecond)
+	nxt.Sync("render settle")
 
 	cells := nxt.ScreenCells()
 
@@ -595,7 +595,7 @@ func TestActiveTabBold(t *testing.T) {
 	nxt.Write([]byte("\x02c"))
 	nxt.WaitFor("1:bash", 10*time.Second)
 	nxt.WaitFor("nxterm$", 10*time.Second)
-	nxt.WaitForSilence(200 * time.Millisecond)
+	nxt.Sync("render settle")
 
 	cells := nxt.ScreenCells()
 	if len(cells) == 0 {
@@ -621,7 +621,7 @@ func TestActiveTabBold(t *testing.T) {
 	// Switch to tab 1: tab 1 becomes active (" <1> "), tab 2 inactive (" 2:bash ").
 	nxt.Write([]byte("\x021"))
 	nxt.WaitFor("nxterm$", 10*time.Second)
-	nxt.WaitForSilence(200 * time.Millisecond)
+	nxt.Sync("render settle")
 
 	cells = nxt.ScreenCells()
 	tabRow = cells[0]
@@ -689,7 +689,7 @@ func TestResizeMidSession(t *testing.T) {
 
 	// Resize to 120x40
 	nxt.Resize(120, 40)
-	nxt.WaitForSilence(200 * time.Millisecond)
+	nxt.Sync("render settle")
 
 	// Verify new column count
 	nxt.Write([]byte("tput cols\r"))
@@ -786,7 +786,7 @@ func TestScreenSyncAfterTop(t *testing.T) {
 
 	// Wait for prompt to reappear
 	nxt.WaitFor("nxterm$",10*time.Second)
-	nxt.WaitForSilence(500 * time.Millisecond)
+	nxt.Sync("render settle 500ms")
 
 	// Get server screen via termctl
 	out := runNxtermctl(t, socketPath, "region", "list")

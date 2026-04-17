@@ -154,11 +154,11 @@ func TestMouseAfterTabSwitch(t *testing.T) {
 	nxt.Write([]byte("\x02c"))
 	nxt.WaitFor("1:bash", 10*time.Second)
 	nxt.WaitFor("nxterm$", 10*time.Second)
-	nxt.WaitForSilence(200 * time.Millisecond)
+	nxt.Sync("render settle")
 
 	// Switch back to tab 1 (mousehelper)
 	nxt.Write([]byte("\x021"))
-	nxt.WaitForSilence(200 * time.Millisecond)
+	nxt.Sync("render settle")
 
 	// Mouse should still work after switching back
 	nxt.Write([]byte(fmt.Sprintf("%c[<0;10;4M", ansi.ESC)))

@@ -26,12 +26,12 @@ func connectViaUI(t *testing.T, nxt *nxtest.T, socketPath string) {
 		nxt.Write([]byte("\x02So"))
 	}
 	nxt.WaitFor("type a server address", 5*time.Second)
-	nxt.WaitForSilence(200 * time.Millisecond)
+	nxt.Sync("render settle")
 	nxt.Write([]byte(socketPath))
 	time.Sleep(100 * time.Millisecond)
 	nxt.Write([]byte("\r"))
 	nxt.WaitFor("$", 10*time.Second)
-	nxt.WaitForSilence(200 * time.Millisecond)
+	nxt.Sync("render settle")
 }
 
 func TestNewSession(t *testing.T) {
@@ -86,7 +86,7 @@ func TestConnectOverlayCancel(t *testing.T) {
 
 	nxt.Write([]byte("\x02So"))
 	nxt.WaitFor("type a server address", 5*time.Second)
-	nxt.WaitForSilence(200 * time.Millisecond)
+	nxt.Sync("render settle")
 
 	nxt.Write([]byte{0x1b})
 

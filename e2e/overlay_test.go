@@ -67,7 +67,7 @@ func TestLogViewerOverlay(t *testing.T) {
 	defer frontendCleanup()
 
 	nxt.WaitFor("nxterm$", 30*time.Second)
-	nxt.WaitForSilence(500 * time.Millisecond)
+	nxt.Sync("render settle 500ms")
 	nxt.Write([]byte{0x02, 'l'})
 
 	lines := nxt.WaitForScreen(func(lines []string) bool {
