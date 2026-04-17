@@ -63,6 +63,7 @@ var messageHandlers = map[string]msgHandler{
 	"list_regions_request":    withMsg(handleListRegions),
 	"get_screen_request":      withMsg(handleGetScreen),
 	"get_scrollback_request":  withMsg(handleGetScrollback),
+	"region_stats_request":    withMsg(handleRegionStats),
 	"kill_region_request":     withMsg(handleKillRegion),
 	"list_clients_request":    withReplyOnly(handleListClients),
 	"kill_client_request":     withMsg(handleKillClient),
@@ -346,6 +347,24 @@ func handleListRegions(s *Server, _ *Client, msg protocol.ListRegionsRequest, re
 		Regions: infos,
 		Error:   false,
 		Message: "",
+	})
+}
+
+func handleRegionStats(s *Server, _ *Client, msg protocol.RegionStatsRequest, reply func(any)) {
+	region := s.FindRegion(msg.RegionID)
+	if region == nil {
+		reply(protocol.RegionStatsResponse{
+			Type:     "region_stats_response",
+			RegionID: msg.RegionID,
+			Error:    true,
+			Message:  "region not found",
+		})
+		return
+	}
+	reply(protocol.RegionStatsResponse{
+		Type:     "region_stats_response",
+		RegionID: region.ID(),
+		Stats:    region.Stats(),
 	})
 }
 

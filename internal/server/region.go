@@ -41,6 +41,7 @@ type Region interface {
 
 	ScrollbackLen() int
 	IsNative() bool
+	Stats() protocol.RegionStats
 
 	// Subscriber management — backed by the region actor.
 	AddSubscriber(c *Client) Snapshot
@@ -128,6 +129,10 @@ func (r *PTYRegion) GetScrollback() ScrollbackResult {
 	case <-r.actor.actorDone:
 		return ScrollbackResult{}
 	}
+}
+
+func (r *PTYRegion) Stats() protocol.RegionStats {
+	return readRegionStats(r.actor)
 }
 
 func (r *PTYRegion) ScrollbackLen() int {

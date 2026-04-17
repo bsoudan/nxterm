@@ -80,6 +80,11 @@ type GetScrollbackRequest struct {
 	RegionID string `json:"region_id"`
 }
 
+type RegionStatsRequest struct {
+	Type     string `json:"type,omitempty"`
+	RegionID string `json:"region_id"`
+}
+
 type UnsubscribeRequest struct {
 	Type     string `json:"type,omitempty"`
 	RegionID string `json:"region_id"`
@@ -251,6 +256,23 @@ type KillClientResponse struct {
 	ClientID uint32 `json:"client_id"`
 	Error    bool   `json:"error"`
 	Message  string `json:"message"`
+}
+
+// RegionStats is the counter set for a region. Fields are additive over
+// the region's lifetime — they reset only when the region is created.
+// Add new counters here as needed; keep names stable for diagnostics.
+type RegionStats struct {
+	// ScrollbackQueries is the number of GetScrollbackRequest messages
+	// this region has served.
+	ScrollbackQueries uint64 `json:"scrollback_queries"`
+}
+
+type RegionStatsResponse struct {
+	Type     string      `json:"type"`
+	RegionID string      `json:"region_id"`
+	Stats    RegionStats `json:"stats"`
+	Error    bool        `json:"error"`
+	Message  string      `json:"message"`
 }
 
 type GetScrollbackResponse struct {
@@ -528,6 +550,8 @@ var payloadParsers = map[string]func([]byte) (any, error){
 	"list_clients_response":     parseAs[ListClientsResponse],
 	"kill_client_response":      parseAs[KillClientResponse],
 	"get_scrollback_response":   parseAs[GetScrollbackResponse],
+	"region_stats_request":      parseAs[RegionStatsRequest],
+	"region_stats_response":     parseAs[RegionStatsResponse],
 	"terminal_events":           parseAs[TerminalEvents],
 	"unsubscribe_response":      parseAs[UnsubscribeResponse],
 	"session_connect_response":  parseAs[SessionConnectResponse],
@@ -629,6 +653,7 @@ var typeTagMap = map[reflect.Type]string{
 	reflect.TypeOf(ListClientsRequest{}):     "list_clients_request",
 	reflect.TypeOf(KillClientRequest{}):      "kill_client_request",
 	reflect.TypeOf(GetScrollbackRequest{}):   "get_scrollback_request",
+	reflect.TypeOf(RegionStatsRequest{}):     "region_stats_request",
 	reflect.TypeOf(UnsubscribeRequest{}):     "unsubscribe_request",
 	reflect.TypeOf(SessionConnectRequest{}):  "session_connect_request",
 	reflect.TypeOf(ListSessionsRequest{}):    "list_sessions_request",

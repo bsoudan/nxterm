@@ -113,6 +113,7 @@ func main() {
 					},
 					{Name: "kill", Usage: "kill a region", ArgsUsage: "<region_id>", Action: cmdRegionKill},
 					{Name: "scrollback", Usage: "view scrollback buffer", ArgsUsage: "<region_id>", Action: cmdRegionScrollback},
+					{Name: "stats", Usage: "show region counters", ArgsUsage: "<region_id>", Action: cmdRegionStats},
 					{
 						Name: "send", Usage: "send input to a region", ArgsUsage: "<region_id> <input>",
 						Flags: []cli.Flag{
@@ -416,6 +417,31 @@ func cmdRegionScrollback(_ context.Context, cmd *cli.Command) error {
 		}
 		fmt.Println(strings.TrimRight(line.String(), " "))
 	}
+	return nil
+}
+
+func cmdRegionStats(_ context.Context, cmd *cli.Command) error {
+	if cmd.NArg() < 1 {
+		return fmt.Errorf("usage: nxtermctl region stats <region_id>")
+	}
+	regionID := cmd.Args().First()
+
+	cl, err := connect(cmd)
+	if err != nil {
+		return err
+	}
+	defer cl.Close()
+
+	_ = cl.Send(protocol.RegionStatsRequest{RegionID: regionID})
+	resp, err := recvType[protocol.RegionStatsResponse](cl)
+	if err != nil {
+		return err
+	}
+	if resp.Error {
+		return fmt.Errorf("%s", resp.Message)
+	}
+
+	fmt.Printf("scrollback_queries  %d\n", resp.Stats.ScrollbackQueries)
 	return nil
 }
 

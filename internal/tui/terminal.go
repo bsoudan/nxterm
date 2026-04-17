@@ -35,6 +35,16 @@ type TerminalLayer struct {
 	disconnected bool
 	inScrollback bool // true while a ScrollbackLayer is on the stack
 
+	// scrollbackRequested is true once the client has sent a
+	// GetScrollbackRequest for the current subscription. While true,
+	// re-entering scrollback reuses the local hscreen's history — even
+	// if the previous sync didn't complete, the hscreen still reflects
+	// whatever live events delivered. Reset on (re)subscribe because
+	// the server's scrollback cursor — and our local hscreen counter —
+	// may have advanced during the disconnect; see TODO.md for the work
+	// needed to preserve the cache across reconnects.
+	scrollbackRequested bool
+
 	server          *Server
 	regionID        string
 	regionName      string
@@ -61,6 +71,7 @@ func NewTerminalLayer(server *Server, regionID, regionName string, width, height
 
 // Activate subscribes to this terminal's region and sends a resize.
 func (t *TerminalLayer) Activate() tea.Cmd {
+	t.scrollbackRequested = false
 	t.server.Send(protocol.SubscribeRequest{RegionID: t.regionID})
 	if t.termWidth > 0 && t.termHeight > 2 {
 		t.server.Send(protocol.ResizeRequest{
@@ -356,13 +367,19 @@ func (t *TerminalLayer) WantsKeyboardInput() bool {
 // ScrollbackActive returns whether scrollback mode is active.
 func (t *TerminalLayer) ScrollbackActive() bool { return t.inScrollback }
 
-// NewScrollbackLayer creates a scrollback layer for this terminal and
-// sends a server scrollback request. The caller is responsible for
-// pushing it onto the layer stack.
+// NewScrollbackLayer creates a scrollback layer for this terminal. If
+// the region has not yet been queried in the current subscription, it
+// also sends a GetScrollbackRequest; otherwise the local hscreen is
+// treated as the source of truth and no server round-trip is issued.
+// The caller is responsible for pushing it onto the layer stack.
 func (t *TerminalLayer) NewScrollbackLayer(offset int) *ScrollbackLayer {
 	t.inScrollback = true
 	sl := newScrollbackLayer(t, offset)
-	// Request server scrollback so we can sync any lines the client missed.
+	if t.scrollbackRequested {
+		sl.synced = true
+		return sl
+	}
+	t.scrollbackRequested = true
 	t.server.Send(protocol.GetScrollbackRequest{RegionID: t.regionID})
 	return sl
 }

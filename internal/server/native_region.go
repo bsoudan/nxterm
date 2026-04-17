@@ -76,6 +76,10 @@ func (r *NativeRegion) GetScrollback() ScrollbackResult {
 	}
 }
 
+func (r *NativeRegion) Stats() protocol.RegionStats {
+	return readRegionStats(r.actor)
+}
+
 func (r *NativeRegion) ScrollbackLen() int {
 	resp := make(chan int, 1)
 	select {

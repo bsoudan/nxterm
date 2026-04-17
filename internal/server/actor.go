@@ -82,10 +82,22 @@ type regionActor struct {
 	subscribers map[uint32]*Client
 	overlay     *overlayState
 
+	// Counters exposed via region_stats_request. Actor-owned so no
+	// atomics or mutexes are needed — every writer and reader goes
+	// through the actor goroutine.
+	stats regionStats
+
 	// Channels.
 	msgs      chan regionMsg
 	actorDone chan struct{}
 	stopped   bool
+}
+
+// regionStats mirrors protocol.RegionStats; kept separate so the
+// server package doesn't import-reference protocol types in the actor
+// struct definition.
+type regionStats struct {
+	scrollbackQueries uint64
 }
 
 func newRegionActor(
@@ -377,9 +389,33 @@ type ScrollbackResult struct {
 type scrollbackMsg struct{ resp chan ScrollbackResult }
 
 func (m scrollbackMsg) handleRegion(a *regionActor) {
+	a.stats.scrollbackQueries++
 	m.resp <- ScrollbackResult{
 		Lines: a.getScrollback(),
 		Total: a.hscreen.TotalAdded(),
+	}
+}
+
+type regionStatsMsg struct{ resp chan regionStats }
+
+func (m regionStatsMsg) handleRegion(a *regionActor) {
+	m.resp <- a.stats
+}
+
+// readRegionStats fetches the actor's counters, returning a zero-valued
+// protocol.RegionStats if the actor has already stopped.
+func readRegionStats(a *regionActor) protocol.RegionStats {
+	resp := make(chan regionStats, 1)
+	select {
+	case a.msgs <- regionStatsMsg{resp: resp}:
+	case <-a.actorDone:
+		return protocol.RegionStats{}
+	}
+	select {
+	case s := <-resp:
+		return protocol.RegionStats{ScrollbackQueries: s.scrollbackQueries}
+	case <-a.actorDone:
+		return protocol.RegionStats{}
 	}
 }
 

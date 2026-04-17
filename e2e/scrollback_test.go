@@ -1292,3 +1292,96 @@ func TestScrollbackScreenUpdateDuringScroll(t *testing.T) {
 	nxterm.Write([]byte("q")).Sync("exit scrollback")
 	nxterm.RequireTabBarDoesNotContain("scrollback")
 }
+
+// TestScrollbackNoRequeryOnReentry asserts that the client requests
+// server scrollback exactly once per subscription: the first entry into
+// scrollback queries the server, subsequent entries on the same
+// subscription reuse the local hscreen. Forcing a reconnect creates a
+// fresh subscription — the next entry must requery.
+//
+// Uses the server-side per-region scrollback_queries counter exposed by
+// `nxtermctl region stats`, which increments every time the region
+// actor serves a GetScrollbackRequest.
+func TestScrollbackNoRequeryOnReentry(t *testing.T) {
+	t.Parallel()
+	socketPath, cleanup := startServer(t)
+	defer cleanup()
+
+	driver := nxtest.DialDriver(t, socketPath)
+	region := driver.SpawnNativeRegion("nxtest-sbnoreq", "r1", 80, 24)
+
+	nxterm := startFrontendForSession(t, socketPath, "nxtest-sbnoreq")
+	defer nxterm.Kill()
+	region.Sync(nxterm, "TUI boot + subscribe")
+
+	// Populate scrollback so the client has something meaningful to
+	// fetch. The assertions are on counter deltas, not content.
+	var buf bytes.Buffer
+	for i := 1; i <= 200; i++ {
+		fmt.Fprintf(&buf, "%d\r\n", i)
+	}
+	region.Output(buf.Bytes()).Sync(nxterm, "feed 200 lines")
+
+	if got := regionScrollbackQueries(t, socketPath, region.ID()); got != 0 {
+		t.Fatalf("pre-entry scrollback_queries = %d, want 0", got)
+	}
+
+	// First entry: client sends GetScrollbackRequest.
+	nxterm.Write([]byte{0x02, '['}).Sync("enter scrollback #1")
+	nxterm.RequireTabBarContains("scrollback")
+	nxterm.Write([]byte("q")).Sync("exit scrollback #1")
+	nxterm.RequireTabBarDoesNotContain("scrollback")
+
+	if got := regionScrollbackQueries(t, socketPath, region.ID()); got != 1 {
+		t.Fatalf("after first entry scrollback_queries = %d, want 1", got)
+	}
+
+	// Re-enter several times within the same subscription — the client
+	// must reuse local hscreen, not requery.
+	for i := 2; i <= 4; i++ {
+		nxterm.Write([]byte{0x02, '['}).Sync(fmt.Sprintf("enter scrollback #%d", i))
+		nxterm.RequireTabBarContains("scrollback")
+		nxterm.Write([]byte("q")).Sync(fmt.Sprintf("exit scrollback #%d", i))
+		nxterm.RequireTabBarDoesNotContain("scrollback")
+
+		if got := regionScrollbackQueries(t, socketPath, region.ID()); got != 1 {
+			t.Fatalf("after re-entry #%d scrollback_queries = %d, want 1 (client should not requery)", i, got)
+		}
+	}
+
+	// Force reconnect: the client subscribes freshly to the same
+	// region. The cache is invalidated on subscribe, so the next entry
+	// must requery.
+	clientID := findFrontendClientID(t, socketPath)
+	runNxtermctl(t, socketPath, "client", "kill", clientID)
+	region.Sync(nxterm, "reconnect + resubscribe round-trip")
+
+	nxterm.Write([]byte{0x02, '['}).Sync("enter scrollback after reconnect")
+	nxterm.RequireTabBarContains("scrollback")
+	nxterm.Write([]byte("q")).Sync("exit scrollback after reconnect")
+	nxterm.RequireTabBarDoesNotContain("scrollback")
+
+	if got := regionScrollbackQueries(t, socketPath, region.ID()); got != 2 {
+		t.Fatalf("after post-reconnect entry scrollback_queries = %d, want 2", got)
+	}
+}
+
+// regionScrollbackQueries reads the scrollback_queries counter for a
+// region via `nxtermctl region stats`. The stats command output format
+// is "<name>  <value>" per line.
+func regionScrollbackQueries(t *testing.T, socketPath, regionID string) uint64 {
+	t.Helper()
+	out := runNxtermctl(t, socketPath, "region", "stats", regionID)
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && fields[0] == "scrollback_queries" {
+			var n uint64
+			if _, err := fmt.Sscanf(fields[1], "%d", &n); err != nil {
+				t.Fatalf("parse scrollback_queries value %q: %v", fields[1], err)
+			}
+			return n
+		}
+	}
+	t.Fatalf("scrollback_queries not found in stats output:\n%s", out)
+	return 0
+}
