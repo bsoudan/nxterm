@@ -443,24 +443,36 @@ func cmdRegionScrollback(_ context.Context, cmd *cli.Command) error {
 	defer cl.Close()
 
 	_ = cl.Send(protocol.GetScrollbackRequest{RegionID: regionID})
-	resp, err := recvType[protocol.GetScrollbackResponse](cl)
-	if err != nil {
-		return err
-	}
-	if resp.Error {
-		return fmt.Errorf("%s", resp.Message)
+
+	// Server streams scrollback in newest-first chunks; collect all then
+	// emit in reverse so output is oldest-first.
+	var chunks [][][]protocol.ScreenCell
+	for {
+		resp, err := recvType[protocol.GetScrollbackResponse](cl)
+		if err != nil {
+			return err
+		}
+		if resp.Error {
+			return fmt.Errorf("%s", resp.Message)
+		}
+		chunks = append(chunks, resp.Lines)
+		if resp.Done {
+			break
+		}
 	}
 
-	for _, row := range resp.Lines {
-		var line strings.Builder
-		for _, cell := range row {
-			ch := cell.Char
-			if ch == "" || ch == "\x00" {
-				ch = " "
+	for i := len(chunks) - 1; i >= 0; i-- {
+		for _, row := range chunks[i] {
+			var line strings.Builder
+			for _, cell := range row {
+				ch := cell.Char
+				if ch == "" || ch == "\x00" {
+					ch = " "
+				}
+				line.WriteString(ch)
 			}
-			line.WriteString(ch)
+			fmt.Println(strings.TrimRight(line.String(), " "))
 		}
-		fmt.Println(strings.TrimRight(line.String(), " "))
 	}
 	return nil
 }

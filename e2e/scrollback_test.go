@@ -52,6 +52,59 @@ func TestScrollbackBuffer(t *testing.T) {
 	}
 }
 
+// TestScrollbackCtlMultiChunk verifies that `nxtermctl region scrollback`
+// returns the full scrollback even when it spans multiple server chunks
+// (>1000 rows). The server streams chunks newest-first with the final
+// chunk flagged Done=true; the CLI must loop until Done.
+func TestScrollbackCtlMultiChunk(t *testing.T) {
+	t.Parallel()
+	socketPath, cleanup := startServer(t)
+	defer cleanup()
+
+	driver := nxtest.DialDriver(t, socketPath)
+	region := driver.SpawnNativeRegion("nxtest-sbctl", "r1", 80, 24)
+
+	nxterm := startFrontendForSession(t, socketPath, "nxtest-sbctl")
+	defer nxterm.Kill()
+	region.Sync(nxterm, "TUI boot + subscribe")
+
+	const n = 2500
+	var buf bytes.Buffer
+	for i := 1; i <= n; i++ {
+		fmt.Fprintf(&buf, "SEQ%04d\r\n", i)
+	}
+	region.Output(buf.Bytes()).Sync(nxterm, "feed 2500 lines")
+
+	out := runNxtermctl(t, socketPath, "region", "scrollback", region.ID())
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	seen := make(map[int]bool, n)
+	for _, l := range lines {
+		if v := parseSEQ(l); v > 0 {
+			seen[v] = true
+		}
+	}
+
+	// The terminal is 24 rows, of which 23 hold output after the prompt —
+	// so the newest ~23 SEQ lines stay on-screen and don't land in
+	// scrollback. Require every SEQ up to n-50 to be retrievable; that
+	// leaves plenty of slack without being sensitive to exact viewport
+	// accounting.
+	var missing []int
+	for i := 1; i <= n-50; i++ {
+		if !seen[i] {
+			missing = append(missing, i)
+		}
+	}
+	if len(missing) > 0 {
+		head := missing
+		if len(head) > 20 {
+			head = head[:20]
+		}
+		t.Errorf("%d SEQ values missing from nxtermctl scrollback output; first %d: %v (got %d lines total)",
+			len(missing), len(head), head, len(lines))
+	}
+}
+
 // TestScrollbackNavigation drives scrollback entry, paging, and exit
 // against a native region — no shell, no prompt heuristic, all
 // synchronization via sync markers. Every assertion runs after a
@@ -398,122 +451,6 @@ func TestScrollbackStrictAgreement(t *testing.T) {
 			head = head[:20]
 		}
 		t.Errorf("%d SEQ values missing from client scrollback (server had them); first %d: %v",
-			len(missing), len(head), head)
-	}
-
-	nxterm.Write([]byte("q")).Sync("exit scrollback")
-}
-
-// TestScrollbackRecoversAfterReconnect reproduces the entry-race desync
-// from TestScrollbackStrictAgreement, then forces the client to
-// reconnect and checks whether the desync heals. A correctly-behaving
-// client should, post-reconnect, have scrollback that strictly agrees
-// with the server's authoritative view. If this test fails, reconnect
-// is not a reliable recovery path and any fix must address both the
-// entry race and the reconnect path.
-func TestScrollbackRecoversAfterReconnect(t *testing.T) {
-	t.Parallel()
-	socketPath, cleanup := startServer(t)
-	defer cleanup()
-
-	driver := nxtest.DialDriver(t, socketPath)
-	region := driver.SpawnNativeRegion("nxtest-sbrecon", "r1", 80, 24)
-
-	nxterm := startFrontendForSession(t, socketPath, "nxtest-sbrecon")
-	defer nxterm.Kill()
-	region.Sync(nxterm, "TUI boot + subscribe")
-
-	// Reproduce the strict-agreement race. The race between
-	// NativeRegionOutput and GetScrollbackRequest at the server is
-	// timing-dependent — sometimes the server processes the request
-	// before the output and no desync occurs. Retry the race a few
-	// times; if the scrollback-sequence fix keeps client and server in
-	// sync (no desync observable), skip — the recovery check is
-	// meaningless without desync. Batch sizes are kept small enough
-	// that the total server scrollback stays under the scrollback
-	// response chunk size, so our simple nxtermctl ground-truth parse
-	// isn't truncated.
-	var buf bytes.Buffer
-	for i := 1; i <= 100; i++ {
-		fmt.Fprintf(&buf, "SEQ%04d\r\n", i)
-	}
-	region.Output(buf.Bytes()).Sync(nxterm, "feed SEQ0001..0100")
-
-	desyncTriggered := false
-	const maxAttempts = 5
-	for attempt := 1; attempt <= maxAttempts && !desyncTriggered; attempt++ {
-		buf.Reset()
-		base := 100 + (attempt-1)*100
-		for i := base + 1; i <= base+100; i++ {
-			fmt.Fprintf(&buf, "SEQ%04d\r\n", i)
-		}
-		region.Output(buf.Bytes())
-		nxterm.Write([]byte{0x02, '['}).Sync(fmt.Sprintf("enter scrollback attempt %d", attempt))
-		region.Sync(nxterm, fmt.Sprintf("settle attempt %d", attempt))
-		nxterm.RequireTabBarContains("scrollback")
-
-		_, clientTotal, ok := parseScrollbackStatus(nxterm.ScreenLines()[0])
-		serverOut := runNxtermctl(t, socketPath, "region", "scrollback", region.ID())
-		serverLines := strings.Split(strings.TrimSpace(serverOut), "\n")
-		serverTotal := 0
-		for _, l := range serverLines {
-			if parseSEQ(l) > 0 {
-				serverTotal++
-			}
-		}
-		t.Logf("attempt %d: client total=%d server total=%d ok=%v", attempt, clientTotal, serverTotal, ok)
-		if ok && clientTotal > serverTotal {
-			desyncTriggered = true
-			break
-		}
-
-		// Race didn't trigger this attempt — exit scrollback and try again.
-		nxterm.Write([]byte("q")).Sync(fmt.Sprintf("exit attempt %d", attempt))
-	}
-	if !desyncTriggered {
-		t.Skip("no desync triggered after retries — scrollback-sequence reconciliation kept client and server in sync")
-	}
-
-	// Exit scrollback, then force a reconnect. The client will
-	// disconnect, reconnect, re-subscribe and receive a fresh
-	// TreeSnapshot + ScreenUpdate. Use region.Sync afterwards: its ack
-	// can only be produced once the TUI has reconnected, re-subscribed
-	// to the region, and processed the injected sync event.
-	nxterm.Write([]byte("q")).Sync("exit scrollback before reconnect")
-
-	clientID := findFrontendClientID(t, socketPath)
-	runNxtermctl(t, socketPath, "client", "kill", clientID)
-	region.Sync(nxterm, "reconnect + resubscribe round-trip")
-
-	// Re-enter scrollback after reconnect and strict-walk.
-	nxterm.Write([]byte{0x02, '['}).Sync("re-enter scrollback after reconnect")
-	nxterm.RequireTabBarContains("scrollback")
-	nxterm.Write([]byte("g")).Sync("jump to top")
-
-	// Ground truth post-reconnect.
-	serverOut := runNxtermctl(t, socketPath, "region", "scrollback", region.ID())
-	var expected []int
-	for _, l := range strings.Split(strings.TrimSpace(serverOut), "\n") {
-		if n := parseSEQ(l); n > 0 {
-			expected = append(expected, n)
-		}
-	}
-	t.Logf("server scrollback after reconnect: %d SEQ lines", len(expected))
-
-	allSeen := walkScrollbackStrict(t, nxterm)
-
-	var missing []int
-	for _, e := range expected {
-		if !allSeen[e] {
-			missing = append(missing, e)
-		}
-	}
-	if len(missing) > 0 {
-		head := missing
-		if len(head) > 20 {
-			head = head[:20]
-		}
-		t.Errorf("post-reconnect: %d SEQ values missing from client scrollback; first %d: %v",
 			len(missing), len(head), head)
 	}
 

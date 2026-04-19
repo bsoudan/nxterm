@@ -285,6 +285,61 @@ Fetch the current screen contents of a region without subscribing.
 
 ---
 
+### get_scrollback_request
+
+Fetch the scrollback buffer for a region. The response may be split across multiple chunks; the
+final chunk has `done=true`.
+
+```json
+{ "type": "get_scrollback_request", "region_id": "abc123" }
+```
+
+| Field     | Type   | Description                 |
+|-----------|--------|-----------------------------|
+| type      | string | `"get_scrollback_request"`  |
+| region_id | string | Target region               |
+
+### get_scrollback_response
+
+One response per chunk. Chunks are streamed **newest-first** so the rows nearest the user's
+current viewport arrive before older rows. The client is responsible for reading responses until
+it sees `done=true`; in-between responses have `done=false`. The chunk size is an internal server
+constant (currently 1000 rows).
+
+```json
+{ "type": "get_scrollback_response", "region_id": "abc123", "lines": [[...]], "total": 2500, "done": false, "scrollback_total": 2500, "error": false, "message": "" }
+```
+
+| Field            | Type           | Description                                                                |
+|------------------|----------------|----------------------------------------------------------------------------|
+| type             | string         | `"get_scrollback_response"`                                                |
+| region_id        | string         | Echoed region ID                                                           |
+| lines            | [][]ScreenCell | Chunk of scrollback rows. Oldest-first within the chunk                    |
+| total            | int            | Total scrollback row count across all chunks for this request              |
+| done             | bool           | True on the final chunk                                                    |
+| scrollback_total | uint64         | Server's monotonic "rows ever added" counter at snapshot time (see below) |
+| error            | bool           | True if the region does not exist                                          |
+| message          | string         | Error description, or `""`                                                 |
+
+#### Seq-reconciliation contract
+
+`scrollback_total` is a monotonic counter of rows the server has ever appended to this region's
+scrollback. It never decreases and is **not** reset when rows are evicted from the buffer. The
+absolute-sequence range of the rows currently retained on the server is:
+
+    [scrollback_total - total, scrollback_total)
+
+Clients with a local scrollback mirror should reconcile by seq range, not by buffer length. A
+row's seq is stable across evictions: if the server evicts old rows, `scrollback_total` stays
+where it is, the buffer shrinks, and the seq-range low bound advances. Clients that already hold
+older rows locally keep them above the server's window without introducing gaps.
+
+The same `scrollback_total` field appears on `screen_update` (see below). Taken together with
+`scrollback_len`, it tells the client exactly which seq range the server is currently retaining
+at the moment the snapshot was emitted.
+
+---
+
 ### kill_region_request
 
 Kill a region's child process.
@@ -455,18 +510,26 @@ their attributes.
 }
 ```
 
-| Field      | Type             | Description                                                        |
-|------------|------------------|--------------------------------------------------------------------|
-| type       | string           | `"screen_update"`                                                  |
-| region_id  | string           | Source region                                                      |
-| cursor_row | uint16           | 0-indexed cursor row                                               |
-| cursor_col | uint16           | 0-indexed cursor column                                            |
-| lines      | []string         | One string per row, space-padded to width, no escape sequences     |
-| cells      | [][]ScreenCell   | Optional. Per-cell color/attribute data, same dimensions as lines  |
+| Field            | Type             | Description                                                              |
+|------------------|------------------|--------------------------------------------------------------------------|
+| type             | string           | `"screen_update"`                                                        |
+| region_id        | string           | Source region                                                            |
+| cursor_row       | uint16           | 0-indexed cursor row                                                     |
+| cursor_col       | uint16           | 0-indexed cursor column                                                  |
+| lines            | []string         | One string per row, space-padded to width, no escape sequences           |
+| cells            | [][]ScreenCell   | Optional. Per-cell color/attribute data, same dimensions as lines        |
+| scrollback_len   | int              | Optional. Number of rows currently retained in the server's scrollback   |
+| scrollback_total | uint64           | Optional. Server's monotonic "rows ever added" counter (see below)       |
 
 `lines` is always present for backward compatibility with plain-text consumers. `cells` is present
 when the server supports color and provides the full rendering state needed to reconstruct a
 colored display.
+
+`scrollback_len` and `scrollback_total` together identify the absolute-sequence range of rows the
+server is currently retaining: `[scrollback_total - scrollback_len, scrollback_total)`. Clients
+that mirror scrollback locally use these fields to reconcile their state by seq range rather than
+by buffer length. See the **Seq-reconciliation contract** under `get_scrollback_response` for the
+full semantics — the contract on `screen_update` is identical.
 
 #### ScreenCell
 
