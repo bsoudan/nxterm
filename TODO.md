@@ -1,5 +1,12 @@
 # TODO
 
+## Report pixel size and graphics support in status dialog
+
+When we add terminal graphics support, extend the `terminal:` section of the status dialog (`internal/tui/statuslayer.go`) with:
+
+- **Pixel size** — window pixel dimensions and per-cell pixel size, queried via `CSI 14 t` (window) and `CSI 16 t` (cell).
+- **Graphics protocols** — detected support for Sixel, Kitty graphics, and iTerm2 inline images. Sixel can be inferred from the DA1 response (attribute `4`); Kitty graphics is detected via an `APC G` probe; iTerm2 typically signals via `TERM_PROGRAM`.
+
 ## use urfav/cli for in-app commands
 
 ## Scrollback sync blocks input after exit

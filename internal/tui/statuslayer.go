@@ -27,6 +27,9 @@ type StatusCaps struct {
 	KeyboardFlags int
 	BgDark        *bool
 	TermEnv       map[string]string
+	TermVersion   string
+	TermCols      int
+	TermRows      int
 	MouseModes    string
 	Modes         string
 
@@ -79,6 +82,9 @@ func (s *StatusLayer) View(width, height int, rs *RenderState) []*lipgloss.Layer
 	lines = append(lines, "")
 
 	lines = append(lines, "terminal:")
+	if s.caps.TermCols > 0 && s.caps.TermRows > 0 {
+		lines = append(lines, fmt.Sprintf("  Size:      %dx%d", s.caps.TermCols, s.caps.TermRows))
+	}
 	if term, ok := s.caps.TermEnv["TERM"]; ok {
 		lines = append(lines, fmt.Sprintf("  TERM:      %s", term))
 	}
@@ -88,6 +94,11 @@ func (s *StatusLayer) View(width, height int, rs *RenderState) []*lipgloss.Layer
 	if tp, ok := s.caps.TermEnv["TERM_PROGRAM"]; ok {
 		lines = append(lines, fmt.Sprintf("  Program:   %s", tp))
 	}
+	xtversion := s.caps.TermVersion
+	if xtversion == "" {
+		xtversion = "unknown"
+	}
+	lines = append(lines, fmt.Sprintf("  XTVERSION: %s", xtversion))
 	if s.caps.KeyboardFlags > 0 {
 		var kbCaps []string
 		if s.caps.KeyboardFlags&1 != 0 {

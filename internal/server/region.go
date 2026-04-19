@@ -294,7 +294,7 @@ func (r *PTYRegion) ActorDone() <-chan struct{} {
 
 // ── Construction ─────────────────────────────────────────────────────────────
 
-func NewRegion(cmdStr string, args []string, env map[string]string, width, height, scrollbackSize int, socketAddr string, destroyFn func(string)) (Region, error) {
+func NewRegion(cmdStr string, args []string, env map[string]string, width, height, scrollbackSize int, socketAddr, version string, destroyFn func(string)) (Region, error) {
 	id := generateUUID()
 	name := extractName(cmdStr)
 
@@ -323,6 +323,7 @@ func NewRegion(cmdStr string, args []string, env map[string]string, width, heigh
 	backend := newPTYBackend(id, ptmx, cmdObj, cmdObj.Process.Pid)
 
 	hscreen := te.NewHistoryScreen(width, height, scrollbackSize)
+	hscreen.Screen.TerminalName = "nxterm(" + version + ")"
 	hscreen.Screen.WriteProcessInput = func(data string) {
 		backend.WriteInput([]byte(data))
 	}
@@ -347,7 +348,7 @@ func NewRegion(cmdStr string, args []string, env map[string]string, width, heigh
 
 // RestoreRegion reconstructs a PTYRegion from serialized state and a PTY FD.
 // Used by the new process during live upgrade.
-func RestoreRegion(node protocol.RegionNode, ptmxFile *os.File, histState *te.HistoryState, destroyFn func(string)) Region {
+func RestoreRegion(node protocol.RegionNode, ptmxFile *os.File, histState *te.HistoryState, version string, destroyFn func(string)) Region {
 	backend := newPTYBackend(node.ID, ptmxFile, nil, node.Pid)
 
 	// Capacity is overwritten by UnmarshalState (preserves the serialized
@@ -355,6 +356,7 @@ func RestoreRegion(node protocol.RegionNode, ptmxFile *os.File, histState *te.Hi
 	// placeholder.
 	hscreen := te.NewHistoryScreen(node.Width, node.Height, DefaultScrollbackSize)
 	hscreen.UnmarshalState(histState)
+	hscreen.Screen.TerminalName = "nxterm(" + version + ")"
 	hscreen.Screen.WriteProcessInput = func(data string) {
 		backend.WriteInput([]byte(data))
 	}

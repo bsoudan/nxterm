@@ -58,8 +58,9 @@ type SessionManagerLayer struct {
 	upgradeClientAvail bool
 	upgradeClientVer   string
 
-	termWidth  int
-	termHeight int
+	termWidth   int
+	termHeight  int
+	termVersion string
 }
 
 // upgradeInfoMsg is posted by upgrade-check task goroutines. The main
@@ -201,6 +202,10 @@ func (sm *SessionManagerLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 		sm.termHeight = msg.Height
 		return sm.forwardToActiveSession(msg)
 
+	case tea.TerminalVersionMsg:
+		sm.termVersion = msg.Name
+		return nil, nil, true
+
 	case RawInputMsg:
 		return sm.handleRawInput(msg)
 
@@ -276,6 +281,9 @@ func (sm *SessionManagerLayer) handleCmd(msg SessionManagerCmd) (tea.Msg, tea.Cm
 			Endpoint:           sm.endpoint,
 			Version:            sm.version,
 			ConnStatus:         sm.connStatus,
+			TermCols:           sm.termWidth,
+			TermRows:           sm.termHeight,
+			TermVersion:        sm.termVersion,
 			ClientUpgradeAvail: sm.upgradeClientAvail,
 			ClientUpgradeVer:   sm.upgradeClientVer,
 			ServerUpgradeAvail: sm.upgradeServerAvail,

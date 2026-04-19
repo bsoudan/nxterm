@@ -180,11 +180,12 @@ func (r *NativeRegion) ClearOverlay(clientID uint32) {
 // NewNativeRegion creates a native region driven by the given client. The
 // actor is started immediately; callers should add the returned region to
 // the tree via the event loop.
-func NewNativeRegion(driver *Client, name string, width, height, scrollbackSize int, destroyFn func(string)) *NativeRegion {
+func NewNativeRegion(driver *Client, name string, width, height, scrollbackSize int, version string, destroyFn func(string)) *NativeRegion {
 	id := generateUUID()
 	backend := newNativeBackend(id, driver)
 
 	hscreen := te.NewHistoryScreen(width, height, scrollbackSize)
+	hscreen.Screen.TerminalName = "nxterm(" + version + ")"
 	hscreen.Screen.WriteProcessInput = func(data string) {
 		backend.WriteInput([]byte(data))
 	}

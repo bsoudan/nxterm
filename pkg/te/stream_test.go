@@ -77,6 +77,7 @@ type mockScreen struct {
 	reportDeviceAttrs   func(int, bool, rune, ...int)
 	cursorToLine        func(...int)
 	reportDeviceStatus  func(int, bool, rune, ...int)
+	reportTermVersion   func()
 	reportMode          func(int, bool)
 	requestStatusString func(string)
 	softReset           func()
@@ -340,6 +341,12 @@ func (m *mockScreen) CursorToLine(line ...int) {
 func (m *mockScreen) ReportDeviceStatus(mode int, private bool, prefix rune, rest ...int) {
 	if m.reportDeviceStatus != nil {
 		m.reportDeviceStatus(mode, private, prefix, rest...)
+	}
+}
+
+func (m *mockScreen) ReportTerminalVersion() {
+	if m.reportTermVersion != nil {
+		m.reportTermVersion()
 	}
 }
 
@@ -934,6 +941,43 @@ func TestDebugScreenOutput(t *testing.T) {
 	}
 	if !bytes.Contains(buf.Bytes(), []byte("draw")) {
 		t.Fatalf("expected draw event")
+	}
+}
+
+func TestXTVERSIONDispatch(t *testing.T) {
+	called := 0
+	screen := &mockScreen{reportTermVersion: func() { called++ }}
+	stream := NewStream(screen, false)
+	if err := stream.Feed(ControlCSI + ">q"); err != nil {
+		t.Fatalf("feed: %v", err)
+	}
+	if err := stream.Feed(ControlCSI + ">0q"); err != nil {
+		t.Fatalf("feed: %v", err)
+	}
+	if called != 2 {
+		t.Fatalf("ReportTerminalVersion called %d times, want 2", called)
+	}
+}
+
+func TestXTVERSIONReply(t *testing.T) {
+	var reply string
+	screen := NewScreen(10, 3)
+	screen.WriteProcessInput = func(s string) { reply = s }
+	screen.TerminalName = "nxterm(v0.1)"
+	screen.ReportTerminalVersion()
+	want := ControlDCS + ">|nxterm(v0.1)" + ControlST
+	if reply != want {
+		t.Fatalf("reply=%q want %q", reply, want)
+	}
+}
+
+func TestXTVERSIONNoReplyWhenUnset(t *testing.T) {
+	called := false
+	screen := NewScreen(10, 3)
+	screen.WriteProcessInput = func(string) { called = true }
+	screen.ReportTerminalVersion()
+	if called {
+		t.Fatalf("reply emitted with empty TerminalName")
 	}
 }
 

@@ -58,6 +58,7 @@ type EventHandler interface {
 	ReportDeviceAttributes(mode int, private bool, prefix rune, rest ...int)
 	CursorToLine(line ...int)
 	ReportDeviceStatus(mode int, private bool, prefix rune, rest ...int)
+	ReportTerminalVersion()
 	ReportMode(mode int, private bool)
 	RequestStatusString(query string)
 	SoftReset()
@@ -724,9 +725,10 @@ func (st *Stream) dispatchCSI(final rune, params []int) {
 		allowed := false
 		if st.csiPrefix == '>' {
 			switch final {
-			case 'c', 't', 'T':
+			case 'c', 't', 'T', 'q':
 				// 'c' = DA2 (secondary device attributes)
 				// 't', 'T' = SetTitleMode
+				// 'q' = XTVERSION (report terminal name)
 				allowed = true
 			}
 		}
@@ -865,6 +867,10 @@ func (st *Stream) dispatchCSI(final rune, params []int) {
 		}
 		if st.csiPrefix == '>' && final == 'T' {
 			st.listener.SetTitleMode(params, true)
+			return
+		}
+		if st.csiPrefix == '>' && final == 'q' {
+			st.listener.ReportTerminalVersion()
 			return
 		}
 		if st.csiIntermediate == '"' && final == 'p' {

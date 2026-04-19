@@ -271,6 +271,7 @@ func (p *EventProxy) ReportDeviceAttributes(mode int, private bool, prefix rune,
 func (p *EventProxy) ReportDeviceStatus(mode int, private bool, prefix rune, rest ...int) {
 	p.screen.ReportDeviceStatus(mode, private, prefix, rest...)
 }
+func (p *EventProxy) ReportTerminalVersion() { p.screen.ReportTerminalVersion() }
 func (p *EventProxy) ReportMode(mode int, private bool)   { p.screen.ReportMode(mode, private) }
 func (p *EventProxy) RequestStatusString(query string)     { p.screen.RequestStatusString(query) }
 func (p *EventProxy) QuerySelectionData(selection string)  { p.screen.QuerySelectionData(selection) }

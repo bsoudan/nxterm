@@ -50,6 +50,7 @@ type Screen struct {
 	Savepoints          []Savepoint
 	SavedColumns        *int
 	WriteProcessInput   func(string)
+	TerminalName        string // XTVERSION reply, e.g. "nxterm(v0.1-beta)". Empty means no reply.
 	lastDrawn           string
 	leftMargin          int
 	rightMargin         int
@@ -1425,6 +1426,17 @@ func (s *Screen) ReportDeviceAttributes(mode int, private bool, prefix rune, _ .
 	if !private || prefix == '?' {
 		s.WriteProcessInput(ControlCSI + "?" + b.String() + "c")
 	}
+}
+
+// ReportTerminalVersion replies to XTVERSION (CSI > q) with the
+// configured TerminalName in DCS > | <name> ST form. Silent when
+// TerminalName is unset — matches terminals that don't implement the
+// query.
+func (s *Screen) ReportTerminalVersion() {
+	if s.TerminalName == "" {
+		return
+	}
+	s.WriteProcessInput(ControlDCS + ">|" + s.TerminalName + ControlST)
 }
 
 // ReportDeviceStatus emits a device status response.

@@ -17,7 +17,7 @@ import (
 
 func (m *NxtermModel) Init() tea.Cmd {
 	initCmd := m.init()
-	return tea.Batch(initCmd, m.tasks.ListenCmd())
+	return tea.Batch(initCmd, m.tasks.ListenCmd(), tea.RequestTerminalVersion)
 }
 
 func (m *NxtermModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {

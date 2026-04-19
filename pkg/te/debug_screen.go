@@ -232,6 +232,11 @@ func (d *DebugScreen) CursorToLine(line ...int) {
 	d.record("cursor_to_line", intsToInterfaces(line), map[string]interface{}{})
 }
 
+// ReportTerminalVersion replies to XTVERSION.
+func (d *DebugScreen) ReportTerminalVersion() {
+	d.record("report_terminal_version", nil, map[string]interface{}{})
+}
+
 // ReportDeviceStatus emits a device status response.
 func (d *DebugScreen) ReportDeviceStatus(mode int, private bool, prefix rune, rest ...int) {
 	args := append([]interface{}{mode}, intsToInterfaces(rest)...)

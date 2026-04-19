@@ -108,7 +108,7 @@ func RecvUpgrade(fd int, version string) (*Server, []net.Listener, []string, err
 			slog.Warn("upgrade-recv: no PTY FD for region", "region_id", rs.Node.ID)
 			continue
 		}
-		region := RestoreRegion(rs.Node, ptmxFile, rs.Screen, srv.destroyRegion)
+		region := RestoreRegion(rs.Node, ptmxFile, rs.Screen, version, srv.destroyRegion)
 		resp := make(chan struct{})
 		srv.send(restoreRegionReq{region: region, session: rs.Node.Session, resp: resp})
 		<-resp

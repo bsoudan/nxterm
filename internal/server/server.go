@@ -205,7 +205,7 @@ func (s *Server) SpawnRegion(sessionName, cmd string, args []string, env map[str
 	if height == 0 {
 		height = 24
 	}
-	region, err := NewRegion(cmd, args, env, int(width), int(height), s.scrollbackSize, s.socketAddr(), s.destroyRegion)
+	region, err := NewRegion(cmd, args, env, int(width), int(height), s.scrollbackSize, s.socketAddr(), s.version, s.destroyRegion)
 	if err != nil {
 		return nil, err
 	}
@@ -232,7 +232,7 @@ func (s *Server) SpawnNativeRegion(driver *Client, sessionName, name string, wid
 	if height == 0 {
 		height = 24
 	}
-	region := NewNativeRegion(driver, name, int(width), int(height), s.scrollbackSize, s.destroyRegion)
+	region := NewNativeRegion(driver, name, int(width), int(height), s.scrollbackSize, s.version, s.destroyRegion)
 
 	resp := make(chan struct{}, 1)
 	if !s.send(spawnRegionReq{region: region, sessionName: sessionName, resp: resp}) {
