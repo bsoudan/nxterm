@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -145,6 +146,18 @@ func main() {
 					{Name: "list", Usage: "list clients", Action: cmdClientList},
 					{Name: "kill", Usage: "disconnect a client", ArgsUsage: "<client_id>", Action: cmdClientKill},
 				},
+			},
+			{
+				Name:      "upgrade-to",
+				Usage:     "live-upgrade the server to the binary at the given path",
+				ArgsUsage: "<binary_path>",
+				Description: `Instructs the running nxtermd to perform a live upgrade using the
+binary at <binary_path> instead of its own os.Executable(). Intended
+for nix / home-manager rollouts where the new binary lives at a new
+/nix/store path. The server validates the path, signals itself with
+SIGUSR2, and hands off PTYs, clients, and scrollback to the new
+process.`,
+				Action: cmdUpgradeTo,
 			},
 			{
 				Name:      "proxy",
@@ -358,6 +371,38 @@ func renderColoredLine(row []protocol.ScreenCell) string {
 	}
 
 	return strings.TrimRight(sb.String(), " ")
+}
+
+func cmdUpgradeTo(_ context.Context, cmd *cli.Command) error {
+	if cmd.NArg() < 1 {
+		return fmt.Errorf("usage: nxtermctl upgrade-to <binary_path>")
+	}
+	path := cmd.Args().First()
+	if !filepath.IsAbs(path) {
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return fmt.Errorf("resolve path: %w", err)
+		}
+		path = abs
+	}
+
+	cl, err := connect(cmd)
+	if err != nil {
+		return err
+	}
+	defer cl.Close()
+
+	_ = cl.Send(protocol.UpgradeToRequest{Path: path})
+	resp, err := recvType[protocol.UpgradeToResponse](cl)
+	if err != nil {
+		return err
+	}
+	if resp.Error {
+		return fmt.Errorf("%s", resp.Message)
+	}
+
+	fmt.Fprintf(os.Stderr, "upgrade-to %s: signal sent\n", path)
+	return nil
 }
 
 func cmdRegionKill(_ context.Context, cmd *cli.Command) error {

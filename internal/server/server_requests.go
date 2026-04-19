@@ -24,7 +24,12 @@ type eventLoopState struct {
 	subscriptions  map[uint32]string // clientID → regionID
 	clientOverlays map[uint32]string // clientID → regionID
 	regionOverlays map[string]uint32 // regionID → overlay clientID
-	exit           bool
+	// pendingUpgradeBin is the path the next SIGUSR2 should exec, set by
+	// handleUpgradeTo before it signals. Consumed and cleared by
+	// takePendingUpgradeBinReq when the SIGUSR2 handler reads it. Empty
+	// means "use os.Executable()" — the legacy self-reexec path.
+	pendingUpgradeBin string
+	exit              bool
 }
 
 // commitAndBroadcast ends the current transaction and broadcasts

@@ -66,6 +66,13 @@ in
     systemd.user.services.nxtermd = {
       Unit = {
         Description = "nxtermd terminal multiplexer server";
+        # Tells sd-switch (home-manager's activation backend) to run
+        # `systemctl reload` instead of `restart` when the unit changes.
+        # Reload invokes ExecReload, which asks the running server to
+        # live-upgrade to the new /nix/store binary — preserving PTYs,
+        # sessions, and subscribed clients across `home-manager switch`.
+        X-ReloadIfChanged = true;
+        X-RestartIfChanged = false;
       };
 
       Service = {
@@ -83,7 +90,12 @@ in
             );
           in
           "${cfg.package}/bin/nxtermd${lib.optionalString (args != "") " ${args}"}";
-        ExecReload = "${pkgs.coreutils}/bin/kill -USR2 $MAINPID";
+        # ExecReload resolves to the *new* package path each time HM
+        # writes a fresh unit file, so the reload always targets the
+        # upgraded binary. If the running server is wedged the reload
+        # times out and systemd logs the failure; users can fall back to
+        # `systemctl --user restart nxtermd` for a hard restart.
+        ExecReload = "${cfg.package}/bin/nxtermctl upgrade-to ${cfg.package}/bin/nxtermd";
         Restart = "on-failure";
         RestartSec = 5;
       };

@@ -271,7 +271,8 @@ func runServer(_ context.Context, cmd *cli.Command) error {
 			switch sig {
 			case syscall.SIGUSR2:
 				slog.Info("received upgrade signal (SIGUSR2)")
-				if err := srv.HandleUpgrade(specs); err != nil {
+				newBin := srv.TakePendingUpgradeBin()
+				if err := srv.HandleUpgrade(specs, newBin); err != nil {
 					slog.Error("live upgrade failed", "err", err)
 					continue // server keeps running
 				}
@@ -356,7 +357,8 @@ func runUpgradeReceiver(fd int) error {
 			switch sig {
 			case syscall.SIGUSR2:
 				slog.Info("received upgrade signal (SIGUSR2)")
-				if err := srv.HandleUpgrade(specs); err != nil {
+				newBin := srv.TakePendingUpgradeBin()
+				if err := srv.HandleUpgrade(specs, newBin); err != nil {
 					slog.Error("live upgrade failed", "err", err)
 					continue
 				}

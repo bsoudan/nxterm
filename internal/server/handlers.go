@@ -75,6 +75,7 @@ var messageHandlers = map[string]msgHandler{
 	"remove_program_request":  withMsg(handleRemoveProgram),
 	"upgrade_check_request":   withMsg(handleUpgradeCheck),
 	"server_upgrade_request":  withReplyOnly(handleServerUpgrade),
+	"upgrade_to_request":      withMsg(handleUpgradeTo),
 	"client_binary_request":   withMsg(handleClientBinaryDownload),
 	"overlay_register":        withMsg(handleOverlayRegister),
 	"overlay_render":          withMsgOnly(handleOverlayRender),
@@ -706,6 +707,46 @@ func handleServerUpgrade(s *Server, c *Client, reply func(any)) {
 
 	// Trigger the existing live-upgrade path.
 	slog.Info("sending SIGUSR2 to self")
+	syscall.Kill(os.Getpid(), syscall.SIGUSR2)
+}
+
+// handleUpgradeTo validates an explicit binary path, stashes it as the
+// pending upgrade target, and signals SIGUSR2. Used by home-manager to
+// hand the server a fresh /nix/store path without touching the
+// read-only current executable. Validation is best-effort — we check
+// existence and executability, but a corrupt binary will surface at
+// exec time and trigger the live-upgrade rollback machinery.
+func handleUpgradeTo(s *Server, c *Client, msg protocol.UpgradeToRequest, reply func(any)) {
+	slog.Info("upgrade-to requested", "client_id", c.id, "path", msg.Path)
+
+	if msg.Path == "" {
+		reply(protocol.UpgradeToResponse{
+			Type: "upgrade_to_response", Error: true,
+			Message: "binary_path is required",
+		})
+		return
+	}
+
+	info, err := os.Stat(msg.Path)
+	if err != nil {
+		reply(protocol.UpgradeToResponse{
+			Type: "upgrade_to_response", Error: true,
+			Message: fmt.Sprintf("stat: %v", err),
+		})
+		return
+	}
+	if info.IsDir() || info.Mode()&0o111 == 0 {
+		reply(protocol.UpgradeToResponse{
+			Type: "upgrade_to_response", Error: true,
+			Message: "binary_path is not an executable file",
+		})
+		return
+	}
+
+	s.SetPendingUpgradeBin(msg.Path)
+	reply(protocol.UpgradeToResponse{Type: "upgrade_to_response"})
+
+	slog.Info("sending SIGUSR2 to self", "target", msg.Path)
 	syscall.Kill(os.Getpid(), syscall.SIGUSR2)
 }
 

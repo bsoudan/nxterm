@@ -22,7 +22,13 @@ const upgradeTimeout = 60 * time.Second
 // handing off all listeners, PTY FDs, and terminal state. Upgrade
 // progress is published on the tree's UpgradeNode so connected clients
 // can track phases via tree events.
-func (s *Server) HandleUpgrade(specs []string) error {
+//
+// newBin is the path to the binary to exec. Pass "" to use
+// os.Executable() (current process path) — appropriate for SIGUSR2-only
+// re-execs. Callers that upgrade to a different on-disk binary (e.g.
+// via nxtermctl upgrade-to for nix-based rollouts) pass an explicit
+// path.
+func (s *Server) HandleUpgrade(specs []string, newBin string) error {
 	// Alias for brevity. Pre-drain calls pass nil tree/clients to
 	// route through the event loop; post-drain calls pass the drained
 	// tree and client snapshot for direct mutation.
@@ -33,10 +39,13 @@ func (s *Server) HandleUpgrade(specs []string) error {
 
 	phase(nil, nil, protocol.UpgradePhaseStarting, "starting upgrade")
 
-	newBin, err := os.Executable()
-	if err != nil {
-		fail(nil, nil, fmt.Sprintf("os.Executable: %v", err))
-		return fmt.Errorf("os.Executable: %w", err)
+	if newBin == "" {
+		selfBin, err := os.Executable()
+		if err != nil {
+			fail(nil, nil, fmt.Sprintf("os.Executable: %v", err))
+			return fmt.Errorf("os.Executable: %w", err)
+		}
+		newBin = selfBin
 	}
 	slog.Info("upgrade: starting", "binary", newBin)
 
@@ -347,6 +356,48 @@ func (r setUpgradeReq) handle(st *eventLoopState) {
 	if r.resp != nil {
 		r.resp <- struct{}{}
 	}
+}
+
+type setPendingUpgradeBinReq struct {
+	path string
+	resp chan struct{}
+}
+
+func (r setPendingUpgradeBinReq) handle(st *eventLoopState) {
+	st.pendingUpgradeBin = r.path
+	if r.resp != nil {
+		r.resp <- struct{}{}
+	}
+}
+
+type takePendingUpgradeBinReq struct{ resp chan string }
+
+func (r takePendingUpgradeBinReq) handle(st *eventLoopState) {
+	path := st.pendingUpgradeBin
+	st.pendingUpgradeBin = ""
+	r.resp <- path
+}
+
+// SetPendingUpgradeBin records the path the next SIGUSR2-triggered live
+// upgrade should exec. Empty path resets to the default self-reexec
+// behavior.
+func (s *Server) SetPendingUpgradeBin(path string) {
+	resp := make(chan struct{}, 1)
+	if !s.send(setPendingUpgradeBinReq{path: path, resp: resp}) {
+		return
+	}
+	<-resp
+}
+
+// TakePendingUpgradeBin returns and clears the pending upgrade binary
+// path. Returns "" when none was set, meaning the SIGUSR2 handler should
+// use os.Executable().
+func (s *Server) TakePendingUpgradeBin() string {
+	resp := make(chan string, 1)
+	if !s.send(takePendingUpgradeBinReq{resp: resp}) {
+		return ""
+	}
+	return <-resp
 }
 
 func (r upgradeReq) handle(st *eventLoopState) {

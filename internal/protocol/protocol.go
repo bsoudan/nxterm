@@ -105,6 +105,23 @@ type ServerUpgradeRequest struct {
 	Type string `json:"type,omitempty"`
 }
 
+// UpgradeToRequest triggers a live upgrade to an explicit binary path.
+// Used by `nxtermctl upgrade-to` and home-manager's ExecReload to hand
+// the running server a new on-disk binary (e.g. a fresh /nix/store
+// entry) without copying over os.Executable(), which is read-only on
+// nix. The server validates the path, stashes it for the SIGUSR2
+// handler, replies, then signals itself.
+type UpgradeToRequest struct {
+	Type string `json:"type,omitempty"`
+	Path string `json:"binary_path"`
+}
+
+type UpgradeToResponse struct {
+	Type    string `json:"type,omitempty"`
+	Error   bool   `json:"error"`
+	Message string `json:"message"`
+}
+
 type ClientBinaryRequest struct {
 	Type   string `json:"type,omitempty"`
 	OS     string `json:"os"`
@@ -561,6 +578,8 @@ var payloadParsers = map[string]func([]byte) (any, error){
 	"remove_program_response":   parseAs[RemoveProgramResponse],
 	"upgrade_check_response":    parseAs[UpgradeCheckResponse],
 	"server_upgrade_response":   parseAs[ServerUpgradeResponse],
+	"upgrade_to_request":        parseAs[UpgradeToRequest],
+	"upgrade_to_response":       parseAs[UpgradeToResponse],
 	"client_binary_chunk":       parseAs[ClientBinaryChunk],
 	"client_binary_response":    parseAs[ClientBinaryResponse],
 	"overlay_register_response":    parseAs[OverlayRegisterResponse],
@@ -662,6 +681,8 @@ var typeTagMap = map[reflect.Type]string{
 	reflect.TypeOf(RemoveProgramRequest{}):   "remove_program_request",
 	reflect.TypeOf(UpgradeCheckRequest{}):    "upgrade_check_request",
 	reflect.TypeOf(ServerUpgradeRequest{}):   "server_upgrade_request",
+	reflect.TypeOf(UpgradeToRequest{}):       "upgrade_to_request",
+	reflect.TypeOf(UpgradeToResponse{}):      "upgrade_to_response",
 	reflect.TypeOf(ClientBinaryRequest{}):    "client_binary_request",
 	reflect.TypeOf(Disconnect{}):             "disconnect",
 	reflect.TypeOf(OverlayRegisterRequest{}):   "overlay_register",
