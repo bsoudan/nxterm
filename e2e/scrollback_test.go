@@ -94,6 +94,49 @@ func TestScrollbackNavigation(t *testing.T) {
 	nxterm.RequireTabBarDoesNotContain("scrollback")
 }
 
+// TestScrollbackExitOnUnknownKey verifies that pressing any key that
+// isn't a recognized scrollback navigation command exits scrollback
+// mode (the default branch in ScrollbackLayer.handleKey).
+func TestScrollbackExitOnUnknownKey(t *testing.T) {
+	t.Parallel()
+	socketPath, cleanup := startServer(t)
+	defer cleanup()
+
+	driver := nxtest.DialDriver(t, socketPath)
+	region := driver.SpawnNativeRegion("nxtest-sbunk", "r1", 80, 24)
+
+	nxterm := startFrontendForSession(t, socketPath, "nxtest-sbunk")
+	defer nxterm.Kill()
+	region.Sync(nxterm, "TUI boot + subscribe")
+
+	var buf bytes.Buffer
+	for i := 1; i <= 50; i++ {
+		fmt.Fprintf(&buf, "%d\r\n", i)
+	}
+	region.Output(buf.Bytes()).Sync(nxterm, "feed 50 lines")
+
+	// Unrecognized keys (not q/esc, not a nav command) should exit.
+	// Spot-check a few different kinds: a plain letter, a digit, and
+	// a function-style sequence.
+	cases := []struct {
+		name  string
+		input []byte
+	}{
+		{"letter x", []byte("x")},
+		{"digit 5", []byte("5")},
+		{"f1", []byte("\x1bOP")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			nxterm.Write([]byte{0x02, '['}).Sync("enter scrollback")
+			nxterm.RequireTabBarContains("scrollback")
+
+			nxterm.Write(tc.input).Sync("press unrecognized key")
+			nxterm.RequireTabBarDoesNotContain("scrollback")
+		})
+	}
+}
+
 func requireEarlyNumbersVisible(t *testing.T, nxterm *nxtest.T) {
 	t.Helper()
 	screen := nxterm.ScreenLines()
