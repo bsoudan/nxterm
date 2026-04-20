@@ -844,6 +844,11 @@ func (h *HistoryScreen) ResetHistory() {
 // LineFeed. When growing, blank rows are appended at the bottom. Column
 // changes truncate or pad each visible row.
 //
+// Wrapped lines are NOT reflowed. A row wider than the new width gets
+// truncated; wrap markers (lineWrapped) are cleared because shifting
+// rows invalidates their indices and scrollback has no per-row wrap
+// state. This matches Screen.Resize, which also discards wrap info.
+//
 // The embedded Screen.Resize() that this type would otherwise inherit
 // calls DeleteLines on shrink, which discards rows — correct for a
 // plain Screen but wrong for HistoryScreen: scrolled-off content must
@@ -913,5 +918,11 @@ func (h *HistoryScreen) Resize(lines, columns int) {
 	if h.Cursor.Col >= columns {
 		h.Cursor.Col = columns - 1
 	}
+	// Row shift + truncate has invalidated any wrap markers — an entry
+	// for row 16 previously meant "this wraps into row 17", but both
+	// rows now hold different content (or no longer exist). Drop them;
+	// subsequent draws will re-mark wrapped rows as they appear.
+	h.lineWrapped = make(map[int]bool)
+	h.wrapNext = false
 	h.markDirtyRange(0, lines-1)
 }
