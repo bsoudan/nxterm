@@ -635,13 +635,31 @@ func (m *NxtermModel) drainUntil(match func(source string, msg any) bool) (any, 
 }
 
 func (m *NxtermModel) initialSetup() {
-	if _, err := m.drainUntil(func(source string, msg any) bool {
-		_, ok := msg.(tea.WindowSizeMsg)
-		return source == "tea" && ok
-	}); err != nil {
-		return
+	// Block until bubbletea's initial tea.WindowSizeMsg is delivered
+	// before we process any server traffic or send our first request.
+	// The TreeSnapshot that the server sends on connect carries the
+	// region list; processing it spawns TerminalLayers whose first
+	// screen_update sizes the local hscreen from termHeight. If we
+	// processed TreeSnapshot with termHeight still zero, the fallback
+	// would create a mis-sized hscreen and every subsequent event
+	// replay would drift from the server's region parser by one row
+	// per batch. Server messages queue in server.Inbound (cap 256)
+	// until the main loop picks them up.
+	for {
+		select {
+		case msg := <-m.program.Msgs():
+			processed, err := m.program.Handle(msg)
+			if err != nil {
+				return
+			}
+			if _, ok := processed.(tea.WindowSizeMsg); ok {
+				goto ready
+			}
+		case <-m.program.Context().Done():
+			return
+		}
 	}
-
+ready:
 	sessions := m.sm.Sessions()
 	if len(sessions) == 0 {
 		return
