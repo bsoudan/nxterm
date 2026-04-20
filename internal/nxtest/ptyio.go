@@ -52,11 +52,19 @@ func (p *PtyIO) readLoop() {
 			data := make([]byte, n)
 			copy(data, buf[:n])
 
-			p.extractSyncAcks(data)
-
+			// Feed the virtual screen BEFORE releasing any WaitSync
+			// waiters. If we extracted acks first, a test blocked on
+			// WaitSync could unblock and race us to p.mu, observing a
+			// pre-update virtual screen — exactly the partial-render
+			// flake seen in TestScrollbackStrictAgreement under
+			// parallel load, where the top of the viewport showed the
+			// new offset's content and the bottom still held the
+			// previous step's rows.
 			p.mu.Lock()
 			p.stream.FeedBytes(data)
 			p.mu.Unlock()
+
+			p.extractSyncAcks(data)
 
 			p.ch <- data
 		}
