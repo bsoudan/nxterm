@@ -32,6 +32,21 @@ Also resolves items #1 and #2 in `scrollback-todo.md` (unify the two sync regime
 
 `internal/config/` parses TOML into typed structs but performs no constraint validation. Invalid listen addresses, negative timeouts, and other bad values pass silently. Add a validation pass after parsing that checks constraints and returns actionable errors.
 
+## Reflow wrapped lines on resize
+
+`HistoryScreen.Resize` (and the embedded `Screen.Resize`) truncates rows wider than the new width and clears `lineWrapped`. A wrapped logical line — e.g. "HELLOWORLD" that autowrapped "HELLO" / "WORLD" across two rows at width 5 — stays as two disjoint rows after growing to width 10, instead of joining back into one row. Shrinking has the inverse problem: a single row wider than the new width gets truncated rather than spilling into a continuation row.
+
+Modern emulators (iTerm2, Alacritty, kitty, WezTerm) reflow on resize so a resized session looks the same as if the output had arrived at the new width originally.
+
+Needed work:
+
+- Add per-row wrap state to scrollback (`history.Top.items` is `[][]Cell` today with no wrap flag), so a wrapped row scrolled off the screen retains its relationship to the next row.
+- On resize, walk the combined scrollback + screen buffer, coalesce sequences of wrap-connected rows into logical lines, and re-split at the new width. Cursor position needs to follow its grapheme.
+- Alt-screen apps (vim, less, htop) typically ignore reflow and just redraw on SIGWINCH — the reflow path should apply only to the main screen's scrollback + visible rows, not `altBuffer`.
+- Cover with tests that exercise grow-then-shrink-back (should be lossless when the round-trip doesn't truncate) and content with mixed widths / grapheme clusters.
+
+Related: the `pkg/te` CLAUDE.md calls out grapheme-cluster handling via `uniseg`; reflow must preserve cluster boundaries, not split mid-cluster.
+
 ## Simplify server state tree to eliminate shared state
 
 Investigate reworking `ServerTree` so state ownership is unambiguous and duplication between live objects and tree nodes shrinks.
