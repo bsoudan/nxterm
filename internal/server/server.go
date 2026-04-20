@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -24,6 +25,7 @@ type Server struct {
 	nextClientID   atomic.Uint32
 	sessionsCfg    config.SessionsConfig
 	scrollbackSize int
+	clientWriteCap int
 	// cfg is the effective server configuration (config file with CLI
 	// flag overrides applied). Preserved intact so a live upgrade can
 	// hand the same config to the new process.
@@ -83,6 +85,8 @@ func NewServer(listeners []net.Listener, version string, cfg config.ServerConfig
 		scrollbackSize = DefaultScrollbackSize
 	}
 
+	writeChCap := resolveClientWriteChCap(cfg.ClientWriteChCap)
+
 	s := &Server{
 		version:        version,
 		binariesDir:    resolveBinariesDir(cfg.Upgrade.BinariesDir),
@@ -90,6 +94,7 @@ func NewServer(listeners []net.Listener, version string, cfg config.ServerConfig
 		startTime:      time.Now(),
 		sessionsCfg:    sessionsCfg,
 		scrollbackSize: scrollbackSize,
+		clientWriteCap: writeChCap,
 		cfg:            cfg,
 		requests:       make(chan request, 256),
 		done:           make(chan struct{}),
@@ -101,6 +106,28 @@ func NewServer(listeners []net.Listener, version string, cfg config.ServerConfig
 	go s.eventLoop()
 
 	return s
+}
+
+// defaultClientWriteChCap is the per-client outbound-message queue
+// depth used when neither config nor env override is set.
+const defaultClientWriteChCap = 64
+
+// resolveClientWriteChCap picks the per-client writeCh capacity in
+// order: NXTERMD_WRITE_CH_CAP env (highest), cfgValue (from TOML),
+// or defaultClientWriteChCap. Non-positive values anywhere fall
+// through to the next source. Shrinking this is the deterministic
+// lever for slow-client tests — two queued messages force the third
+// to drop.
+func resolveClientWriteChCap(cfgValue int) int {
+	if v := os.Getenv("NXTERMD_WRITE_CH_CAP"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	if cfgValue > 0 {
+		return cfgValue
+	}
+	return defaultClientWriteChCap
 }
 
 // send sends a request to the event loop, returning false if the server

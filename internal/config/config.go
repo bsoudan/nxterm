@@ -65,6 +65,13 @@ type ServerConfig struct {
 	Discovery  DiscoveryConfig  `toml:"discovery"`
 	Upgrade    UpgradeConfig    `toml:"upgrade"`
 	Scrollback ScrollbackConfig `toml:"scrollback"`
+	// ClientWriteChCap is the per-client outbound-message queue depth.
+	// Messages that arrive when the queue is full are dropped by the
+	// non-blocking SendMessage path — the mechanism the TUI's
+	// pause-session command exercises. Defaults to 64. Setting this
+	// to a small value (2–4) makes drops deterministic under test.
+	// Also overridable at runtime via NXTERMD_WRITE_CH_CAP.
+	ClientWriteChCap int `toml:"client-write-ch-cap"`
 }
 
 // SSHConfig holds SSH-specific server settings.

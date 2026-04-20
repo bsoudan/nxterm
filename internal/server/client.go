@@ -48,11 +48,15 @@ type Client struct {
 }
 
 func NewClient(conn net.Conn, server *Server, id uint32) *Client {
+	cap := server.clientWriteCap
+	if cap <= 0 {
+		cap = defaultClientWriteChCap
+	}
 	c := &Client{
 		conn:    conn,
 		server:  server,
 		id:      id,
-		writeCh: make(chan writeMsg, 64),
+		writeCh: make(chan writeMsg, cap),
 		closeCh: make(chan struct{}),
 	}
 	c.identity.Store(&clientIdentity{

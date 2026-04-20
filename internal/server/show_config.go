@@ -50,6 +50,7 @@ func showServerConfig(cmd *cli.Command) error {
 		{Name: "upgrade.binaries-dir", Value: resolveBinariesDir(cfg.Upgrade.BinariesDir), Source: config.FileOrDefault("upgrade.binaries-dir", keyLocs)},
 		{Name: "termctl.connect", Value: cfg.Termctl.Connect, Source: config.FileOrDefault("termctl.connect", keyLocs)},
 		{Name: "termctl.debug", Value: cfg.Termctl.Debug, Source: config.FileOrDefault("termctl.debug", keyLocs)},
+		{Name: "client-write-ch-cap", Value: resolveClientWriteChCap(cfg.ClientWriteChCap), Source: config.ScalarSource(cmd, "", nil, "NXTERMD_WRITE_CH_CAP", "client-write-ch-cap", keyLocs)},
 	}
 
 	for i, p := range cfg.Programs {

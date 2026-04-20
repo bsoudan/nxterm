@@ -125,6 +125,25 @@ func startServerCustom(t *testing.T, configContent string) (string, func()) {
 	return srv.SocketPath, srv.Stop
 }
 
+// startServerTinyWriteCh starts nxtermd with the per-client writeCh
+// capped at 2. Combined with the pause-session TUI command, this makes
+// server-side broadcast drops deterministic: any two queued messages
+// force the third to fall off the non-blocking SendMessage path.
+// Intended for slow-client tests.
+func startServerTinyWriteCh(t *testing.T, cap int) (string, func()) {
+	t.Helper()
+	env := testEnv(t)
+	env = append(env, fmt.Sprintf("NXTERMD_WRITE_CH_CAP=%d", cap))
+	if err := nxtest.WriteServerConfig(env); err != nil {
+		t.Fatal(err)
+	}
+	srv, err := nxtest.StartServer(t.TempDir(), env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return srv.SocketPath, srv.Stop
+}
+
 func writeTestServerConfig(t *testing.T, env []string) {
 	t.Helper()
 	if err := nxtest.WriteServerConfig(env); err != nil {
