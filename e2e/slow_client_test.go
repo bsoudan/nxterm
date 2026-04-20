@@ -40,6 +40,30 @@ func resumeTUIViaPalette(t *testing.T, nxt *nxtest.T) {
 	}, "pause indicator cleared", 2*time.Second)
 }
 
+// syncWithRetry issues sync markers in a loop until one is acked or
+// the deadline passes. Used after resume when the server's writeCh
+// may still be saturated from the pause-driven backlog: an individual
+// sync broadcast can drop (SendMessage is non-blocking), but as the
+// backlog drains a subsequent marker will land. Each attempt uses a
+// short per-attempt timeout so the loop retries fast.
+func syncWithRetry(t *testing.T, region *nxtest.NativeRegion, nxt *nxtest.T, desc string, total time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(total)
+	attempt := 0
+	for {
+		attempt++
+		id := fmt.Sprintf("retry-%s-%d", desc, attempt)
+		region.WriteSync(id)
+		err := nxt.PtyIO.WaitSync(id, 500*time.Millisecond)
+		if err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("syncWithRetry %q: exhausted after %d attempts: %v", desc, attempt, err)
+		}
+	}
+}
+
 // TestSlowClientScrollbackRowsDropped — T1.
 //
 // Feeds a sequence of uniquely numbered lines while the TUI is paused
@@ -80,7 +104,11 @@ func TestSlowClientScrollbackRowsDropped(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	resumeTUIViaPalette(t, nxterm)
-	region.Sync(nxterm, "post-resume drain")
+	// After resume the server's writeCh may still hold queued
+	// broadcasts from the flood; a single sync marker can drop until
+	// the pipeline drains. Retry for up to 10s so the slow-client
+	// backpressure doesn't flake the test barrier itself.
+	syncWithRetry(t, region, nxterm, "post-resume-drain", 10*time.Second)
 
 	// Server's scrollback is authoritative.
 	serverOut := runNxtermctl(t, socketPath, "region", "scrollback", region.ID())
@@ -95,9 +123,17 @@ func TestSlowClientScrollbackRowsDropped(t *testing.T) {
 	}
 	t.Logf("server scrollback: %d SEQ lines", len(expected))
 
-	// Enter scrollback, jump to top, walk, collect.
+	// Enter scrollback. Wait for the server's scrollback sync to land
+	// before jumping to the top: 'g' snapshots maxOffset at the moment
+	// it runs, and maxOffset grows as sync chunks prepend to the local
+	// hscreen. If we press 'g' too early, the walk starts at a stale
+	// maxOffset and never reaches the older (just-prepended) rows.
 	nxterm.Write([]byte{0x02, '['}).Sync("enter scrollback")
 	nxterm.RequireTabBarContains("scrollback")
+	nxterm.WaitForScreen(func(lines []string) bool {
+		_, total, ok := parseScrollbackStatus(lines[0])
+		return ok && total >= len(expected)
+	}, "scrollback sync reached server total", 5*time.Second)
 	nxterm.Write([]byte("g")).Sync("jump to top")
 
 	allSeen := walkScrollbackStrict(t, nxterm)
@@ -150,7 +186,11 @@ func TestSlowClientScrollbackCountDiverges(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	resumeTUIViaPalette(t, nxterm)
-	region.Sync(nxterm, "post-resume drain")
+	// After resume the server's writeCh may still hold queued
+	// broadcasts from the flood; a single sync marker can drop until
+	// the pipeline drains. Retry for up to 10s so the slow-client
+	// backpressure doesn't flake the test barrier itself.
+	syncWithRetry(t, region, nxterm, "post-resume-drain", 10*time.Second)
 
 	serverOut := runNxtermctl(t, socketPath, "region", "scrollback", region.ID())
 	serverCount := 0
@@ -161,13 +201,20 @@ func TestSlowClientScrollbackCountDiverges(t *testing.T) {
 	}
 
 	// Enter scrollback so the status bar exposes the client-side total.
+	// Wait for the server's scrollback sync response to land — the
+	// status-bar total grows as chunks arrive, and reading it before
+	// the response would just report the local hscreen's stale count.
 	nxterm.Write([]byte{0x02, '['}).Sync("enter scrollback")
 	nxterm.RequireTabBarContains("scrollback")
-	screen := nxterm.ScreenLines()
-	_, clientTotal, ok := parseScrollbackStatus(screen[0])
-	if !ok {
-		t.Fatalf("could not parse scrollback status from %q", screen[0])
-	}
+	var clientTotal int
+	nxterm.WaitForScreen(func(lines []string) bool {
+		_, total, ok := parseScrollbackStatus(lines[0])
+		if !ok {
+			return false
+		}
+		clientTotal = total
+		return total >= serverCount
+	}, "scrollback sync reached server total", 5*time.Second)
 	t.Logf("server=%d client=%d", serverCount, clientTotal)
 
 	if clientTotal != serverCount {
@@ -247,6 +294,83 @@ func TestSlowClientTreeStateRecovers(t *testing.T) {
 	if !strings.Contains(screen[0], "ghost-after") {
 		t.Errorf("ghost-after-pause tab missing from tab bar: %q", screen[0])
 	}
+}
+
+// TestSlowClientCircuitBreakerDisconnects — T5.
+//
+// When a subscriber stays marked "behind" longer than behindTimeout,
+// the broadcast loop disconnects it so one stuck client can't drag
+// the rest of the system down. The TUI reconnects on its own with a
+// fresh client ID, so the test asserts the original ID is gone from
+// the server's client list — that's unambiguous proof the server
+// closed the connection (a clean shutdown would have removed it too,
+// but we're holding the TUI paused).
+//
+// NXTERMD_BEHIND_TIMEOUT_MS shortens the breaker's 5s default so the
+// test doesn't idle that long. The flood has to keep running past
+// the timeout: drops only retrigger behind state while broadcasts
+// are still being attempted, so stopping the flood early would let
+// the client settle and the breaker would never fire.
+func TestSlowClientCircuitBreakerDisconnects(t *testing.T) {
+	t.Parallel()
+	const behindTimeoutMs = 500
+	socketPath, cleanup := startServerTinyWriteChWithBehindTimeout(t, 2, behindTimeoutMs)
+	defer cleanup()
+
+	driver := nxtest.DialDriver(t, socketPath)
+	region := driver.SpawnNativeRegion("nxtest-slow5", "r1", 80, 22)
+
+	nxterm := startFrontendForSession(t, socketPath, "nxtest-slow5")
+	defer nxterm.Kill()
+	region.Sync(nxterm, "TUI boot + subscribe")
+
+	// Record the TUI's client ID so we can detect disconnection —
+	// the TUI's auto-reconnect will produce a fresh ID, leaving the
+	// original absent from the server's client list.
+	clients := nxtest.ListClients(t, socketPath, testEnv(t))
+	nxtermClient, ok := nxtest.FindClient(clients, func(cl nxtest.ClientInfo) bool {
+		return cl.Process == "nxterm"
+	})
+	if !ok {
+		t.Fatalf("could not find nxterm client in initial list: %v", clients)
+	}
+	originalID := nxtermClient.ID
+
+	pauseTUIViaPalette(t, nxterm)
+
+	// Keep flooding until we see the disconnect, with enough runway
+	// past behindTimeout to give the breaker a chance to fire on a
+	// subsequent broadcast. The breaker calls c.Close(), but the
+	// server's writeLoop may still be blocked on a TCP Write for up
+	// to its 5s write deadline before it can pick up closeCh and run
+	// conn.Close(); only then does the readLoop's scanner exit and
+	// removeClient run. So the total wall-clock to "gone from the
+	// client list" is behindTimeout + ~5s in the worst case.
+	floodUntil := time.Now().Add(4 * time.Second)
+	disconnectDeadline := time.Now().Add(12 * time.Second)
+	for i := 1; time.Now().Before(floodUntil); i++ {
+		region.Output([]byte(fmt.Sprintf("SEQ%05d\r\n", i)))
+		region.WriteSync(fmt.Sprintf("flood-%d", i))
+		if i%20 == 0 && !clientStillListed(t, socketPath, originalID) {
+			return
+		}
+	}
+	for time.Now().Before(disconnectDeadline) {
+		if !clientStillListed(t, socketPath, originalID) {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("circuit breaker did not disconnect client %d within 12s", originalID)
+}
+
+func clientStillListed(t *testing.T, socketPath string, id uint32) bool {
+	t.Helper()
+	clients := nxtest.ListClients(t, socketPath, testEnv(t))
+	_, ok := nxtest.FindClient(clients, func(cl nxtest.ClientInfo) bool {
+		return cl.ID == id
+	})
+	return ok
 }
 
 // TestSlowClientSyncMarkerLost — T6.

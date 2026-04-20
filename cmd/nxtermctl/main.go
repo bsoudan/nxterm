@@ -499,6 +499,7 @@ func cmdRegionStats(_ context.Context, cmd *cli.Command) error {
 	}
 
 	fmt.Printf("scrollback_queries  %d\n", resp.Stats.ScrollbackQueries)
+	fmt.Printf("dropped_broadcasts  %d\n", resp.Stats.DroppedBroadcasts)
 	return nil
 }
 

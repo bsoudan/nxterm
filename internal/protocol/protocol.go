@@ -202,6 +202,15 @@ type ScreenUpdate struct {
 	// [ScrollbackTotal - ScrollbackLen, ScrollbackTotal). Clients use
 	// this to reconcile their local scrollback by seq rather than count.
 	ScrollbackTotal uint64 `json:"scrollback_total,omitempty"`
+	// ScrollbackDesync signals that the server detected one or more
+	// dropped broadcasts to this subscriber since the last successful
+	// send — the client's local scrollback has fallen behind and
+	// cannot be trusted until it re-fetches GetScrollbackResponse.
+	// The ScreenUpdate itself carries the current visible screen (so
+	// that part heals immediately); the client clears its
+	// "scrollback already queried" flag so the next scrollback entry
+	// triggers a fresh GetScrollbackRequest.
+	ScrollbackDesync bool `json:"scrollback_desync,omitempty"`
 }
 
 type RegionDestroyed struct {
@@ -282,6 +291,12 @@ type RegionStats struct {
 	// ScrollbackQueries is the number of GetScrollbackRequest messages
 	// this region has served.
 	ScrollbackQueries uint64 `json:"scrollback_queries"`
+	// DroppedBroadcasts is the number of terminal_events / ScreenUpdate
+	// messages the actor attempted to deliver to a subscriber whose
+	// writeCh was full. Each drop marks the subscriber as "behind" and
+	// triggers a ScrollbackDesync snapshot on the next broadcast with
+	// room; this counter records how often that mechanism fired.
+	DroppedBroadcasts uint64 `json:"dropped_broadcasts"`
 }
 
 type RegionStatsResponse struct {
@@ -592,6 +607,7 @@ var payloadParsers = map[string]func([]byte) (any, error){
 	"tree_snapshot":             parseAs[TreeSnapshot],
 	"tree_events":               parseAs[TreeEvents],
 	"tree_resync_request":       parseAs[TreeResyncRequest],
+	"warning":                   parseAs[Warning],
 }
 
 func parsePayload(typ string, line []byte) (any, error) {

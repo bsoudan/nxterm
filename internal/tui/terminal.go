@@ -100,9 +100,9 @@ func (t *TerminalLayer) contentHeight() int {
 func (t *TerminalLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 	switch msg := msg.(type) {
 	case protocol.ScreenUpdate:
-		return nil, t.handleScreenUpdate(msg.Lines, msg.Cells, msg.CursorRow, msg.CursorCol, msg.Modes, msg.Title, msg.IconName, msg.ScrollbackLen, msg.ScrollbackTotal), true
+		return nil, t.handleScreenUpdate(msg.Lines, msg.Cells, msg.CursorRow, msg.CursorCol, msg.Modes, msg.Title, msg.IconName, msg.ScrollbackLen, msg.ScrollbackTotal, msg.ScrollbackDesync), true
 	case protocol.GetScreenResponse:
-		return nil, t.handleScreenUpdate(msg.Lines, msg.Cells, msg.CursorRow, msg.CursorCol, msg.Modes, msg.Title, msg.IconName, msg.ScrollbackLen, msg.ScrollbackTotal), true
+		return nil, t.handleScreenUpdate(msg.Lines, msg.Cells, msg.CursorRow, msg.CursorCol, msg.Modes, msg.Title, msg.IconName, msg.ScrollbackLen, msg.ScrollbackTotal, false), true
 	case protocol.TerminalEvents:
 		return nil, t.handleTerminalEvents(msg.Events), true
 	case protocol.ResizeResponse:
@@ -153,7 +153,15 @@ func (t *TerminalLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 	}
 }
 
-func (t *TerminalLayer) handleScreenUpdate(lines []string, cells [][]protocol.ScreenCell, cursorRow, cursorCol uint16, modes map[int]bool, title, iconName string, serverScrollback int, serverTotal uint64) tea.Cmd {
+func (t *TerminalLayer) handleScreenUpdate(lines []string, cells [][]protocol.ScreenCell, cursorRow, cursorCol uint16, modes map[int]bool, title, iconName string, serverScrollback int, serverTotal uint64, scrollbackDesync bool) tea.Cmd {
+	if scrollbackDesync {
+		// Server signalled that at least one broadcast to us was
+		// dropped since our last successful receive. The visible
+		// screen we're about to apply heals that part immediately;
+		// for scrollback we can't reconstruct the lost rows locally,
+		// so flag a re-query on the next scrollback-layer entry.
+		t.scrollbackRequested = false
+	}
 	height := t.contentHeight()
 	if t.termHeight <= 0 {
 		height = 23

@@ -131,9 +131,21 @@ func startServerCustom(t *testing.T, configContent string) (string, func()) {
 // force the third to fall off the non-blocking SendMessage path.
 // Intended for slow-client tests.
 func startServerTinyWriteCh(t *testing.T, cap int) (string, func()) {
+	return startServerTinyWriteChWithBehindTimeout(t, cap, 0)
+}
+
+// startServerTinyWriteChWithBehindTimeout extends startServerTinyWriteCh
+// with an NXTERMD_BEHIND_TIMEOUT_MS override so tests can exercise the
+// circuit-breaker disconnect without idling for the production default
+// (5s). A non-positive behindTimeoutMs leaves the production default
+// in place.
+func startServerTinyWriteChWithBehindTimeout(t *testing.T, cap, behindTimeoutMs int) (string, func()) {
 	t.Helper()
 	env := testEnv(t)
 	env = append(env, fmt.Sprintf("NXTERMD_WRITE_CH_CAP=%d", cap))
+	if behindTimeoutMs > 0 {
+		env = append(env, fmt.Sprintf("NXTERMD_BEHIND_TIMEOUT_MS=%d", behindTimeoutMs))
+	}
 	if err := nxtest.WriteServerConfig(env); err != nil {
 		t.Fatal(err)
 	}

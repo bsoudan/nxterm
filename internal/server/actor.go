@@ -10,6 +10,8 @@ package server
 import (
 	"log/slog"
 	"os"
+	"strconv"
+	"time"
 
 	te "nxtermd/pkg/te"
 	"nxtermd/internal/protocol"
@@ -98,6 +100,7 @@ type regionActor struct {
 // struct definition.
 type regionStats struct {
 	scrollbackQueries uint64
+	droppedBroadcasts uint64
 }
 
 func newRegionActor(
@@ -224,7 +227,45 @@ func (a *regionActor) getScrollback() [][]protocol.ScreenCell {
 	return cells
 }
 
+// behindTimeout is how long a subscriber can stay marked "behind"
+// before the broadcast loop disconnects it. Drops recover on the
+// next broadcast after writeCh drains; a client stuck for this long
+// is assumed to be dead or dangerously slow and is shed so the rest
+// of the system isn't dragged down. Tests that need to exercise the
+// circuit breaker can shorten it via NXTERMD_BEHIND_TIMEOUT_MS so they
+// don't have to idle for a multi-second wall clock window.
+var behindTimeout = resolveBehindTimeout()
+
+func resolveBehindTimeout() time.Duration {
+	if s := os.Getenv("NXTERMD_BEHIND_TIMEOUT_MS"); s != "" {
+		if ms, err := strconv.Atoi(s); err == nil && ms > 0 {
+			return time.Duration(ms) * time.Millisecond
+		}
+	}
+	return 5 * time.Second
+}
+
 // broadcastToSubscribers sends terminal updates to all subscribers.
+// Implements the slow-client recovery dance (A+B+C):
+//
+//   A. After any drop on a subscriber, send a ScrollbackDesync-flagged
+//      ScreenUpdate on every subsequent broadcast until it lands. The
+//      snapshot carries the current state, so once delivered the
+//      client is immediately back in sync; drops in-between are
+//      therefore self-healing without per-event replay.
+//   B. The snapshot is only serialized lazily — if the subscriber's
+//      writeCh is still full, skip the work and try again next round.
+//   C. If the subscriber stays behind past behindTimeout, disconnect;
+//      the client will reconnect and resync via the normal subscribe
+//      path.
+//
+// The regular message (events, snapshot, or sync-only) is attempted
+// on every subscriber regardless of behind state. Events applied to a
+// stale hscreen are harmless because the catchup ScreenUpdate that
+// follows rebuilds from cells, overwriting whatever the events did.
+// Sync markers ride the regular broadcast path and therefore also
+// drop when writeCh is full — tests that need sync delivery across a
+// sustained backpressure window must retry.
 func (a *regionActor) broadcastToSubscribers() {
 	events, needsSnapshot, syncs := a.proxy.Flush()
 	if !needsSnapshot && len(events) == 0 && len(syncs) == 0 {
@@ -238,18 +279,22 @@ func (a *regionActor) broadcastToSubscribers() {
 	// instead of raw events.
 	if a.overlay != nil {
 		snapMsg := newScreenUpdate(a.id, a.compositedSnapshot())
-		for _, c := range a.subscribers {
-			c.SendMessage(snapMsg)
-		}
+		a.deliverBroadcast(snapMsg, func() any {
+			s := newScreenUpdate(a.id, a.compositedSnapshot())
+			s.ScrollbackDesync = true
+			return s
+		})
 		a.broadcastSyncs(syncs)
 		return
 	}
 
 	if needsSnapshot {
 		snapMsg := newScreenUpdate(a.id, a.snapshot())
-		for _, c := range a.subscribers {
-			c.SendMessage(snapMsg)
-		}
+		a.deliverBroadcast(snapMsg, func() any {
+			s := newScreenUpdate(a.id, a.snapshot())
+			s.ScrollbackDesync = true
+			return s
+		})
 		a.broadcastSyncs(syncs)
 		return
 	}
@@ -265,8 +310,67 @@ func (a *regionActor) broadcastToSubscribers() {
 		RegionID: a.id,
 		Events:   combined,
 	}
+	a.deliverBroadcast(msg, func() any {
+		s := newScreenUpdate(a.id, a.snapshot())
+		s.ScrollbackDesync = true
+		return s
+	})
+}
+
+// deliverBroadcast sends msg to each subscriber and, when the regular
+// send succeeds against a subscriber that is currently behind,
+// additionally sends a catchup ScreenUpdate (lazily built via
+// catchupBuilder) to clear the behind state. Maintains the per-client
+// behind flag and the circuit breaker. Increments droppedBroadcasts
+// on drops.
+//
+// We intentionally never send the catchup ahead of the regular msg, nor
+// in the same broadcast that just dropped a regular msg: the catchup
+// would steal writeCh slots from subsequent regular msgs (sync markers,
+// event batches), deadlocking the test harness on sync-ack timeouts.
+// Instead, we wait for the regular msg to land — which implies writeCh
+// has drained enough for the catchup to fit too — then piggyback the
+// catchup. If the regular msg drops, behind stays set; the next broadcast
+// retries naturally.
+func (a *regionActor) deliverBroadcast(msg any, catchupBuilder func() any) {
+	var catchup any
 	for _, c := range a.subscribers {
-		c.SendMessage(msg)
+		if !c.SendMessage(msg) {
+			a.stats.droppedBroadcasts++
+			if c.behind.CompareAndSwap(false, true) {
+				c.behindSinceNanos.Store(time.Now().UnixNano())
+			}
+			// Circuit breaker (C). Use behindSinceNanos as the one-shot
+			// latch too: CAS it to 0 so follow-up broadcasts during the
+			// async close → removeSubscriber window don't re-log.
+			since := c.behindSinceNanos.Load()
+			if since > 0 && time.Since(time.Unix(0, since)) > behindTimeout {
+				if c.behindSinceNanos.CompareAndSwap(since, 0) {
+					slog.Warn("client stuck behind — disconnecting",
+						"region_id", a.id, "client_id", c.id)
+					c.Close()
+				}
+			}
+			continue
+		}
+
+		if !c.behind.Load() {
+			continue
+		}
+
+		// Regular send succeeded on a behind client — writeCh has some
+		// room, so try to land the catchup too. Lazy (B): skip if
+		// writeCh is now full from this send.
+		if !c.WriteChHasRoom() {
+			continue
+		}
+		if catchup == nil {
+			catchup = catchupBuilder()
+		}
+		if c.SendMessage(catchup) {
+			c.behind.Store(false)
+			c.behindSinceNanos.Store(0)
+		}
 	}
 }
 
@@ -283,9 +387,11 @@ func (a *regionActor) broadcastSyncs(syncs []string) {
 		RegionID: a.id,
 		Events:   syncEvents,
 	}
-	for _, c := range a.subscribers {
-		c.SendMessage(msg)
-	}
+	a.deliverBroadcast(msg, func() any {
+		s := newScreenUpdate(a.id, a.snapshot())
+		s.ScrollbackDesync = true
+		return s
+	})
 }
 
 // clearOverlayInternal clears the overlay and sends a plain snapshot to subscribers.
@@ -413,7 +519,10 @@ func readRegionStats(a *regionActor) protocol.RegionStats {
 	}
 	select {
 	case s := <-resp:
-		return protocol.RegionStats{ScrollbackQueries: s.scrollbackQueries}
+		return protocol.RegionStats{
+			ScrollbackQueries: s.scrollbackQueries,
+			DroppedBroadcasts: s.droppedBroadcasts,
+		}
 	case <-a.actorDone:
 		return protocol.RegionStats{}
 	}

@@ -45,6 +45,15 @@ type Client struct {
 	// but multiple goroutines can call SendMessage concurrently
 	// (region actor goroutines, broadcast), so we use atomic.
 	nextByteIndex atomic.Uint64
+
+	// behind signals that at least one SendMessage attempt since the
+	// last successful send hit the non-blocking default: branch and
+	// dropped. Set by broadcasters on drop, cleared after a catch-up
+	// snapshot lands. behindSinceNanos records when behind first went
+	// hot, so broadcasters can disconnect clients stuck behind for
+	// too long (circuit breaker).
+	behind            atomic.Bool
+	behindSinceNanos  atomic.Int64
 }
 
 func NewClient(conn net.Conn, server *Server, id uint32) *Client {
@@ -156,22 +165,34 @@ func (c *Client) sendReply(msg any, reqID uint64) {
 	}
 }
 
-// SendMessage sends a message to the client (no req_id).
-// Non-blocking: drops the message if the write channel is full.
-func (c *Client) SendMessage(msg any) {
+// SendMessage sends a message to the client (no req_id). Non-blocking:
+// returns false if the write channel was full and the message was
+// dropped. Callers that care about drops (e.g., the region actor's
+// broadcast loop) use the return value to mark the client as behind.
+func (c *Client) SendMessage(msg any) bool {
 	data, err := json.Marshal(msg)
 	if err != nil {
 		slog.Debug("marshal error", "client_id", c.id, "err", err)
-		return
+		return false
 	}
 	data = append(data, '\n')
 
 	idx := c.nextByteIndex.Add(uint64(len(data))) - uint64(len(data))
 	select {
 	case c.writeCh <- writeMsg{data: data, byteIndex: idx}:
+		return true
 	default:
 		slog.Debug("client write channel full, dropping", "client_id", c.id, "bytes", len(data))
+		return false
 	}
+}
+
+// WriteChHasRoom reports whether the client's outbound channel has
+// free capacity. Broadcasters that need to build an expensive message
+// (like a full ScreenUpdate snapshot) can peek first and skip the
+// serialization when a drop is inevitable anyway.
+func (c *Client) WriteChHasRoom() bool {
+	return len(c.writeCh) < cap(c.writeCh)
 }
 
 func (c *Client) Close() {
