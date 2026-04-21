@@ -61,8 +61,12 @@ func main() {
 			if err != nil {
 				return ctx, fmt.Errorf("config: %w", err)
 			}
-			if !cmd.IsSet("socket") && cfg.Termctl.Connect != "" {
-				cmd.Set("socket", cfg.Termctl.Connect)
+			if !cmd.IsSet("socket") {
+				if cfg.Termctl.Connect != "" {
+					cmd.Set("socket", cfg.Termctl.Connect)
+				} else if len(cfg.Listen) > 0 {
+					cmd.Set("socket", cfg.Listen[0])
+				}
 			}
 
 			debug := cmd.Bool("debug") || cfg.Termctl.Debug

@@ -33,13 +33,17 @@ func showTermctlConfig(cmd *cli.Command) error {
 		}
 	}
 
-	// Effective socket: --socket > [termctl] connect > built-in default.
+	// Effective socket: --socket > [termctl] connect > listen[0] > built-in default.
 	// We can't read the merged value from cmd.String("socket") because
 	// nxtermctl's Before hook performs the merge after our --show-config
 	// check; recompute it here to match.
 	socketVal := cmd.String("socket")
-	if !cmd.IsSet("socket") && cfg.Termctl.Connect != "" {
-		socketVal = cfg.Termctl.Connect
+	if !cmd.IsSet("socket") {
+		if cfg.Termctl.Connect != "" {
+			socketVal = cfg.Termctl.Connect
+		} else if len(cfg.Listen) > 0 {
+			socketVal = cfg.Listen[0]
+		}
 	}
 	socketSource := func() config.Source {
 		if config.ArgvHasFlag("socket", []string{"s"}) {
@@ -53,6 +57,13 @@ func showTermctlConfig(cmd *cli.Command) error {
 				return loc
 			}
 			return config.Source{Kind: config.SourceFile, File: resolvedPath}
+		}
+		if len(cfg.Listen) > 0 {
+			src := config.Source{Kind: config.SourceInferred, File: resolvedPath, Origin: "listen[0]"}
+			if loc, ok := keyLocs["listen"]; ok {
+				src.Line = loc.Line
+			}
+			return src
 		}
 		return config.Source{Kind: config.SourceDefault}
 	}()

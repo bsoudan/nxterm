@@ -1,7 +1,12 @@
 package e2e
 
 import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -23,6 +28,87 @@ func TestTermctlStatus(t *testing.T) {
 	if !strings.Contains(out, socketPath) {
 		t.Errorf("status output missing socket path %q:\n%s", socketPath, out)
 	}
+}
+
+// TestTermctlFallsBackToListen verifies that `nxtermctl` infers its
+// connect address from server.toml's `listen[0]` when neither
+// `--socket`/`NXTERMD_SOCKET` nor `[termctl] connect` is set. This is
+// the path home-manager takes when `services.nxtermd.listen` points at
+// a non-default socket — without the fallback the systemd reload
+// (`nxtermctl upgrade-to`) fails because it guesses the built-in
+// default.
+func TestTermctlFallsBackToListen(t *testing.T) {
+	t.Parallel()
+
+	env := testEnv(t)
+	// Defensive: the server exports NXTERMD_SOCKET into child envs,
+	// and if the test runner inherited one it would short-circuit the
+	// fallback we're testing. Strip it.
+	env = stripEnvVar(env, "NXTERMD_SOCKET")
+
+	tmpDir := t.TempDir()
+	socketPath := filepath.Join(tmpDir, "custom.sock")
+
+	shell, err := exec.LookPath("bash")
+	if err != nil {
+		t.Fatalf("bash not in PATH: %v", err)
+	}
+	cfg := fmt.Sprintf(`listen = ["unix:%s"]
+
+[[programs]]
+name = "shell"
+cmd = %q
+args = ["--norc"]
+
+[sessions]
+default-programs = ["shell"]
+`, socketPath, shell)
+	if err := nxtest.WriteServerConfigCustom(env, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	// Start nxtermd with no CLI listen args so it picks up cfg.Listen.
+	cmd := exec.Command("nxtermd")
+	cmd.Env = env
+	cmd.Stderr = os.Stderr
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	defer func() { syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); cmd.Wait() }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(socketPath); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := os.Stat(socketPath); err != nil {
+		t.Fatalf("server socket never appeared at %s: %v", socketPath, err)
+	}
+
+	// Run nxtermctl WITHOUT --socket. Success proves the fallback fired.
+	ctl := exec.Command("nxtermctl", "status")
+	ctl.Env = env
+	out, err := ctl.CombinedOutput()
+	if err != nil {
+		t.Fatalf("nxtermctl status (expected listen[0] fallback): %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), socketPath) {
+		t.Fatalf("status output should mention socket %s:\n%s", socketPath, out)
+	}
+}
+
+func stripEnvVar(env []string, name string) []string {
+	prefix := name + "="
+	out := make([]string, 0, len(env))
+	for _, e := range env {
+		if !strings.HasPrefix(e, prefix) {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 func TestTermctlRegionSpawnAndList(t *testing.T) {

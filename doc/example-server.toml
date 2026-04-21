@@ -55,7 +55,9 @@
 # no-auth = false
 
 [termctl]
-# Default server address for nxtermctl commands
+# Default server address for nxtermctl commands.
+# If unset, falls back to the first entry in `listen` above; if neither
+# is set, uses the built-in default (unix:$XDG_RUNTIME_DIR/nxtermd.sock).
 # connect = "unix:/run/user/1000/nxtermd.sock"
 
 # Enable debug logging for nxtermctl
