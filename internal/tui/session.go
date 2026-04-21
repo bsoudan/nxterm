@@ -517,11 +517,11 @@ func (s *SessionLayer) renderTabBar(width int, rs *RenderState) string {
 	for i, t := range s.tabs {
 		var label string
 		if i == s.activeTab {
-			label = fmt.Sprintf(" %s<%d> ", pausePrefix, i+1)
+			label = fmt.Sprintf(" %s[%d] ", pausePrefix, i+1)
 			sb.WriteString(statusActiveTab.Render(label))
 		} else {
 			name := t.term.Title()
-			label = fmt.Sprintf(" %s%d:%s ", pausePrefix, i+1, truncateTitle(stripEmoji(name), 30))
+			label = fmt.Sprintf(" %s<%d>%s ", pausePrefix, i+1, truncateTitle(stripEmoji(name), 30))
 			sb.WriteString(statusFaint.Render(label))
 		}
 		dot(i == s.activeTab || i+1 == s.activeTab)
