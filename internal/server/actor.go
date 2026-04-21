@@ -488,14 +488,24 @@ func (a *regionActor) clearOverlayInternal() {
 
 type ptyDataMsg struct{ data []byte }
 
+// coalesceMaxBytes caps how many bytes of PTY data a single ptyDataMsg
+// handler will feed into the stream before forcing a broadcast. Under
+// sustained output (e.g., `yes`), the PTY reader produces ptyDataMsg at
+// or above the actor's drain rate — a.msgs is never empty, so the
+// select's default branch (which broadcasts) never fires and the client
+// sees nothing until the flood stops. Bounding the coalesce window
+// guarantees forward progress to subscribers.
+const coalesceMaxBytes = 64 * 1024
+
 func (m ptyDataMsg) handleRegion(a *regionActor) {
 	a.stream.FeedBytes(m.data)
-	// Coalesce: drain pending ptyDataMsg entries before broadcasting.
-	for {
+	fed := len(m.data)
+	for fed < coalesceMaxBytes {
 		select {
 		case next := <-a.msgs:
 			if pd, ok := next.(ptyDataMsg); ok {
 				a.stream.FeedBytes(pd.data)
+				fed += len(pd.data)
 				continue
 			}
 			a.broadcastToSubscribers()
@@ -506,6 +516,7 @@ func (m ptyDataMsg) handleRegion(a *regionActor) {
 			return
 		}
 	}
+	a.broadcastToSubscribers()
 }
 
 type childExitedMsg struct{}
