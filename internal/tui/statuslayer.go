@@ -267,4 +267,12 @@ func (s *StatusLayer) renderServerTree() []string {
 }
 
 func (s *StatusLayer) WantsKeyboardInput() bool { return true }
-func (s *StatusLayer) Status(rs *RenderState) (string, lipgloss.Style) { return "status", lipgloss.Style{} }
+
+// Status returns the tab-bar status text shown while this dialog is
+// open. Also sets HasHint so renderStatusBar appends the nxterm
+// version to the right-side badge — users checking status want the
+// version visible in the same pass without opening the dialog twice.
+func (s *StatusLayer) Status(rs *RenderState) (string, lipgloss.Style) {
+	rs.HasHint = true
+	return "status", lipgloss.Style{}
+}

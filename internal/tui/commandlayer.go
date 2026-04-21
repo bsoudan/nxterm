@@ -59,10 +59,15 @@ var logoBorder = lipgloss.NewStyle().
 func (h *HintLayer) WantsKeyboardInput() bool { return false }
 
 func (h *HintLayer) Status(rs *RenderState) (string, lipgloss.Style) {
+	// HasHint is set regardless of whether an overlay is displacing the
+	// hint text in the status bar: renderStatusBar uses it to decide
+	// whether to append the nxterm version after the badge, and that
+	// cue is still wanted while an overlay (e.g. the status dialog) is
+	// open.
+	rs.HasHint = true
 	if rs.HasOverlay {
 		return "", lipgloss.Style{}
 	}
-	rs.HasHint = true
 	prefix := "ctrl+b"
 	if h.registry != nil {
 		prefix = h.registry.PrefixStr
