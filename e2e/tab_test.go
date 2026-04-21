@@ -13,17 +13,17 @@ func TestSpawnSecondRegion(t *testing.T) {
 
 	// Wait for initial tab and prompt. The active tab renders as
 	// just " 1 " (commit 98da964 dropped the program name from the
-	// active tab) so we wait for the bash prompt instead of "1:bash".
+	// active tab) so we wait for the bash prompt instead of "<1>bash".
 	nxt.WaitFor("nxterm$", 10*time.Second)
 
 	// ctrl+b c to spawn a second region
 	nxt.Write([]byte("\x02c"))
 
 	// After spawn, tab 2 becomes active and tab 1 becomes inactive.
-	// The inactive tab DOES render its program name, so "1:bash"
+	// The inactive tab DOES render its program name, so "<1>bash"
 	// appearing in the tab bar is the cleanest signal that the
 	// spawn took effect.
-	nxt.WaitFor("1:bash", 10*time.Second)
+	nxt.WaitFor("<1>bash", 10*time.Second)
 
 	// New tab should have a prompt
 	nxt.WaitFor("nxterm$", 10*time.Second)
@@ -42,9 +42,9 @@ func TestSwitchTabs(t *testing.T) {
 
 	// Spawn second region. Tab 2 becomes active, tab 1 becomes
 	// inactive — its label flips from " 1 " to " 1:bash ", so
-	// "1:bash" appearing tells us the spawn took effect.
+	// "<1>bash" appearing tells us the spawn took effect.
 	nxt.Write([]byte("\x02c"))
-	nxt.WaitFor("1:bash", 10*time.Second)
+	nxt.WaitFor("<1>bash", 10*time.Second)
 	nxt.WaitFor("nxterm$", 10*time.Second)
 
 	// Type a marker in tab 2
@@ -77,22 +77,22 @@ func TestRegionDestroyedRemovesTab(t *testing.T) {
 
 	nxt.WaitFor("nxterm$", 10*time.Second)
 
-	// Spawn second region (tab 1 becomes inactive → "1:bash" appears).
+	// Spawn second region (tab 1 becomes inactive → "<1>bash" appears).
 	nxt.Write([]byte("\x02c"))
-	nxt.WaitFor("1:bash", 10*time.Second)
+	nxt.WaitFor("<1>bash", 10*time.Second)
 	nxt.WaitFor("nxterm$", 10*time.Second)
 
 	// Exit the shell in tab 2
 	nxt.Write([]byte("exit\r"))
 
 	// Wait for tab bar to drop tab 2. Tab 1 becomes the sole active
-	// tab again (label " 1 " with no program name), so "1:bash"
+	// tab again (label " 1 " with no program name), so "<1>bash"
 	// disappears from the tab bar.
 	nxt.WaitForScreen(func(lines []string) bool {
 		if len(lines) == 0 {
 			return false
 		}
-		return !strings.Contains(lines[0], "1:bash") && !strings.Contains(lines[0], "2:bash")
+		return !strings.Contains(lines[0], "<1>bash") && !strings.Contains(lines[0], "<2>bash")
 	}, "tab bar with only the active tab 1", 10*time.Second)
 
 	// Verify terminal is still functional
@@ -108,21 +108,21 @@ func TestCloseTab(t *testing.T) {
 
 	nxt.WaitFor("nxterm$", 10*time.Second)
 
-	// Spawn second region (tab 1 becomes inactive → "1:bash" appears).
+	// Spawn second region (tab 1 becomes inactive → "<1>bash" appears).
 	nxt.Write([]byte("\x02c"))
-	nxt.WaitFor("1:bash", 10*time.Second)
+	nxt.WaitFor("<1>bash", 10*time.Second)
 	nxt.WaitFor("nxterm$", 10*time.Second)
 
 	// Close tab 2 with ctrl+b x
 	nxt.Write([]byte("\x02x"))
 
-	// Tab 2 closed → tab 1 alone, active, so neither "1:bash" nor
-	// "2:bash" remains in the tab bar.
+	// Tab 2 closed → tab 1 alone, active, so neither "<1>bash" nor
+	// "<2>bash" remains in the tab bar.
 	nxt.WaitForScreen(func(lines []string) bool {
 		if len(lines) == 0 {
 			return false
 		}
-		return !strings.Contains(lines[0], "1:bash") && !strings.Contains(lines[0], "2:bash")
+		return !strings.Contains(lines[0], "<1>bash") && !strings.Contains(lines[0], "<2>bash")
 	}, "tab bar with only the active tab 1", 10*time.Second)
 
 	// Verify terminal is still functional
@@ -143,24 +143,24 @@ func TestSpawnNoGhostTab(t *testing.T) {
 
 	// Spawn a second region.
 	nxt.Write([]byte("\x02c"))
-	nxt.WaitFor("1:bash", 10*time.Second)
+	nxt.WaitFor("<1>bash", 10*time.Second)
 	nxt.WaitFor("nxterm$", 10*time.Second)
 
 	// Drain any delayed tree events by issuing a sync barrier on stdin.
 	nxt.Sync("drain post-spawn tree events")
 
-	// The tab bar should show exactly 2 tabs: "1:bash" (inactive) and
+	// The tab bar should show exactly 2 tabs: "<1>bash" (inactive) and
 	// " 2 " (active). A ghost tab would show "3:bash" or "3:" as a
 	// third tab label.
 	screen := nxt.ScreenLines()
 	tabBar := screen[0]
-	if strings.Contains(tabBar, "3:") {
+	if strings.Contains(tabBar, "<3>") {
 		t.Errorf("ghost tab detected: tab bar shows a third tab: %q", tabBar)
 	}
 	// Tab 2 is active, so it renders as " 2 " (no program name).
-	// If it shows "2:bash" that means tab 2 is inactive and something
+	// If it shows "<2>bash" that means tab 2 is inactive and something
 	// else (a ghost tab) is active.
-	if strings.Contains(tabBar, "2:bash") {
+	if strings.Contains(tabBar, "<2>bash") {
 		t.Errorf("tab 2 appears inactive (ghost tab is active): %q", tabBar)
 	}
 }

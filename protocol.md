@@ -520,6 +520,7 @@ their attributes.
 | cells            | [][]ScreenCell   | Optional. Per-cell color/attribute data, same dimensions as lines        |
 | scrollback_len   | int              | Optional. Number of rows currently retained in the server's scrollback   |
 | scrollback_total | uint64           | Optional. Server's monotonic "rows ever added" counter (see below)       |
+| scrollback_delta | [][]ScreenCell   | Optional. Rows scrolled into history since this subscriber's last broadcast, oldest-first |
 
 `lines` is always present for backward compatibility with plain-text consumers. `cells` is present
 when the server supports color and provides the full rendering state needed to reconstruct a
@@ -530,6 +531,14 @@ server is currently retaining: `[scrollback_total - scrollback_len, scrollback_t
 that mirror scrollback locally use these fields to reconcile their state by seq range rather than
 by buffer length. See the **Seq-reconciliation contract** under `get_scrollback_response` for the
 full semantics — the contract on `screen_update` is identical.
+
+`scrollback_delta` carries rows that scrolled off the server's screen between this subscriber's
+previous broadcast and this one. When a mode-2026 synchronized-output batch completes, the server
+discards the per-event batch and flushes a `screen_update` snapshot instead; rows that were
+pushed to history during the batch are not visible to the client via events. The delta replays
+those rows so the client can grow its local scrollback without a round-trip. The absolute-seq
+range of the delta is `[scrollback_total - len(scrollback_delta), scrollback_total)`; the client
+appends these rows to its local history before installing the snapshot's new screen cells.
 
 #### ScreenCell
 

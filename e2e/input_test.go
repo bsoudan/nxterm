@@ -144,9 +144,9 @@ func TestMouseAfterTabSwitch(t *testing.T) {
 	nxt.WaitFor("MOUSE press 0 5 2", 5*time.Second)
 
 	// Spawn tab 2 (switches to it automatically). Tab 1 becomes
-	// inactive so "1:bash" now appears in the tab bar.
+	// inactive so "<1>bash" now appears in the tab bar.
 	nxt.Write([]byte("\x02c"))
-	nxt.WaitFor("1:bash", 10*time.Second)
+	nxt.WaitFor("<1>bash", 10*time.Second)
 	nxt.WaitFor("nxterm$", 10*time.Second)
 	nxt.Sync("render settle")
 
@@ -174,9 +174,9 @@ func TestInputIsolation(t *testing.T) {
 	nxt.Write([]byte("echo TAB1_HERE\r"))
 	nxt.WaitFor("TAB1_HERE", 10*time.Second)
 
-	// Spawn second region. Tab 1 becomes inactive → "1:bash" appears.
+	// Spawn second region. Tab 1 becomes inactive → "<1>bash" appears.
 	nxt.Write([]byte("\x02c"))
-	nxt.WaitFor("1:bash", 10*time.Second)
+	nxt.WaitFor("<1>bash", 10*time.Second)
 	nxt.WaitFor("nxterm$", 10*time.Second)
 
 	// Type in tab 2

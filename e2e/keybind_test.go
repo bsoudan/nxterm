@@ -93,10 +93,10 @@ func TestKeybindNativeNextPrevTab(t *testing.T) {
 	nxt.Write([]byte("echo TAB1_NATIVE\r"))
 	nxt.WaitFor("TAB1_NATIVE", 10*time.Second)
 
-	// Spawn second tab (ctrl+b c). Tab 1 becomes inactive → "1:bash"
+	// Spawn second tab (ctrl+b c). Tab 1 becomes inactive → "<1>bash"
 	// appears in the tab bar; that's our signal the spawn took effect.
 	nxt.Write([]byte("\x02c"))
-	nxt.WaitFor("1:bash", 10*time.Second)
+	nxt.WaitFor("<1>bash", 10*time.Second)
 	nxt.WaitFor("nxterm$", 10*time.Second)
 
 	// Mark tab 2
@@ -129,9 +129,9 @@ func TestKeybindTmuxStyle(t *testing.T) {
 	nxt.WaitFor("TAB1_TMUX", 10*time.Second)
 
 	// Spawn second tab (ctrl+b c — same as tmux). Tab 1 becomes
-	// inactive → "1:bash" appears in the tab bar.
+	// inactive → "<1>bash" appears in the tab bar.
 	nxt.Write([]byte("\x02c"))
-	nxt.WaitFor("1:bash", 10*time.Second)
+	nxt.WaitFor("<1>bash", 10*time.Second)
 	nxt.WaitFor("nxterm$", 10*time.Second)
 
 	// Mark tab 2

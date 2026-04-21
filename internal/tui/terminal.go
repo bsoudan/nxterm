@@ -100,9 +100,9 @@ func (t *TerminalLayer) contentHeight() int {
 func (t *TerminalLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 	switch msg := msg.(type) {
 	case protocol.ScreenUpdate:
-		return nil, t.handleScreenUpdate(msg.Lines, msg.Cells, msg.CursorRow, msg.CursorCol, msg.Modes, msg.Title, msg.IconName, msg.ScrollbackLen, msg.ScrollbackTotal, msg.ScrollbackDesync), true
+		return nil, t.handleScreenUpdate(msg.Lines, msg.Cells, msg.CursorRow, msg.CursorCol, msg.Modes, msg.Title, msg.IconName, msg.ScrollbackLen, msg.ScrollbackTotal, msg.ScrollbackDesync, msg.ScrollbackDelta), true
 	case protocol.GetScreenResponse:
-		return nil, t.handleScreenUpdate(msg.Lines, msg.Cells, msg.CursorRow, msg.CursorCol, msg.Modes, msg.Title, msg.IconName, msg.ScrollbackLen, msg.ScrollbackTotal, false), true
+		return nil, t.handleScreenUpdate(msg.Lines, msg.Cells, msg.CursorRow, msg.CursorCol, msg.Modes, msg.Title, msg.IconName, msg.ScrollbackLen, msg.ScrollbackTotal, false, nil), true
 	case protocol.TerminalEvents:
 		return nil, t.handleTerminalEvents(msg.Events), true
 	case protocol.ResizeResponse:
@@ -161,7 +161,7 @@ func (t *TerminalLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 	}
 }
 
-func (t *TerminalLayer) handleScreenUpdate(lines []string, cells [][]protocol.ScreenCell, cursorRow, cursorCol uint16, modes map[int]bool, title, iconName string, serverScrollback int, serverTotal uint64, scrollbackDesync bool) tea.Cmd {
+func (t *TerminalLayer) handleScreenUpdate(lines []string, cells [][]protocol.ScreenCell, cursorRow, cursorCol uint16, modes map[int]bool, title, iconName string, serverScrollback int, serverTotal uint64, scrollbackDesync bool, scrollbackDelta [][]protocol.ScreenCell) tea.Cmd {
 	if scrollbackDesync {
 		// Server signalled that at least one broadcast to us was
 		// dropped since our last successful receive. The visible
@@ -202,26 +202,38 @@ func (t *TerminalLayer) handleScreenUpdate(lines []string, cells [][]protocol.Sc
 			prevHistory = prevHistory[:serverScrollback]
 		}
 	}
-	t.hscreen = te.NewHistoryScreen(width, height, 10000)
-	// Preserve the client's seq space across the hscreen recreate so
-	// subsequent events continue advancing from the right base and the
-	// prepended rows keep their original seq labels. Don't adopt
-	// serverTotal blindly: the client's count reflects which rows events
-	// actually delivered, and adopting a newer counter would relabel the
-	// preserved rows (they're still at their original seqs).
-	t.hscreen.SetTotalAdded(prevTotalAdded)
-	if len(prevHistory) > 0 {
-		t.hscreen.PrependHistory(prevHistory)
-		// PrependHistory derives FirstSeq from TotalAdded minus the
-		// number of prepended rows. If the previous scrollback was
-		// larger than what we retained (trimmed to serverScrollback,
-		// or capacity-evicted before the reset), restore the prior
-		// FirstSeq so the retained rows stay labelled with their
-		// original seqs rather than shifted to look contiguous with
-		// TotalAdded.
-		t.hscreen.SetFirstSeq(prevFirstSeq)
+	// Decode any delta rows the server pushed to history between its
+	// last broadcast to us and this snapshot. These are rows that
+	// scrolled off during a mode-2026 sync batch (or other snapshot
+	// path); per-event replay was discarded, so the delta is the only
+	// channel that reaches the client.
+	deltaRows := make([][]te.Cell, len(scrollbackDelta))
+	for i, row := range scrollbackDelta {
+		deltaRows[i] = protocolCellsToTe(row)
 	}
-	_ = serverTotal
+	t.hscreen = te.NewHistoryScreen(width, height, 10000)
+	// When the server delivered a delta that bridges prevTotalAdded to
+	// serverTotal, adopt the server's counter — the combined
+	// prevHistory+delta covers the full retained range. Without a
+	// bridging delta (e.g., legacy server, ScrollbackDesync forcing a
+	// re-query), keep the client's own count so preserved rows retain
+	// their original seq labels.
+	baseTotal := prevTotalAdded
+	if !scrollbackDesync && serverTotal > prevTotalAdded && uint64(len(deltaRows)) == serverTotal-prevTotalAdded {
+		baseTotal = serverTotal
+	}
+	t.hscreen.SetTotalAdded(baseTotal)
+	combined := append(prevHistory, deltaRows...)
+	if len(combined) > 0 {
+		t.hscreen.PrependHistory(combined)
+		// PrependHistory derives FirstSeq from TotalAdded minus the
+		// number of prepended rows. Restore the prior FirstSeq so
+		// prevHistory rows stay labelled with their original seqs
+		// rather than shifted to look contiguous with TotalAdded.
+		if len(prevHistory) > 0 {
+			t.hscreen.SetFirstSeq(prevFirstSeq)
+		}
+	}
 	if len(cells) > 0 {
 		initScreenFromCells(t.hscreen.Screen, cells)
 	} else {
@@ -998,6 +1010,27 @@ func replayEvents(screen te.EventHandler, events []protocol.TerminalEvent) bool 
 		}
 	}
 	return needsClear
+}
+
+// protocolCellsToTe decodes one row of protocol.ScreenCell into te.Cell
+// values. Used for both screen-cell and scrollback-delta decoding on
+// the client so the conversion stays in one place.
+func protocolCellsToTe(row []protocol.ScreenCell) []te.Cell {
+	cells := make([]te.Cell, len(row))
+	for i, c := range row {
+		cells[i].Data = c.Char
+		cells[i].Attr.Fg = specToColor(c.Fg)
+		cells[i].Attr.Bg = specToColor(c.Bg)
+		cells[i].Attr.Bold = c.A&1 != 0
+		cells[i].Attr.Italics = c.A&2 != 0
+		cells[i].Attr.Underline = c.A&4 != 0
+		cells[i].Attr.Strikethrough = c.A&8 != 0
+		cells[i].Attr.Reverse = c.A&16 != 0
+		cells[i].Attr.Blink = c.A&32 != 0
+		cells[i].Attr.Conceal = c.A&64 != 0
+		cells[i].Attr.Faint = c.A&128 != 0
+	}
+	return cells
 }
 
 func initScreenFromCells(screen *te.Screen, cells [][]protocol.ScreenCell) {

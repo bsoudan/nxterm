@@ -211,6 +211,17 @@ type ScreenUpdate struct {
 	// "scrollback already queried" flag so the next scrollback entry
 	// triggers a fresh GetScrollbackRequest.
 	ScrollbackDesync bool `json:"scrollback_desync,omitempty"`
+	// ScrollbackDelta carries rows that scrolled into the server's
+	// scrollback since this subscriber's last successful broadcast —
+	// oldest-first. When a mode-2026 synchronized-output batch flushes
+	// as a ScreenUpdate snapshot, any rows pushed to history during the
+	// batch are invisible to the client's per-event replay; without
+	// this field those rows would be lost until the client re-queries
+	// via GetScrollbackRequest. The absolute seq range of the delta is
+	// [ScrollbackTotal - len(ScrollbackDelta), ScrollbackTotal); the
+	// client appends these rows to its local history before applying
+	// the snapshot's new screen cells.
+	ScrollbackDelta [][]ScreenCell `json:"scrollback_delta,omitempty"`
 }
 
 type RegionDestroyed struct {

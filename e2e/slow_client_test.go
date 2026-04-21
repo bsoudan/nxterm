@@ -247,7 +247,7 @@ func TestSlowClientTreeStateRecovers(t *testing.T) {
 	nxterm := startFrontendForSession(t, socketPath, "nxtest-slow4")
 	defer nxterm.Kill()
 	nxterm.WaitForScreen(func(lines []string) bool {
-		return len(lines) > 0 && strings.Contains(lines[0], "<1>")
+		return len(lines) > 0 && strings.Contains(lines[0], "[1]")
 	}, "tab 1 visible", 5*time.Second)
 
 	// Find the existing region from the driver so we can flood it.
@@ -288,10 +288,10 @@ func TestSlowClientTreeStateRecovers(t *testing.T) {
 
 	// Client's tab bar should include a tab whose label references
 	// ghost-after-pause. The tab-bar may truncate the name by the
-	// time it gets composited with the right-side status, so accept
-	// the common prefix "ghost-after".
+	// time it gets composited with the right-side status, so accept a
+	// shorter prefix than the full name.
 	screen := nxterm.ScreenLines()
-	if !strings.Contains(screen[0], "ghost-after") {
+	if !strings.Contains(screen[0], "ghost-aft") {
 		t.Errorf("ghost-after-pause tab missing from tab bar: %q", screen[0])
 	}
 }

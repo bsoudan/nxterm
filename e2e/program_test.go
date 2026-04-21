@@ -143,7 +143,7 @@ func TestProgramPickerMultiple(t *testing.T) {
 		if len(lines) == 0 {
 			return false
 		}
-		return strings.Contains(lines[0], "1:")
+		return strings.Contains(lines[0], "<1>")
 	}, "tab 1 to go inactive after second tab spawn", 10*time.Second)
 }
 
@@ -167,7 +167,7 @@ func TestProgramPickerSingleAutoSpawn(t *testing.T) {
 		if len(lines) == 0 {
 			return false
 		}
-		return strings.Contains(lines[0], "1:")
+		return strings.Contains(lines[0], "<1>")
 	}, "tab 1 to go inactive after second tab spawn", 10*time.Second)
 }
 

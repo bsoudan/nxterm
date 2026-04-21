@@ -174,8 +174,8 @@ func TestScrollbackRespectsTabBarAndMargin(t *testing.T) {
 
 	// Capture tab-bar row before scrollback for a reference.
 	beforeRow0 := nxterm.ScreenLines()[0]
-	if !strings.Contains(beforeRow0, "<1>") {
-		t.Fatalf("precondition: expected active-tab marker <1> on row 0, got %q", beforeRow0)
+	if !strings.Contains(beforeRow0, "[1]") {
+		t.Fatalf("precondition: expected active-tab marker [1] on row 0, got %q", beforeRow0)
 	}
 
 	nxterm.Write([]byte{0x02, '['}).Sync("enter scrollback")
@@ -187,8 +187,8 @@ func TestScrollbackRespectsTabBarAndMargin(t *testing.T) {
 	}
 
 	// Row 0: the tab label (active-tab marker) must remain visible.
-	if !strings.Contains(screen[0], "<1>") {
-		t.Errorf("scrollback overdrew tab bar: expected row 0 to contain <1>, got %q", screen[0])
+	if !strings.Contains(screen[0], "[1]") {
+		t.Errorf("scrollback overdrew tab bar: expected row 0 to contain [1], got %q", screen[0])
 	}
 
 	// Row 1: the status-bar margin row (default statusBarMargin=1)
@@ -982,6 +982,89 @@ func TestScrollbackDesync(t *testing.T) {
 	nxterm.Write([]byte("q")).Sync("exit scrollback")
 }
 
+// TestScrollbackDeltaDuringMode2026 verifies that rows scrolled off the
+// server's screen *during* a mode-2026 synchronized-output batch reach
+// the client's scrollback. The server flushes a snapshot ScreenUpdate
+// when the sync batch ends; without a scrollback-delta field carrying
+// the rows pushed to history during the batch, the client never sees
+// them and scrollback appears frozen while live output continues
+// (visually indistinguishable from alt-screen mode).
+func TestScrollbackDeltaDuringMode2026(t *testing.T) {
+	t.Parallel()
+	socketPath, cleanup := startServer(t)
+	defer cleanup()
+
+	driver := nxtest.DialDriver(t, socketPath)
+	region := driver.SpawnNativeRegion("nxtest-sbsync", "r1", 80, 24)
+
+	nxterm := startFrontendForSession(t, socketPath, "nxtest-sbsync")
+	defer nxterm.Kill()
+	region.Sync(nxterm, "TUI boot + subscribe")
+
+	// Baseline: enough rows that some scroll into history via ordinary
+	// (non-sync) events. These reach the client's hscreen normally.
+	var buf bytes.Buffer
+	for i := 1; i <= 40; i++ {
+		fmt.Fprintf(&buf, "BASE_%d\r\n", i)
+	}
+	region.Output(buf.Bytes()).Sync(nxterm, "feed BASE_1..40")
+
+	// Enter scrollback while the client is already holding a local
+	// hscreen — GetScrollbackRequest will sync via the server's pre-batch
+	// state only.
+	nxterm.Write([]byte{0x02, '['}).Sync("enter scrollback")
+	nxterm.RequireTabBarContains("scrollback")
+	nxterm.Write([]byte{0x15}).Sync("page up once")
+
+	// Emit a mode-2026 batch that scrolls many unique lines off-screen.
+	// The server buffers every event and flushes a single ScreenUpdate
+	// when sync ends; the per-row events are discarded.
+	buf.Reset()
+	buf.WriteString("\x1b[?2026h")
+	for i := 1; i <= 50; i++ {
+		fmt.Fprintf(&buf, "SYNC_%d\r\n", i)
+	}
+	buf.WriteString("\x1b[?2026l")
+	region.Output(buf.Bytes()).Sync(nxterm, "feed mode-2026 SYNC_1..50")
+
+	// Reset to the bottom of scrollback (live view is at the bottom of
+	// the virtual buffer) and page up a small amount at a time. SYNC_
+	// rows just above the live screen are the ones pushed to history
+	// by the batch's earliest LineFeeds — without the delta they never
+	// reach the client.
+	nxterm.Write([]byte("G")).Sync("jump to bottom of scrollback")
+	sawSyncInHistory := false
+	for range 12 {
+		nxterm.Write([]byte{0x15}).Sync("ctrl+u")
+		for _, line := range nxterm.ScreenLines() {
+			fields := strings.Fields(line)
+			if len(fields) == 0 {
+				continue
+			}
+			name := fields[0]
+			// SYNC_29..50 remain on the live screen after the batch,
+			// so only SYNC_1..28 (scrolled off the server's screen)
+			// prove the delta delivered the scrolled-off history.
+			if strings.HasPrefix(name, "SYNC_") {
+				var n int
+				if _, err := fmt.Sscanf(name, "SYNC_%d", &n); err == nil && n >= 1 && n <= 28 {
+					sawSyncInHistory = true
+					break
+				}
+			}
+		}
+		if sawSyncInHistory {
+			break
+		}
+	}
+	if !sawSyncInHistory {
+		t.Fatalf("expected a SYNC_ row from the scrolled-off batch in scrollback history, got:\n%s",
+			strings.Join(nxterm.ScreenLines(), "\n"))
+	}
+
+	nxterm.Write([]byte("q")).Sync("exit scrollback")
+}
+
 // TestScrollbackResizeDriftOldestReachable verifies that after resizing
 // the terminal mid-session, the client and server scrollback stay in
 // lock-step and the oldest line remains reachable from the scrollback
@@ -1178,7 +1261,9 @@ func parseScrollbackStatus(tabBar string) (offset, total int, ok bool) {
 		return 0, 0, false
 	}
 	for _, part := range strings.Fields(tabBar) {
-		if strings.HasPrefix(part, "[") && strings.HasSuffix(part, "]") {
+		// Active-tab labels also render as "[N]", so require the
+		// [N/M] form with an internal slash.
+		if strings.HasPrefix(part, "[") && strings.HasSuffix(part, "]") && strings.Contains(part, "/") {
 			fmt.Sscanf(part, "[%d/%d]", &offset, &total)
 			return offset, total, true
 		}
@@ -1460,6 +1545,85 @@ func TestScrollbackScreenUpdateDuringScroll(t *testing.T) {
 		}
 	}
 	t.Logf("visible lines at offset=1: %v", visible)
+
+	nxterm.Write([]byte("q")).Sync("exit scrollback")
+	nxterm.RequireTabBarDoesNotContain("scrollback")
+}
+
+// TestScrollbackStableDuringOutput asserts the scrollback view stays
+// anchored to the content the user scrolled to, even as new output
+// arrives that pushes lines through the live screen into history.
+//
+// Before the fix, ScrollbackLayer's offset was interpreted as "lines
+// from the bottom of the combined (history+screen) buffer". New output
+// grew that bottom, so the fixed offset shifted the viewport forward
+// through the content — the user's scrollback appeared to scroll on its
+// own, which read as scrollback corruption.
+//
+// With the fix, the offset tracks against the TotalAdded counter so
+// newly-arrived lines do not displace the user's anchor position.
+func TestScrollbackStableDuringOutput(t *testing.T) {
+	t.Parallel()
+	socketPath, cleanup := startServer(t)
+	defer cleanup()
+
+	driver := nxtest.DialDriver(t, socketPath)
+	region := driver.SpawnNativeRegion("nxtest-sbstable", "r1", 80, 24)
+
+	nxterm := startFrontendForSession(t, socketPath, "nxtest-sbstable")
+	defer nxterm.Kill()
+	region.Sync(nxterm, "TUI boot + subscribe")
+
+	// Feed initial output so there is scrollback to pin against.
+	var buf bytes.Buffer
+	for i := 1; i <= 100; i++ {
+		fmt.Fprintf(&buf, "SEQ%04d\r\n", i)
+	}
+	region.Output(buf.Bytes()).Sync(nxterm, "feed SEQ0001..0100")
+
+	// Enter scrollback, jump to top.
+	nxterm.Write([]byte{0x02, '['}).Sync("enter scrollback")
+	nxterm.RequireTabBarContains("scrollback")
+	nxterm.Write([]byte("g")).Sync("jump to top")
+
+	captureVisibleSeqs := func() []int {
+		screen := nxterm.ScreenLines()
+		var seqs []int
+		for _, line := range screen {
+			if n := parseSEQ(line); n > 0 {
+				seqs = append(seqs, n)
+			}
+		}
+		return seqs
+	}
+
+	before := captureVisibleSeqs()
+	if len(before) == 0 {
+		t.Fatalf("no SEQ values visible before output; screen:\n%s",
+			strings.Join(nxterm.ScreenLines(), "\n"))
+	}
+
+	// Generate more output while the user stays idle in scrollback.
+	// These lines push live-screen content into history. No keystrokes
+	// are sent, so the user's scroll anchor should not move.
+	buf.Reset()
+	for i := 101; i <= 200; i++ {
+		fmt.Fprintf(&buf, "SEQ%04d\r\n", i)
+	}
+	region.Output(buf.Bytes()).Sync(nxterm, "feed SEQ0101..0200 while in scrollback")
+
+	after := captureVisibleSeqs()
+	if len(after) == 0 {
+		t.Fatalf("no SEQ values visible after output; screen:\n%s",
+			strings.Join(nxterm.ScreenLines(), "\n"))
+	}
+
+	// The top-visible SEQ values must not shift. If they do, the
+	// viewport has drifted forward under the user.
+	if before[0] != after[0] || before[len(before)-1] != after[len(after)-1] {
+		t.Errorf("scrollback anchor drifted while idle:\n  before: %v\n  after:  %v",
+			before, after)
+	}
 
 	nxterm.Write([]byte("q")).Sync("exit scrollback")
 	nxterm.RequireTabBarDoesNotContain("scrollback")

@@ -244,7 +244,7 @@ func TestLiveUpgradeSimple(t *testing.T) {
 	for i := 1; i < 3; i++ {
 		nxt.Write([]byte("\x02c")) // ctrl+b c = new tab
 		// Wait for the inactive tab label to confirm the spawn took effect.
-		nxt.WaitFor(fmt.Sprintf("%d:bash", i), 10*time.Second)
+		nxt.WaitFor(fmt.Sprintf("<%d>bash", i), 10*time.Second)
 		nxt.WaitFor("nxterm$", 10*time.Second)
 		nxt.WaitForSilence(200 * time.Millisecond)
 		nxt.Write([]byte("echo " + markers[i] + "\r"))

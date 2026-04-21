@@ -582,10 +582,10 @@ func TestActiveTabBold(t *testing.T) {
 	nxt.WaitFor("nxterm$", 10*time.Second)
 
 	// Spawn a second region so we have active and inactive tabs.
-	// Tab 2 becomes active (label " 2 "), tab 1 becomes inactive
-	// (label " 1:bash ").
+	// Tab 2 becomes active (label " [2] "), tab 1 becomes inactive
+	// (label " <1>bash ").
 	nxt.Write([]byte("\x02c"))
-	nxt.WaitFor("1:bash", 10*time.Second)
+	nxt.WaitFor("<1>bash", 10*time.Second)
 	nxt.WaitFor("nxterm$", 10*time.Second)
 	nxt.Sync("render settle")
 
@@ -596,10 +596,10 @@ func TestActiveTabBold(t *testing.T) {
 	tabRow := cells[0]
 
 	// Locate each tab number on row 0. The active tab renders as
-	// " <n> " (digit followed by ">") and the inactive tab as
-	// " n:<name> " (digit followed by ":").
-	tab1Col := findDigitFollowedBy(tabRow, "1", ":") // inactive
-	tab2Col := findDigitFollowedBy(tabRow, "2", ">") // active
+	// " [n] " (digit followed by "]") and the inactive tab as
+	// " <n><name> " (digit followed by ">").
+	tab1Col := findDigitFollowedBy(tabRow, "1", ">") // inactive
+	tab2Col := findDigitFollowedBy(tabRow, "2", "]") // active
 	if tab1Col < 0 || tab2Col < 0 {
 		t.Fatalf("could not find tab labels on row 0: tab1=%d tab2=%d", tab1Col, tab2Col)
 	}
@@ -610,15 +610,15 @@ func TestActiveTabBold(t *testing.T) {
 		t.Errorf("active tab '2' at col %d should be bold", tab2Col)
 	}
 
-	// Switch to tab 1: tab 1 becomes active (" <1> "), tab 2 inactive (" 2:bash ").
+	// Switch to tab 1: tab 1 becomes active (" [1] "), tab 2 inactive (" <2>bash ").
 	nxt.Write([]byte("\x021"))
 	nxt.WaitFor("nxterm$", 10*time.Second)
 	nxt.Sync("render settle")
 
 	cells = nxt.ScreenCells()
 	tabRow = cells[0]
-	tab1Col = findDigitFollowedBy(tabRow, "1", ">") // active
-	tab2Col = findDigitFollowedBy(tabRow, "2", ":") // inactive
+	tab1Col = findDigitFollowedBy(tabRow, "1", "]") // active
+	tab2Col = findDigitFollowedBy(tabRow, "2", ">") // inactive
 	if tab1Col < 0 || tab2Col < 0 {
 		t.Fatalf("could not find tab labels after switch: tab1=%d tab2=%d", tab1Col, tab2Col)
 	}

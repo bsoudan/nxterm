@@ -81,7 +81,7 @@ type regionActor struct {
 	proxy   *EventProxy
 	stream  *te.Stream
 
-	subscribers map[uint32]*Client
+	subscribers map[uint32]*subscriberState
 	overlay     *overlayState
 
 	// Counters exposed via region_stats_request. Actor-owned so no
@@ -103,6 +103,18 @@ type regionStats struct {
 	droppedBroadcasts uint64
 }
 
+// subscriberState tracks per-region state for a subscribed client. The
+// client goroutine is shared across regions, but lastTotalAdded is
+// per-region: it is the server's hscreen.TotalAdded() value at the
+// last successful broadcast to this subscriber. The broadcast path
+// uses it to compute a per-subscriber ScrollbackDelta that fills the
+// gap on snapshot paths (mode-2026 sync flush, overlay transitions)
+// where per-event replay is discarded.
+type subscriberState struct {
+	client         *Client
+	lastTotalAdded uint64
+}
+
 func newRegionActor(
 	id string, backend regionBackend,
 	width, height int, hscreen *te.HistoryScreen,
@@ -120,7 +132,7 @@ func newRegionActor(
 		hscreen:     hscreen,
 		proxy:       proxy,
 		stream:      stream,
-		subscribers: make(map[uint32]*Client),
+		subscribers: make(map[uint32]*subscriberState),
 		msgs:        make(chan regionMsg, actorChanSize),
 		actorDone:   make(chan struct{}),
 	}
@@ -275,26 +287,20 @@ func (a *regionActor) broadcastToSubscribers() {
 		return
 	}
 
+	currentTotal := a.hscreen.TotalAdded()
+
 	// When an overlay is active, always send a composited snapshot
 	// instead of raw events.
 	if a.overlay != nil {
-		snapMsg := newScreenUpdate(a.id, a.compositedSnapshot())
-		a.deliverBroadcast(snapMsg, func() any {
-			s := newScreenUpdate(a.id, a.compositedSnapshot())
-			s.ScrollbackDesync = true
-			return s
-		})
+		baseSnap := a.compositedSnapshot()
+		a.deliverSnapshotPerSub(baseSnap, currentTotal)
 		a.broadcastSyncs(syncs)
 		return
 	}
 
 	if needsSnapshot {
-		snapMsg := newScreenUpdate(a.id, a.snapshot())
-		a.deliverBroadcast(snapMsg, func() any {
-			s := newScreenUpdate(a.id, a.snapshot())
-			s.ScrollbackDesync = true
-			return s
-		})
+		baseSnap := a.snapshot()
+		a.deliverSnapshotPerSub(baseSnap, currentTotal)
 		a.broadcastSyncs(syncs)
 		return
 	}
@@ -310,19 +316,88 @@ func (a *regionActor) broadcastToSubscribers() {
 		RegionID: a.id,
 		Events:   combined,
 	}
-	a.deliverBroadcast(msg, func() any {
-		s := newScreenUpdate(a.id, a.snapshot())
-		s.ScrollbackDesync = true
-		return s
-	})
+	a.deliverBroadcast(
+		func(sub *subscriberState) any { return msg },
+		func(sub *subscriberState) any {
+			s := newScreenUpdate(a.id, a.snapshot())
+			s.ScrollbackDesync = true
+			return s
+		},
+		currentTotal,
+	)
 }
 
-// deliverBroadcast sends msg to each subscriber and, when the regular
-// send succeeds against a subscriber that is currently behind,
-// additionally sends a catchup ScreenUpdate (lazily built via
-// catchupBuilder) to clear the behind state. Maintains the per-client
-// behind flag and the circuit breaker. Increments droppedBroadcasts
-// on drops.
+// deliverSnapshotPerSub sends a ScreenUpdate snapshot to each
+// subscriber, attaching a per-subscriber ScrollbackDelta covering the
+// rows scrolled into history since that subscriber's last successful
+// broadcast. Used on mode-2026 snapshot flushes and overlay
+// transitions where per-event replay is discarded — without the delta,
+// rows pushed to history during the batch would be lost on the client.
+func (a *regionActor) deliverSnapshotPerSub(base Snapshot, currentTotal uint64) {
+	a.deliverBroadcast(
+		func(sub *subscriberState) any {
+			s := newScreenUpdate(a.id, base)
+			s.ScrollbackDelta = a.scrollbackSince(sub.lastTotalAdded, currentTotal)
+			return s
+		},
+		func(sub *subscriberState) any {
+			s := newScreenUpdate(a.id, base)
+			s.ScrollbackDesync = true
+			return s
+		},
+		currentTotal,
+	)
+}
+
+// scrollbackSince returns the history rows with seq in [since, upto).
+// Oldest-first, serialized as [][]protocol.ScreenCell. Rows outside
+// the server's currently-retained range are not recoverable and are
+// silently omitted — a client that lost rows older than the server's
+// retention window will hit a ScrollbackDesync path anyway and
+// re-query.
+func (a *regionActor) scrollbackSince(since, upto uint64) [][]protocol.ScreenCell {
+	if upto <= since {
+		return nil
+	}
+	firstSeq := a.hscreen.FirstSeq()
+	totalAdded := a.hscreen.TotalAdded()
+	if since < firstSeq {
+		since = firstSeq
+	}
+	if upto > totalAdded {
+		upto = totalAdded
+	}
+	if upto <= since {
+		return nil
+	}
+	history := a.hscreen.History()
+	lo := int(since - firstSeq)
+	hi := int(upto - firstSeq)
+	if lo < 0 || hi > len(history) || lo >= hi {
+		return nil
+	}
+	out := make([][]protocol.ScreenCell, hi-lo)
+	for i, row := range history[lo:hi] {
+		cells := make([]protocol.ScreenCell, len(row))
+		for j, c := range row {
+			cells[j] = cellToProtocol(c)
+		}
+		out[i] = cells
+	}
+	return out
+}
+
+// deliverBroadcast sends a per-subscriber message (built by msgBuilder)
+// and, when the regular send succeeds against a subscriber that is
+// currently behind, additionally sends a catchup ScreenUpdate (built
+// by catchupBuilder) to clear the behind state. Maintains the
+// per-client behind flag and the circuit breaker. Increments
+// droppedBroadcasts on drops. On successful delivery, advances the
+// subscriber's lastTotalAdded so future snapshot deltas cover only
+// rows scrolled since this broadcast. The batchMsg parameter, when
+// the snapshot path calls msgBuilder per subscriber to attach
+// per-subscriber ScrollbackDelta; batch paths (TerminalEvents) return
+// the same msg for every subscriber.
 //
 // We intentionally never send the catchup ahead of the regular msg, nor
 // in the same broadcast that just dropped a regular msg: the catchup
@@ -332,9 +407,10 @@ func (a *regionActor) broadcastToSubscribers() {
 // has drained enough for the catchup to fit too — then piggyback the
 // catchup. If the regular msg drops, behind stays set; the next broadcast
 // retries naturally.
-func (a *regionActor) deliverBroadcast(msg any, catchupBuilder func() any) {
-	var catchup any
-	for _, c := range a.subscribers {
+func (a *regionActor) deliverBroadcast(msgBuilder, catchupBuilder func(*subscriberState) any, currentTotal uint64) {
+	for _, sub := range a.subscribers {
+		msg := msgBuilder(sub)
+		c := sub.client
 		if !c.SendMessage(msg) {
 			a.stats.droppedBroadcasts++
 			if c.behind.CompareAndSwap(false, true) {
@@ -353,6 +429,7 @@ func (a *regionActor) deliverBroadcast(msg any, catchupBuilder func() any) {
 			}
 			continue
 		}
+		sub.lastTotalAdded = currentTotal
 
 		if !c.behind.Load() {
 			continue
@@ -364,9 +441,7 @@ func (a *regionActor) deliverBroadcast(msg any, catchupBuilder func() any) {
 		if !c.WriteChHasRoom() {
 			continue
 		}
-		if catchup == nil {
-			catchup = catchupBuilder()
-		}
+		catchup := catchupBuilder(sub)
 		if c.SendMessage(catchup) {
 			c.behind.Store(false)
 			c.behindSinceNanos.Store(0)
@@ -387,11 +462,16 @@ func (a *regionActor) broadcastSyncs(syncs []string) {
 		RegionID: a.id,
 		Events:   syncEvents,
 	}
-	a.deliverBroadcast(msg, func() any {
-		s := newScreenUpdate(a.id, a.snapshot())
-		s.ScrollbackDesync = true
-		return s
-	})
+	currentTotal := a.hscreen.TotalAdded()
+	a.deliverBroadcast(
+		func(sub *subscriberState) any { return msg },
+		func(sub *subscriberState) any {
+			s := newScreenUpdate(a.id, a.snapshot())
+			s.ScrollbackDesync = true
+			return s
+		},
+		currentTotal,
+	)
 }
 
 // clearOverlayInternal clears the overlay and sends a plain snapshot to subscribers.
@@ -400,10 +480,7 @@ func (a *regionActor) clearOverlayInternal() {
 	a.backend.RestoreTermios()
 	slog.Info("overlay cleared", "region_id", a.id)
 	if len(a.subscribers) > 0 {
-		snapMsg := newScreenUpdate(a.id, a.snapshot())
-		for _, c := range a.subscribers {
-			c.SendMessage(snapMsg)
-		}
+		a.deliverSnapshotPerSub(a.snapshot(), a.hscreen.TotalAdded())
 	}
 }
 
@@ -468,7 +545,10 @@ func (m addSubscriberMsg) handleRegion(a *regionActor) {
 			Events:   events,
 		})
 	}
-	a.subscribers[m.client.id] = m.client
+	a.subscribers[m.client.id] = &subscriberState{
+		client:         m.client,
+		lastTotalAdded: a.hscreen.TotalAdded(),
+	}
 	m.resp <- snap
 }
 
@@ -587,10 +667,7 @@ func (m overlayRenderMsg) handleRegion(a *regionActor) {
 	ov.cursorRow = m.cursorRow
 	ov.cursorCol = m.cursorCol
 	ov.modes = m.modes
-	snapMsg := newScreenUpdate(a.id, a.compositedSnapshot())
-	for _, c := range a.subscribers {
-		c.SendMessage(snapMsg)
-	}
+	a.deliverSnapshotPerSub(a.compositedSnapshot(), a.hscreen.TotalAdded())
 }
 
 type overlayClearMsg struct{ clientID uint32 }

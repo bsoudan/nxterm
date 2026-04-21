@@ -335,7 +335,7 @@ func TestConnectPicksUpExistingRegions(t *testing.T) {
 		if len(lines) == 0 {
 			return false
 		}
-		return strings.Contains(lines[0], "2:") || strings.Contains(lines[0], "1:")
+		return strings.Contains(lines[0], "<2>") || strings.Contains(lines[0], "<1>bash")
 	}, "tab bar with two pre-existing regions", 10*time.Second)
 }
 
@@ -349,10 +349,10 @@ func TestReconnectRestoresTabs(t *testing.T) {
 
 	nxt.WaitFor("nxterm$", 10*time.Second)
 
-	// Spawn a second region. Tab 1 becomes inactive → "1:bash"
+	// Spawn a second region. Tab 1 becomes inactive → "<1>bash"
 	// appears in the tab bar (the active tab renders as just " 2 ").
 	nxt.Write([]byte("\x02c"))
-	nxt.WaitFor("1:bash", 10*time.Second)
+	nxt.WaitFor("<1>bash", 10*time.Second)
 	nxt.WaitFor("nxterm$", 10*time.Second)
 
 	// Kill the client connection to force reconnect
@@ -370,7 +370,7 @@ func TestReconnectRestoresTabs(t *testing.T) {
 		if len(lines) == 0 {
 			return false
 		}
-		return strings.Contains(lines[0], "1:bash") || strings.Contains(lines[0], "2:bash")
+		return strings.Contains(lines[0], "<1>bash") || strings.Contains(lines[0], "<2>bash")
 	}, "both tabs restored after reconnect", 10*time.Second)
 }
 
