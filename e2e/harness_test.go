@@ -3,8 +3,10 @@ package e2e
 import (
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -74,7 +76,24 @@ func sharedServer(t *testing.T) string {
 }
 
 func TestMain(m *testing.M) {
+	// Catch ctrl-C / SIGTERM so the shared server's cleanup runs even
+	// when the test binary is interrupted. SIGKILL and hard-aborts on
+	// go test -timeout aren't catchable here; the Pdeathsig set on
+	// each spawned nxtermd covers those.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigCh
+		if sharedStop != nil {
+			sharedStop()
+		}
+		// Re-raise so exit status reflects the signal.
+		signal.Reset(sig)
+		_ = syscall.Kill(syscall.Getpid(), sig.(syscall.Signal))
+	}()
+
 	code := m.Run()
+	signal.Stop(sigCh)
 	if sharedStop != nil {
 		sharedStop()
 	}

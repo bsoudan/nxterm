@@ -306,6 +306,7 @@ func NewRegion(cmdStr string, args []string, env map[string]string, width, heigh
 	for k, v := range env {
 		cmdObj.Env = append(cmdObj.Env, k+"="+v)
 	}
+	setRegionChildKillOnDeath(cmdObj)
 
 	ptmx, err := pty.Start(cmdObj)
 	if err != nil {

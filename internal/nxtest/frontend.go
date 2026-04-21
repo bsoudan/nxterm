@@ -24,6 +24,7 @@ func StartFrontend(socketPath string, env []string, cols, rows uint16, extraArgs
 	args := append([]string{"--socket", socketPath}, extraArgs...)
 	cmd := exec.Command("nxterm", args...)
 	cmd.Env = append(env, "TERM=dumb")
+	setKillOnParentDeath(cmd)
 
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: rows, Cols: cols})
 	if err != nil {
@@ -49,10 +50,10 @@ func MustStartFrontend(t *testing.T, socketPath string, env []string, cols, rows
 	return NewFromFrontend(t, fe)
 }
 
-// Kill forcibly terminates the frontend process.
+// Kill forcibly terminates the frontend process, including any
+// children it may have spawned (e.g. ssh for ssh:// transport).
 func (f *Frontend) Kill() {
-	f.Cmd.Process.Kill()
-	f.Cmd.Wait()
+	killProcessGroup(f.Cmd)
 	f.Ptmx.Close()
 }
 

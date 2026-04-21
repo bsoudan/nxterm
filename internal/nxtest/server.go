@@ -24,13 +24,14 @@ func StartServer(tmpDir string, env []string) (*ServerProcess, error) {
 	cmd := exec.Command("nxtermd", "unix:"+socketPath)
 	cmd.Env = env
 	cmd.Stderr = os.Stderr
+	setKillOnParentDeath(cmd)
+	setProcessGroup(cmd)
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start server: %w (is nxtermd in PATH?)", err)
 	}
 
 	if err := waitForSocket(socketPath, 5*time.Second); err != nil {
-		cmd.Process.Kill()
-		cmd.Wait()
+		killProcessGroup(cmd)
 		return nil, err
 	}
 
@@ -48,6 +49,8 @@ func StartServerWithListeners(tmpDir string, env []string, extraListens ...strin
 
 	stderrR, stderrW, _ := os.Pipe()
 	cmd.Stderr = stderrW
+	setKillOnParentDeath(cmd)
+	setProcessGroup(cmd)
 	if err := cmd.Start(); err != nil {
 		return nil, nil, fmt.Errorf("start server: %w", err)
 	}
@@ -89,18 +92,19 @@ loop:
 	}
 
 	if err := waitForSocket(socketPath, 5*time.Second); err != nil {
-		cmd.Process.Kill()
-		cmd.Wait()
+		killProcessGroup(cmd)
 		return nil, nil, err
 	}
 
 	return &ServerProcess{Cmd: cmd, SocketPath: socketPath}, addrs, nil
 }
 
-// Stop kills the server process and waits for it to exit.
+// Stop kills the server's entire process group and waits for the
+// direct child to exit. Using the group ensures any PTY child shells
+// nxtermd spawned also die, even if nxtermd itself was SIGKILL'd
+// before it could run its shutdown path.
 func (s *ServerProcess) Stop() {
-	s.Cmd.Process.Kill()
-	s.Cmd.Wait()
+	killProcessGroup(s.Cmd)
 }
 
 func waitForSocket(path string, timeout time.Duration) error {
