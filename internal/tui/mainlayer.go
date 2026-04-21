@@ -312,39 +312,53 @@ func (m *NxtermModel) Run(p *tea.Program, rawCh <-chan RawInputMsg,
 	}
 	m.sm.CheckForUpgrades()
 
+	// Cap on TerminalEvents processed between forced yields to rawCh.
+	// Under sustained flood, the priority drain would otherwise keep
+	// picking srv.Inbound without ever reaching the blocking select
+	// that reads keyboard input. When the budget runs out we skip the
+	// priority drain so the blocking select — which includes rawCh —
+	// gets a fair shot.
+	const serverWorkBudget = 2048
+	eventBudget := serverWorkBudget
+
 	for {
 		srv := m.server
 
 		// Priority phase: non-blocking drain of bubbletea, server,
-		// and lifecycle messages before touching raw input.
-		select {
-		case msg := <-p.Msgs():
-			if _, err := p.Handle(msg); err != nil {
+		// and lifecycle messages before touching raw input. Skipped
+		// when the server-work budget is exhausted so rawCh isn't
+		// starved by back-to-back TerminalEvents batches.
+		if eventBudget > 0 {
+			select {
+			case msg := <-p.Msgs():
+				if _, err := p.Handle(msg); err != nil {
+					p.Stop(nil)
+					return nil
+				}
+				continue
+			case msg := <-srv.Inbound:
+				eventBudget -= inboundEventCost(msg)
+				m.processServerMsg(msg)
+				p.Render()
+				m.flushPendingSyncAcks()
+				continue
+			case msg := <-srv.Lifecycle:
+				switch msg := msg.(type) {
+				case DisconnectedMsg:
+					m.reconnectLoop(msg)
+				case PausedMsg:
+					m.sessionPaused = true
+					p.Render()
+				case ResumedMsg:
+					m.sessionPaused = false
+					p.Render()
+				}
+				continue
+			case <-p.Context().Done():
 				p.Stop(nil)
 				return nil
+			default:
 			}
-			continue
-		case msg := <-srv.Inbound:
-			m.processServerMsg(msg)
-			p.Render()
-			m.flushPendingSyncAcks()
-			continue
-		case msg := <-srv.Lifecycle:
-			switch msg := msg.(type) {
-			case DisconnectedMsg:
-				m.reconnectLoop(msg)
-			case PausedMsg:
-				m.sessionPaused = true
-				p.Render()
-			case ResumedMsg:
-				m.sessionPaused = false
-				p.Render()
-			}
-			continue
-		case <-p.Context().Done():
-			p.Stop(nil)
-			return nil
-		default:
 		}
 
 		// Process one buffered focus-mode sequence before blocking.
@@ -360,7 +374,9 @@ func (m *NxtermModel) Run(p *tea.Program, rawCh <-chan RawInputMsg,
 			continue
 		}
 
-		// Nothing pending — block on all channels including raw input.
+		// Nothing pending (or budget exhausted) — block on all channels
+		// including raw input. rawCh reaching here also refills the
+		// server-work budget.
 		select {
 		case msg := <-p.Msgs():
 			if _, err := p.Handle(msg); err != nil {
@@ -369,6 +385,7 @@ func (m *NxtermModel) Run(p *tea.Program, rawCh <-chan RawInputMsg,
 			}
 
 		case raw := <-rawCh:
+			eventBudget = serverWorkBudget
 			cmd, err := m.processRawInput(raw)
 			if err != nil {
 				p.Stop(nil)
@@ -382,6 +399,7 @@ func (m *NxtermModel) Run(p *tea.Program, rawCh <-chan RawInputMsg,
 			m.flushPendingSyncAcks()
 
 		case msg := <-srv.Inbound:
+			eventBudget -= inboundEventCost(msg)
 			m.processServerMsg(msg)
 			p.Render()
 			m.flushPendingSyncAcks()
@@ -442,6 +460,16 @@ func (m *NxtermModel) stepFocusSequence() error {
 			return nil
 		}
 	}
+}
+
+// inboundEventCost returns how many terminal events a server message
+// contributes to the event-loop work budget. Only TerminalEvents
+// messages cost more than 1; everything else counts as a single unit.
+func inboundEventCost(msg protocol.Message) int {
+	if te, ok := msg.Payload.(protocol.TerminalEvents); ok {
+		return len(te.Events)
+	}
+	return 1
 }
 
 // processRawInput handles raw terminal input and returns any command

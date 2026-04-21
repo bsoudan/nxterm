@@ -290,6 +290,12 @@ func (s *Server) dispatchOutbound(c *client.Client, msg any) {
 	}
 }
 
+// maxBatchEvents caps how many TerminalEvents dispatchInbound will merge
+// into a single inbound message. Bounds the per-iteration cost of the
+// frontend's Run loop so keyboard input (rawCh) can be serviced between
+// batches even under sustained flood.
+const maxBatchEvents = 512
+
 // dispatchInbound sends a message to the inbound channel.
 // TerminalEvents are batched for performance. Binary chunks are written
 // directly to the active download to avoid backpressure through bubbletea.
@@ -311,11 +317,12 @@ func (s *Server) dispatchInbound(msg protocol.Message, recv <-chan protocol.Mess
 		return
 	}
 
-	// Batch consecutive TerminalEvents with the same RegionID.
+	// Batch consecutive TerminalEvents with the same RegionID, capped at
+	// maxBatchEvents so the event-loop has a bounded per-iteration cost.
 	batch := te.Events
 	regionID := te.RegionID
 drain:
-	for {
+	for len(batch) < maxBatchEvents {
 		select {
 		case next, ok := <-recv:
 			if !ok {
