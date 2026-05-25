@@ -26,12 +26,17 @@ public sealed class TerminalGrid
     public bool BracketedPaste { get; private set; } // DECSET 2004
     public string Title { get; private set; } = "";
 
-    // Scrollback view position, surfaced over the test hook. ScrollOffset is how
-    // many lines above the live bottom the viewport is showing (0 = live);
-    // ScrollTotal is the number of history lines available. Both stay 0 until
-    // the scrollback feature lands.
+    // Local scrollback: lines evicted off the top of the primary screen are
+    // pushed into a capped history ring. ScrollOffset is how many lines above the
+    // live bottom the viewport is showing (0 = live); ScrollTotal is the number
+    // of history lines available. This is the client's own view of output it has
+    // seen; reconciling with the server's authoritative scrollback (pre-connect
+    // history, post-eviction, post-reconnect) is a separate follow-on.
+    private readonly List<TermCell[]> _history = new();
+    private const int HistoryCap = 5000;
     public int ScrollOffset { get; private set; }
-    public int ScrollTotal { get; private set; }
+    public int ScrollTotal => _history.Count;
+    public bool AltActive => _altActive;
 
     // Mouse tracking (DECSET 1000 normal / 1002 button-drag / 1003 any-motion,
     // 1006 = SGR encoding).
@@ -222,6 +227,9 @@ public sealed class TerminalGrid
         int count = Math.Min(Math.Abs(n), bottom - top + 1);
         if (n > 0)
         {
+            // Lines scrolling off the top of the primary screen enter scrollback.
+            if (top == 0 && !_altActive)
+                for (int r = 0; r < count; r++) PushHistory(_buf[r]);
             for (int r = top; r <= bottom; r++)
             {
                 int src = r + count;
@@ -236,6 +244,35 @@ public sealed class TerminalGrid
                 _buf[r] = src >= top ? _buf[src] : NewRow(_penBg);
             }
         }
+    }
+
+    // --- scrollback ---------------------------------------------------------
+
+    private void PushHistory(TermCell[] row)
+    {
+        _history.Add(row);
+        if (ScrollOffset > 0) ScrollOffset++; // keep the view stable as output scrolls past
+        if (_history.Count > HistoryCap)
+        {
+            _history.RemoveAt(0);
+            if (ScrollOffset > 0) ScrollOffset--; // oldest history line dropped
+        }
+        if (ScrollOffset > _history.Count) ScrollOffset = _history.Count;
+    }
+
+    public void ScrollUp(int lines) => ScrollOffset = Math.Clamp(ScrollOffset + lines, 0, _history.Count);
+    public void ScrollDown(int lines) => ScrollOffset = Math.Clamp(ScrollOffset - lines, 0, _history.Count);
+    public void ScrollToTop() => ScrollOffset = _history.Count;
+    public void ScrollToLive() => ScrollOffset = 0;
+
+    // ViewportRow returns the cells shown at viewport row r (0..Rows-1): with
+    // ScrollOffset>0 the view is drawn from history then the live buffer.
+    // ScrollOffset is clamped to [0, history], so idx is always in range.
+    public TermCell[] ViewportRow(int r)
+    {
+        if (ScrollOffset <= 0) return _buf[r];
+        int idx = _history.Count - ScrollOffset + r;
+        return idx < _history.Count ? _history[idx] : _buf[idx - _history.Count];
     }
 
     // n>0 inserts blanks at cursor (shift right), n<0 deletes (shift left).
@@ -325,6 +362,7 @@ public sealed class TerminalGrid
         CursorVisible = true;
         _altActive = false; _altBuf = null; CursorStyle = 0;
         _m1000 = _m1002 = _m1003 = _m1006 = false;
+        _history.Clear(); ScrollOffset = 0;
     }
 
     private void ApplySgr(int[]? a)

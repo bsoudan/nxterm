@@ -385,18 +385,21 @@ public sealed partial class MainWindow : Window
             bool hasSel = _hasSelection;
             (int r, int c) selS = _selAnchor, selE = _selCaret;
             if (hasSel && !LessEq(selS, selE)) (selS, selE) = (selE, selS);
+            bool scrolled = g.ScrollOffset > 0;
             for (int r = 0; r < g.Rows; r++)
             {
+                var vrow = g.ViewportRow(r);
                 for (int c = 0; c < g.Cols; c++)
                 {
-                    var cell = g[r, c];
+                    var cell = c < vrow.Length ? vrow[c] : TermCell.Blank(TermColor.Default);
                     var attrs = cell.Attrs;
                     uint fg = Palette.Resolve(cell.Fg, Palette.DefaultForeground);
                     uint bg = Palette.Resolve(cell.Bg, Palette.DefaultBackground);
                     if ((attrs & CellAttr.Reverse) != 0) (fg, bg) = (bg, fg);
                     if ((attrs & CellAttr.Faint) != 0) fg = Dim(fg);
 
-                    bool isCursor = g.CursorVisible && r == g.CursorRow && c == g.CursorCol;
+                    // The cursor is hidden while viewing scrollback.
+                    bool isCursor = !scrolled && g.CursorVisible && r == g.CursorRow && c == g.CursorCol;
                     bool blockCursor = isCursor && blockShape;
                     if (blockCursor) (fg, bg) = (bg, fg);
                     if (hasSel && !blockCursor && r >= selS.r && r <= selE.r
@@ -445,10 +448,29 @@ public sealed partial class MainWindow : Window
         if (ctrl && shift && e.Key == VirtualKey.P) { ShowCommandPalette(); e.Handled = true; return; }
         if (e.Key == VirtualKey.Escape && _overlay is "palette" or "help") { CloseOverlays(); e.Handled = true; return; }
 
+        // Scrollback: PageUp enters/scrolls history; PageDown scrolls back toward
+        // live. In alt-screen they belong to the app; PageDown at the live bottom
+        // also falls through to the app.
+        if (!_grid.AltActive && (e.Key == VirtualKey.PageUp || e.Key == VirtualKey.PageDown))
+        {
+            bool up = e.Key == VirtualKey.PageUp;
+            if (up || _grid.ScrollOffset > 0)
+            {
+                lock (_gridLock) { if (up) _grid.ScrollUp(_lastRows - 1); else _grid.ScrollDown(_lastRows - 1); }
+                TerminalCanvas.Invalidate();
+                UiRefresh();
+                e.Handled = true;
+                return;
+            }
+        }
+
         var bytes = KeyEncoder.Encode(e.Key, ctrl, shift, alt);
         if (bytes != null)
         {
-            if (_hasSelection) { _hasSelection = false; TerminalCanvas.Invalidate(); }
+            // Any text input returns to the live view.
+            if (_grid.ScrollOffset > 0) { lock (_gridLock) _grid.ScrollToLive(); UiRefresh(); }
+            if (_hasSelection) _hasSelection = false;
+            TerminalCanvas.Invalidate();
             _client.SendInput(bytes);
             e.Handled = true;
         }
@@ -520,10 +542,22 @@ public sealed partial class MainWindow : Window
 
     private void TerminalCanvas_PointerWheelChanged(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
     {
-        if (!_grid.MouseReportsPress) return;   // (scrollback handled in a later phase)
         var pp = e.GetCurrentPoint(TerminalCanvas);
-        var (row, col) = CellAt(pp.Position);
-        SendMouse(pp.Properties.MouseWheelDelta > 0 ? 64 : 65, col, row, press: true);
+        if (_grid.MouseReportsPress) // app requested mouse tracking → forward the wheel
+        {
+            var (row, col) = CellAt(pp.Position);
+            SendMouse(pp.Properties.MouseWheelDelta > 0 ? 64 : 65, col, row, press: true);
+            e.Handled = true;
+            return;
+        }
+        // Otherwise the wheel drives local scrollback.
+        lock (_gridLock)
+        {
+            if (pp.Properties.MouseWheelDelta > 0) _grid.ScrollUp(3);
+            else _grid.ScrollDown(3);
+        }
+        TerminalCanvas.Invalidate();
+        UiRefresh();
         e.Handled = true;
     }
 
@@ -642,6 +676,19 @@ public sealed partial class MainWindow : Window
         UiRefresh();
     }
 
+    // ScrollHistory scrolls local scrollback by lines (positive = up into
+    // history, negative = toward live). Drives the test hook's scroll op.
+    private void ScrollHistory(int lines)
+    {
+        lock (_gridLock)
+        {
+            if (lines >= 0) _grid.ScrollUp(lines);
+            else _grid.ScrollDown(-lines);
+        }
+        TerminalCanvas.Invalidate();
+        UiRefresh();
+    }
+
     // --- test introspection (NXTERM_TEST_HOOK) ------------------------------
 
     private string HandleTestRequest(string line)
@@ -662,6 +709,16 @@ public sealed partial class MainWindow : Window
                 int rr = doc.RootElement.TryGetProperty("rows", out var rrEl) ? rrEl.GetInt32() : _lastRows;
                 OnUiSync(() => { ResizeGrid(rc, rr); return 0; });
                 return "{\"ok\":true}";
+            case "scroll":
+                int sl = doc.RootElement.TryGetProperty("lines", out var slEl) ? slEl.GetInt32() : 0;
+                OnUiSync(() => { ScrollHistory(sl); return 0; });
+                return "{\"ok\":true}";
+            case "scroll_to_top":
+                OnUiSync(() => { lock (_gridLock) _grid.ScrollToTop(); TerminalCanvas.Invalidate(); UiRefresh(); return 0; });
+                return "{\"ok\":true}";
+            case "scroll_to_live":
+                OnUiSync(() => { lock (_gridLock) _grid.ScrollToLive(); TerminalCanvas.Invalidate(); UiRefresh(); return 0; });
+                return "{\"ok\":true}";
             default:
                 return "{\"error\":\"unknown op\"}";
         }
@@ -675,11 +732,15 @@ public sealed partial class MainWindow : Window
         lock (_gridLock)
         {
             var g = _grid;
+            // Serialize the viewport (live buffer, or the scrollback view when
+            // scrolled) so the harness sees what is actually displayed.
             var rows = new object[g.Rows];
             for (int r = 0; r < g.Rows; r++)
             {
+                var vrow = g.ViewportRow(r);
                 var cells = new object[g.Cols];
-                for (int c = 0; c < g.Cols; c++) cells[c] = CellDto(g[r, c]);
+                for (int c = 0; c < g.Cols; c++)
+                    cells[c] = CellDto(c < vrow.Length ? vrow[c] : TermCell.Blank(TermColor.Default));
                 rows[r] = cells;
             }
             dto = new
