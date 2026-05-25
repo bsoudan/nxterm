@@ -19,6 +19,12 @@ SSH_PORT=2222
 SSH_USER=wfvm
 SSH_PASS=1234
 
+# Host-forwarded guest ports for the e2e harness: the NxtermGui test hook
+# (NXTERM_TEST_HOOK, grid/sync introspection) and WinAppDriver (chrome UI
+# automation). Same number host-side and guest-side for simplicity.
+HOOK_PORT="${HOOK_PORT:-9300}"
+WINAPPDRIVER_PORT="${WINAPPDRIVER_PORT:-4723}"
+
 # SPICE binds to localhost only because disable-ticketing=on means no auth.
 # Override SPICE_PORT in the environment if 5930 clashes.
 SPICE_ADDR=0.0.0.0

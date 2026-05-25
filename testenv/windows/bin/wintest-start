@@ -53,7 +53,7 @@ qemu-system-x86_64 \
   -device tpm-tis,tpmdev=tpm0 \
   -device qemu-xhci \
   -device usb-tablet \
-  -netdev "user,id=n1,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22" \
+  -netdev "user,id=n1,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22,hostfwd=tcp:127.0.0.1:$HOOK_PORT-:$HOOK_PORT,hostfwd=tcp:127.0.0.1:$WINAPPDRIVER_PORT-:$WINAPPDRIVER_PORT" \
   -device virtio-net-pci,netdev=n1 \
   -drive "file=$OVERLAY,index=0,media=disk,if=virtio,cache=writeback" \
   -rtc base=localtime,clock=host \

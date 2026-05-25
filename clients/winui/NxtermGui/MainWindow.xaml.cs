@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Linq;
+using System.Text.Json;
 using Microsoft.Graphics.Canvas;
 using Microsoft.Graphics.Canvas.Text;
 using Microsoft.Graphics.Canvas.UI.Xaml;
@@ -35,6 +36,12 @@ public sealed partial class MainWindow : Window
     private bool _selecting, _hasSelection;
     private bool _mouseDown;
     private (int row, int col) _lastMouseCell = (-1, -1);
+
+    // Test introspection (NXTERM_TEST_HOOK). _syncSeen records sync-marker ids
+    // the grid has processed, so the e2e harness can wait deterministically.
+    private TestHook? _testHook;
+    private readonly object _syncLock = new();
+    private readonly HashSet<string> _syncSeen = new();
 
     public MainWindow()
     {
@@ -84,6 +91,9 @@ public sealed partial class MainWindow : Window
         var argv = Environment.GetCommandLineArgs();
         _endpoint = argv.Length > 1 ? argv[1] : (Environment.GetEnvironmentVariable("NXTERM_ENDPOINT") ?? "127.0.0.1:7654");
         var session = argv.Length > 2 ? argv[2] : (Environment.GetEnvironmentVariable("NXTERM_SESSION") ?? "");
+        _testHook = TestHook.FromEnv(HandleTestRequest);
+        _testHook?.Start();
+
         var (host, port) = ParseEndpoint(_endpoint);
         try { await _client.ConnectAsync(host, port, _lastCols, _lastRows, session); }
         catch (Exception ex) { OnStatusChanged("connect failed: " + ex.Message); }
@@ -198,6 +208,12 @@ public sealed partial class MainWindow : Window
             _grid.Apply(events);
             if (_grid.Title.Length > 0) _title = _grid.Title.Trim();
         }
+        // Record sync markers only after the grid has fully applied the batch,
+        // so "sync id seen" implies the grid reflects everything before it —
+        // the same render-complete guarantee PtyIO gives via OSC acks.
+        foreach (var ev in events)
+            if (ev.Op == "sync" && !string.IsNullOrEmpty(ev.Data))
+                lock (_syncLock) _syncSeen.Add(ev.Data!);
         OnUi(UiRefresh);
     }
 
@@ -474,5 +490,84 @@ public sealed partial class MainWindow : Window
         lock (_gridLock) _grid.Resize(cols, rows);
         _client.SendResize(cols, rows);
         UiRefresh();
+    }
+
+    // --- test introspection (NXTERM_TEST_HOOK) ------------------------------
+
+    private string HandleTestRequest(string line)
+    {
+        using var doc = JsonDocument.Parse(line);
+        var op = doc.RootElement.TryGetProperty("op", out var o) ? o.GetString() : null;
+        switch (op)
+        {
+            case "state":
+                return OnUiSync(BuildStateJson);
+            case "sync_seen":
+                var id = doc.RootElement.TryGetProperty("id", out var idEl) ? idEl.GetString() : null;
+                bool seen;
+                lock (_syncLock) seen = id != null && _syncSeen.Contains(id);
+                return "{\"seen\":" + (seen ? "true" : "false") + "}";
+            default:
+                return "{\"error\":\"unknown op\"}";
+        }
+    }
+
+    // Build a full state snapshot. Runs on the UI thread (via OnUiSync) so tab /
+    // status reads are race-free; the grid read takes _gridLock as usual.
+    private string BuildStateJson()
+    {
+        object dto;
+        lock (_gridLock)
+        {
+            var g = _grid;
+            var rows = new object[g.Rows];
+            for (int r = 0; r < g.Rows; r++)
+            {
+                var cells = new object[g.Cols];
+                for (int c = 0; c < g.Cols; c++) cells[c] = CellDto(g[r, c]);
+                rows[r] = cells;
+            }
+            dto = new
+            {
+                cols = g.Cols,
+                rows_count = g.Rows,
+                cursor_row = g.CursorRow,
+                cursor_col = g.CursorCol,
+                cursor_visible = g.CursorVisible,
+                title = g.Title,
+                rows,
+                session = _client.Session,
+                active_region = _client.ActiveRegion ?? "",
+                endpoint = _endpoint,
+                status = _status,
+                tabs = _tabs.Select(t => new { id = t.RegionId, title = t.Title, active = t.IsActive }).ToArray(),
+            };
+        }
+        return JsonSerializer.Serialize(dto);
+    }
+
+    private static object CellDto(TermCell cell) =>
+        new { c = cell.Text, fg = ColorSpec(cell.Fg), bg = ColorSpec(cell.Bg), a = (int)cell.Attrs };
+
+    // Reverse of TermColor.Parse: emit the server's wire spec. Indexed colors
+    // are always "5;N"; the Go side decides ANSI16 vs ANSI256 by N < 16.
+    private static string ColorSpec(TermColor c) => c.Kind switch
+    {
+        ColorKind.Indexed => "5;" + c.Index,
+        ColorKind.Rgb => "2;" + c.Rgb.ToString("x6"),
+        _ => "",
+    };
+
+    private T OnUiSync<T>(Func<T> f)
+    {
+        if (DispatcherQueue.HasThreadAccess) return f();
+        var tcs = new TaskCompletionSource<T>();
+        if (!DispatcherQueue.TryEnqueue(() =>
+            {
+                try { tcs.SetResult(f()); }
+                catch (Exception e) { tcs.SetException(e); }
+            }))
+            throw new InvalidOperationException("UI dispatcher unavailable");
+        return tcs.Task.GetAwaiter().GetResult();
     }
 }
