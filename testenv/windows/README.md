@@ -155,6 +155,34 @@ is: don't touch the observer window.
 boots a pristine copy of the base image. The base image itself never
 changes — it's content-addressed in the Nix store.
 
+## Driving GUI apps via QMP (gotchas)
+
+`wintest-key`/`wintest-type`/`wintest-click` inject input through QMP into the
+interactive desktop (session 1). Two hard limits, learned the hard way:
+
+- **QMP synthetic input cannot grant a window foreground.** Mouse events reach
+  the window under the cursor regardless, but *keyboard* events go to whatever
+  is the session-1 *foreground* window — and a synthetic click/drag does **not**
+  make a window foreground (Windows' foreground-stealing rules also block the
+  app's own `SetForegroundWindow` when triggered from synthetic input). So:
+  - A GUI app must `SetForegroundWindow` **on launch** to receive keystrokes
+    (it works there); after that, foreground can be lost.
+  - A sequence that does a QMP pointer drag and then expects keystrokes
+    **fails** — the drag leaves the window non-foreground, so the keys go
+    elsewhere. Pure-mouse or pure-keyboard (right after launch) flows are fine.
+
+- **You cannot read a GPU-drawn (Win2D/Direct2D) app's content via QMP** — only
+  pixels (`wintest-screenshot`). For deterministic assertions, prefer
+  **WinAppDriver** (its Actions run through the real input stack, so foreground
+  works and drag+keys are reliable) plus a UIA-readable test hook, **or** capture
+  the result through a side channel. Example: the nxterm GUI client's mouse
+  reporting was verified by enabling mouse mode and piping the **host** PTY's
+  stdin to a file (`cat > /tmp/x`), then reading the exact bytes the client sent.
+  (`cat` block-buffers to a non-tty — send EOF/`Ctrl+D` to flush.)
+
+See also the session-0 vs session-1 note under [Self-test](#self-test): SSH
+(`wintest-run`) is session 0 and cannot see or focus session-1 GUI windows.
+
 ## Limitations
 
 - x86_64-linux only (wfvm constraint).
