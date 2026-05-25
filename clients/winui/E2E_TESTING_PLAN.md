@@ -26,14 +26,28 @@ Input/clicks: keyboard + raw mouse via QMP (`wintest-key`/`-type`/`-click`/the
 new `-drag`); chrome clicks via WinAppDriver. Grid + sync + chrome state read
 over the `NXTERM_TEST_HOOK` introspection server.
 
+### Phase 3 additions (landed)
+
+- Connect dialog + in-process reconnect (`TestConnectDialog_GUI`,
+  `TestReconnectInProcess_GUI`); shared `reconnectRestoresRegion` runs on the TUI too.
+- Resize reflow (`TestResizeReflow_GUI`, shared `resizeReflow`) via the hook `resize` op.
+- 256-color / truecolor / underline + cursor style (`TestRenderStylesExtended_GUI`,
+  shared `renderStylesExtended` + hook `cursor_style`).
+- Command-palette + help overlays (`TestCommandPalette_GUI`, `TestHelp_GUI`) via the
+  hook `overlay` field.
+- WinAppDriver Actions drag-select (`TestDragSelectActions_GUI`) — real input stack,
+  foreground-safe (unlike QMP).
+
 ### Known gaps
 
-- **Clipboard copy/paste round-trip**: synthetic `Ctrl+Shift+C` key events don't
-  reach the canvas after a synthetic mouse drag in the VM (a harness limitation,
-  not a client bug), so only the selection (not the clipboard) is asserted.
-- **Window resize, 256/truecolor, the full attribute matrix, cursor styles**:
-  not yet exercised; the harness supports them (`ScreenCells`, `Cursor`,
-  `Resize`) when wanted.
+- **Clipboard copy round-trip**: WinAppDriver pointer Actions now drag-select
+  reliably (foreground is held), but the follow-on `Ctrl+Shift+C` chord doesn't
+  populate the clipboard under synthetic input — the manual modifier check
+  (`GetKeyStateForCurrentThread`) doesn't observe WinAppDriver's synthetic
+  Ctrl+Shift. The fix is a WinUI `KeyboardAccelerator` (idiomatic modifier
+  handling); it needs local WinUI iteration to wire without regressing key
+  routing, so the test asserts the selection only for now.
+- **Wide-char/CJK double-width, IME/layout-aware input**: deferred (font/tooling).
 
 ### Environment gotchas (hard-won)
 

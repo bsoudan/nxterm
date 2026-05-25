@@ -54,13 +54,19 @@ type guiState struct {
 	CursorRow     int         `json:"cursor_row"`
 	CursorCol     int         `json:"cursor_col"`
 	CursorVisible bool        `json:"cursor_visible"`
+	CursorStyle   int         `json:"cursor_style"`
 	Title         string      `json:"title"`
 	HasSelection  bool        `json:"has_selection"`
+	Clipboard     string      `json:"clipboard"`
+	ScrollOffset  int         `json:"scroll_offset"`
+	ScrollTotal   int         `json:"scroll_total"`
+	Overlay       string      `json:"overlay"`
 	Rows          [][]guiCell `json:"rows"`
 	Session       string      `json:"session"`
 	ActiveRegion  string      `json:"active_region"`
 	Endpoint      string      `json:"endpoint"`
 	Status        string      `json:"status"`
+	Reconnects    int         `json:"reconnects"`
 	Tabs          []guiTab    `json:"tabs"`
 }
 
@@ -313,9 +319,12 @@ func (g *guiScreen) Write(data []byte) {
 func qmpType(s string)            { _ = exec.Command("wintest-type", s).Run() }
 func qmpKey(keys ...string) error { return exec.Command("wintest-key", keys...).Run() }
 
-// Resize changes the GUI window size. Not yet wired; render tests use the
-// launch-time default geometry.
-func (g *guiScreen) Resize(cols, rows uint16) {}
+// Resize reflows the client's grid to cols×rows via the hook's resize op
+// (which reallocates the grid and sends a resize_request to the server),
+// deterministically and without depending on the VM window's pixel geometry.
+func (g *guiScreen) Resize(cols, rows uint16) {
+	_ = g.request(map[string]any{"op": "resize", "cols": int(cols), "rows": int(rows)}, nil)
+}
 
 // WriteSync is a no-op for the GUI: it has no stdin to inject input-side sync
 // markers into. Output-side sync arrives through the server (NativeRegion.Sync)
@@ -350,11 +359,17 @@ type TabInfo struct {
 // Status, HookSession, HookActiveRegion, HookEndpoint, and Tabs expose the
 // client's connection/chrome state from the latest polled snapshot, for
 // connection- and tab-oriented tests.
-func (g *guiScreen) Status() string          { return g.snapshot().Status }
+func (g *guiScreen) Status() string           { return g.snapshot().Status }
 func (g *guiScreen) HookSession() string      { return g.snapshot().Session }
 func (g *guiScreen) HookActiveRegion() string { return g.snapshot().ActiveRegion }
 func (g *guiScreen) HookEndpoint() string     { return g.snapshot().Endpoint }
 func (g *guiScreen) HasSelection() bool       { return g.snapshot().HasSelection }
+func (g *guiScreen) CursorStyle() int         { return g.snapshot().CursorStyle }
+func (g *guiScreen) Clipboard() string        { return g.snapshot().Clipboard }
+func (g *guiScreen) ScrollOffset() int        { return g.snapshot().ScrollOffset }
+func (g *guiScreen) ScrollTotal() int         { return g.snapshot().ScrollTotal }
+func (g *guiScreen) Overlay() string          { return g.snapshot().Overlay }
+func (g *guiScreen) Reconnects() int          { return g.snapshot().Reconnects }
 
 func (g *guiScreen) Tabs() []TabInfo {
 	st := g.snapshot()
@@ -414,11 +429,60 @@ type GuiWinApp struct {
 // set machine-wide by the harness), and reads it back over the hook at
 // hookHostAddr.
 func StartGuiWinApp(wadAddr, appPath, endpoint, session, hookHostAddr string) (*GuiWinApp, error) {
+	return StartGuiWinAppArgs(wadAddr, appPath, endpoint+" "+session, hookHostAddr)
+}
+
+// StartGuiWinAppArgs launches appPath via WinAppDriver with the given raw
+// command-line arguments. Pass "" to launch with no endpoint, which makes the
+// client show its connect dialog instead of auto-connecting.
+func StartGuiWinAppArgs(wadAddr, appPath, appArgs, hookHostAddr string) (*GuiWinApp, error) {
 	wad := DialWinAppDriver(wadAddr)
-	if err := wad.NewSession(appPath, endpoint+" "+session); err != nil {
+	if err := wad.NewSession(appPath, appArgs); err != nil {
 		return nil, err
 	}
 	return &GuiWinApp{guiScreen: newGuiScreen(hookHostAddr), wad: wad}, nil
+}
+
+// HasElement reports whether at least one element with the given AutomationId
+// is present in the UI tree (e.g. an overlay such as ConnectDialog).
+func (a *GuiWinApp) HasElement(aid string) bool {
+	ids, err := a.wad.FindByAID(aid)
+	return err == nil && len(ids) > 0
+}
+
+// WaitElement blocks until an element with the given AutomationId appears.
+func (a *GuiWinApp) WaitElement(aid string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if a.HasElement(aid) {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("element %q not present within %v", aid, timeout)
+}
+
+// FillConnectDialog types endpoint into the connect dialog's EndpointBox and
+// clicks Connect, driving the client's connect flow through real UI input.
+func (a *GuiWinApp) FillConnectDialog(endpoint string) error {
+	box, err := a.wad.FindByAID("EndpointBox")
+	if err != nil {
+		return err
+	}
+	if len(box) == 0 {
+		return fmt.Errorf("EndpointBox not found")
+	}
+	if err := a.wad.SendKeys(box[0], endpoint); err != nil {
+		return err
+	}
+	btn, err := a.wad.FindByAID("ConnectButton")
+	if err != nil {
+		return err
+	}
+	if len(btn) == 0 {
+		return fmt.Errorf("ConnectButton not found")
+	}
+	return a.wad.Click(btn[0])
 }
 
 func (a *GuiWinApp) Kill() {
@@ -435,6 +499,32 @@ func (a *GuiWinApp) Wait(timeout time.Duration) error { return nil }
 // WaitReady blocks until the client is connected with an active region.
 func (a *GuiWinApp) WaitReady(timeout time.Duration) error {
 	return waitGuiReady(a.guiScreen, timeout)
+}
+
+// ClickByAID clicks the first element with the given AutomationId. Used for
+// chrome buttons and overlay command items.
+func (a *GuiWinApp) ClickByAID(aid string) error {
+	ids, err := a.wad.FindByAID(aid)
+	if err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		return fmt.Errorf("element %q not found", aid)
+	}
+	return a.wad.Click(ids[0])
+}
+
+// WaitOverlay blocks until the client reports the named open overlay (via the
+// hook's overlay field), e.g. "palette", "help", "connect", or "" for none.
+func (a *GuiWinApp) WaitOverlay(name string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if a.Overlay() == name {
+			return nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return fmt.Errorf("overlay = %q, want %q after %v", a.Overlay(), name, timeout)
 }
 
 // NewTab clicks the "+" button to spawn a region.
@@ -498,6 +588,40 @@ func (a *GuiWinApp) ClickTerminalArea() error {
 
 func qmpClick(x, y int) error {
 	return exec.Command("wintest-click", strconv.Itoa(x), strconv.Itoa(y)).Run()
+}
+
+// DragSelectAndCopy drags horizontally inside the canvas (anchored off the
+// status bar) using real WinAppDriver pointer Actions, then sends Ctrl+Shift+C.
+// Unlike a QMP drag, the Actions go through the OS input stack and keep the app
+// foregrounded. The drag forms a selection reliably; the copy chord does not yet
+// populate the clipboard under synthetic input (see TestDragSelectActions_GUI
+// and the clipboard gap in E2E_TESTING_PLAN.md).
+func (a *GuiWinApp) DragSelectAndCopy() error {
+	ids, err := a.wad.FindByAID("ActiveRegionId")
+	if err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		return fmt.Errorf("status bar (ActiveRegionId) not found")
+	}
+	// Anchor at the status-bar element, step up into the canvas, then drag right.
+	if err := a.wad.MoveToElement(ids[0], 0, 0); err != nil {
+		return err
+	}
+	if err := a.wad.MoveTo(0, -80); err != nil { // 80px above the status bar => canvas
+		return err
+	}
+	if err := a.wad.PointerDown(); err != nil {
+		return err
+	}
+	if err := a.wad.MoveTo(150, 0); err != nil { // drag across several cells
+		return err
+	}
+	if err := a.wad.PointerUp(); err != nil {
+		return err
+	}
+	// Ctrl down, Shift down, 'c', then NULL to release the modifiers.
+	return a.wad.Keys("c")
 }
 
 // DragInTerminal drags horizontally inside the canvas (anchored off the status

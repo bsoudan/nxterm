@@ -18,15 +18,16 @@ import (
 
 // guiSession bundles a running WinUI client and the native region it displays.
 type guiSession struct {
-	t         *testing.T
-	nxt       *nxtest.T
-	gf        *nxtest.GuiFrontend
-	region    *nxtest.NativeRegion
-	session   string
-	endpoint  string
-	guestPort int
-	hostAddr  string
-	cleanup   func()
+	t          *testing.T
+	nxt        *nxtest.T
+	gf         *nxtest.GuiFrontend
+	region     *nxtest.NativeRegion
+	session    string
+	endpoint   string
+	socketPath string
+	guestPort  int
+	hostAddr   string
+	cleanup    func()
 }
 
 // relaunch kills the current client and starts a fresh one against the same
@@ -97,14 +98,15 @@ func setupGui(t *testing.T) *guiSession {
 	region.Sync(nxt, "gui boot + subscribe")
 
 	g := &guiSession{
-		t:         t,
-		nxt:       nxt,
-		gf:        gf,
-		region:    region,
-		session:   session,
-		endpoint:  endpoint,
-		guestPort: guestPort,
-		hostAddr:  hostAddr,
+		t:          t,
+		nxt:        nxt,
+		gf:         gf,
+		region:     region,
+		session:    session,
+		endpoint:   endpoint,
+		socketPath: socketPath,
+		guestPort:  guestPort,
+		hostAddr:   hostAddr,
 	}
 	g.cleanup = func() {
 		g.gf.Kill()

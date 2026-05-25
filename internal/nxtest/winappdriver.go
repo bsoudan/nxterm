@@ -35,10 +35,10 @@ func DialWinAppDriver(addr string) *WinAppDriver {
 func (w *WinAppDriver) NewSession(appPath, appArgs string) error {
 	body := map[string]any{
 		"desiredCapabilities": map[string]any{
-			"app":           appPath,
-			"appArguments":  appArgs,
-			"deviceName":    "WindowsPC",
-			"platformName":  "Windows",
+			"app":          appPath,
+			"appArguments": appArgs,
+			"deviceName":   "WindowsPC",
+			"platformName": "Windows",
 		},
 	}
 	var lastErr error
@@ -114,6 +114,56 @@ func (w *WinAppDriver) FindInByAID(parent, aid string) (string, error) {
 // Click clicks the element.
 func (w *WinAppDriver) Click(elementID string) error {
 	return w.do("POST", "/session/"+w.sid+"/element/"+elementID+"/click", map[string]any{}, nil)
+}
+
+// SendKeys types text into the element (legacy /value endpoint). The element is
+// clicked first so it has keyboard focus. Text is sent as a single-element
+// value array, which WinAppDriver types verbatim.
+func (w *WinAppDriver) SendKeys(elementID, text string) error {
+	if err := w.Click(elementID); err != nil {
+		return err
+	}
+	return w.do("POST", "/session/"+w.sid+"/element/"+elementID+"/value",
+		map[string]any{"value": []string{text}}, nil)
+}
+
+// MoveTo moves the mouse pointer by (x, y) relative to its current position
+// (legacy /moveto with no element). MoveToElement first to establish a known
+// anchor, then MoveTo to step into the canvas. PointerDown/PointerUp press and
+// release the left button at the current position. Together these drive a real
+// drag through the OS input stack — which, unlike a QMP drag, leaves the app in
+// the foreground so a following synthetic key event (e.g. Ctrl+Shift+C) reaches
+// the canvas.
+func (w *WinAppDriver) MoveTo(x, y int) error {
+	return w.do("POST", "/session/"+w.sid+"/moveto", map[string]any{"xoffset": x, "yoffset": y}, nil)
+}
+
+// MoveToElement moves the pointer to (xoffset, yoffset) relative to the
+// element's top-left corner, giving an absolute anchor (the Win2D canvas has no
+// UIA peer to target directly, so tests anchor off a findable element such as
+// the status bar and step from there with MoveTo).
+func (w *WinAppDriver) MoveToElement(elementID string, xoffset, yoffset int) error {
+	return w.do("POST", "/session/"+w.sid+"/moveto",
+		map[string]any{"element": elementID, "xoffset": xoffset, "yoffset": yoffset}, nil)
+}
+
+// PointerDown presses the left mouse button at the current pointer position.
+func (w *WinAppDriver) PointerDown() error {
+	return w.do("POST", "/session/"+w.sid+"/buttondown", map[string]any{"button": 0}, nil)
+}
+
+// PointerUp releases the left mouse button at the current pointer position.
+func (w *WinAppDriver) PointerUp() error {
+	return w.do("POST", "/session/"+w.sid+"/buttonup", map[string]any{"button": 0}, nil)
+}
+
+// Keys sends keystrokes to the focused element of the session (legacy /keys).
+// Used for chords like Ctrl+Shift+C after a pointer drag; WinAppDriver maps
+// WebDriver key codepoints (e.g.  Ctrl,  Shift) with the usual
+// "press the listed modifiers, send the final char, release" semantics.
+func (w *WinAppDriver) Keys(text string) error {
+	return w.do("POST", "/session/"+w.sid+"/keys",
+		map[string]any{"value": []string{text}}, nil)
 }
 
 // ElementRect returns the element's absolute screen rectangle, via the legacy
