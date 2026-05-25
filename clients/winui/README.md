@@ -7,9 +7,9 @@ grid and replays the server's structured `terminal_events` into it.
 
 ## Status
 
-**Phase 1 — render spike: complete and verified.** Connects to a server,
-attaches to the default session, subscribes to its first region, and:
+**Phase 1 (render) + Phase 2 (tabs & status bar): complete and verified.**
 
+Phase 1 — the terminal viewport:
 - renders the live screen as a Win2D cell grid (colors via the Campbell 16-color
   palette + 256-color cube + truecolor; reverse/faint attributes; block cursor);
 - replays `screen_update` snapshots and incremental `terminal_events`
@@ -18,10 +18,16 @@ attaches to the default session, subscribes to its first region, and:
 - resizes the PTY to match the window (cols×rows from the font cell metrics);
 - shows the terminal's OSC title in the window title bar.
 
-Deferred to later phases: Windows-Terminal-style **tab strip** (tabs = regions)
-and bottom **status bar** (Phase 2); scrollback, mouse reporting, reconnect,
-multiple sessions, the command-palette/help overlays, and proper layout/IME-aware
-text input via `CoreTextEditContext` (Phase 3).
+Phase 2 — chrome (covered by the `make test-winui` WinAppDriver test):
+- a Windows-Terminal-style **tab strip** where each tab is a server region,
+  driven live off the server's `tree_events` (add/remove) — switch by clicking,
+  `+` spawns (`spawn_request`), `×` closes (`kill_region_request`);
+- a bottom **status bar**: `session@endpoint`, the active region, and
+  `cols×rows` + connection state.
+
+Deferred to Phase 3: scrollback, mouse reporting, reconnect, multiple sessions,
+the command-palette/help overlays, and proper layout/IME-aware text input via
+`CoreTextEditContext`.
 
 ## Layout
 
@@ -31,16 +37,32 @@ clients/winui/
     NxtermGui.csproj        EnableMsixTooling so the .NET CLI can build WinUI 3 (no VS)
     App.xaml(.cs)
     MainWindow.xaml(.cs)    Win2D canvas, render loop, input, resize, lifecycle
-    Protocol/NxtermClient.cs   NDJSON/TCP client; connect -> subscribe -> events
+    Protocol/NxtermClient.cs   NDJSON/TCP client; session/regions, subscribe, events, tree sync
     Terminal/Cell.cs           Cell/Attr/Color model + wire color-spec parser
     Terminal/Palette.cs        256-color palette -> RGB
     Terminal/TerminalGrid.cs   the cell grid + terminal_events replay engine
     Input/KeyEncoder.cs        VirtualKey (+mods) -> xterm byte sequences
+    Ui/TabItem.cs              tab view-model (one tab == one region)
+  NxtermGui.UITests/        WinAppDriver UI test for the tab strip + status bar
   scripts/
     build.ps1               dotnet publish inside the VM
     run-gui.ps1 / run-gui.cmd   launch on the interactive desktop (session 1)
   build.sh                  host orchestrator (deploy -> provision -> build)
+  run-uitest.sh             host orchestrator for the WinAppDriver UI test
 ```
+
+## Test
+
+```sh
+make test-winui
+```
+
+Starts an `nxtermd` on the host, builds the app + test in the VM, starts
+WinAppDriver on the interactive desktop, and runs an MSTest/Appium test that
+drives the tab strip and status bar (the Win2D viewport itself has no UIA, so
+terminal *content* is checked by eye / `make build-winui` + screenshots). Each
+test launches a fresh, uniquely-named session via the app's CLI args
+(`NxtermGui.exe <host:port> [session]`), so it starts with exactly one region.
 
 ## Build
 

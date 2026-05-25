@@ -1,4 +1,4 @@
-.PHONY: all build-server changelog build-tui build-termctl build-nxtest build-mousehelper build-nativeapp build-upgrade-test-binaries check-windows test test-e2e test-race test-upgrade test-stress test-stress-long test-winapp build-winui rpm version clean
+.PHONY: all build-server changelog build-tui build-termctl build-nxtest build-mousehelper build-nativeapp build-upgrade-test-binaries check-windows test test-e2e test-race test-upgrade test-stress test-stress-long test-winapp build-winui test-winui rpm version clean
 
 # Binary names
 SERVER_BIN   := nxtermd
@@ -84,6 +84,12 @@ test-winapp:
 # Run from the dev shell (`nix develop`).
 build-winui:
 	clients/winui/build.sh
+
+# WinAppDriver UI test for the GUI client (tabs + status bar). Starts an
+# nxtermd on the host, builds the app + test in the VM, and runs the test
+# against it. Run from the dev shell (`nix develop`).
+test-winui: build-server
+	clients/winui/run-uitest.sh
 
 test: test-e2e
 

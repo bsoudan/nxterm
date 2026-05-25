@@ -1,3 +1,5 @@
+using System.Collections.ObjectModel;
+using System.Linq;
 using Microsoft.Graphics.Canvas;
 using Microsoft.Graphics.Canvas.Text;
 using Microsoft.Graphics.Canvas.UI.Xaml;
@@ -6,6 +8,7 @@ using Microsoft.UI.Xaml;
 using NxtermGui.Input;
 using NxtermGui.Protocol;
 using NxtermGui.Terminal;
+using NxtermGui.Ui;
 using Windows.System;
 using Windows.UI;
 using Windows.UI.Core;
@@ -16,18 +19,26 @@ public sealed partial class MainWindow : Window
 {
     private readonly NxtermClient _client = new();
     private readonly object _gridLock = new();
+    private readonly ObservableCollection<TabItem> _tabs = new();
     private TerminalGrid _grid = new(80, 24);
 
     private CanvasTextFormat _font = null!;
     private double _cellW = 8, _cellH = 16;
     private bool _ready;
-    private int _lastCols, _lastRows;
+    private int _lastCols = 80, _lastRows = 24;
     private string _status = "starting…";
     private string _title = "";
+    private string _endpoint = "";
 
     public MainWindow()
     {
         this.InitializeComponent();
+        TabStrip.ItemsSource = _tabs;
+
+        _client.SessionReady += OnSessionReady;
+        _client.RegionAdded += OnRegionAdded;
+        _client.RegionRemoved += OnRegionRemoved;
+        _client.RegionSpawned += OnRegionSpawned;
         _client.ScreenUpdated += OnScreenUpdated;
         _client.EventsReceived += OnEventsReceived;
         _client.StatusChanged += OnStatusChanged;
@@ -38,45 +49,36 @@ public sealed partial class MainWindow : Window
         MeasureFont();
         _ready = true;
 
-        var (cols, rows) = SizeToGrid(TerminalCanvas.ActualWidth, TerminalCanvas.ActualHeight);
-        _lastCols = cols; _lastRows = rows;
-        lock (_gridLock) _grid = new TerminalGrid(cols, rows);
-
-        // CanvasControl can mark KeyDown handled before a normal XAML handler
-        // runs, so register with handledEventsToo.
         TerminalCanvas.AddHandler(UIElement.KeyDownEvent,
             new Microsoft.UI.Xaml.Input.KeyEventHandler(TerminalCanvas_KeyDown), handledEventsToo: true);
 
-        TerminalCanvas.Focus(FocusState.Programmatic);
+        (_lastCols, _lastRows) = SizeToGrid(TerminalCanvas.ActualWidth, TerminalCanvas.ActualHeight);
+        lock (_gridLock) _grid = new TerminalGrid(_lastCols, _lastRows);
 
-        // Pull the window to the foreground so it owns keyboard focus on launch.
+        TerminalCanvas.Focus(FocusState.Programmatic);
         SetForegroundWindow(WinRT.Interop.WindowNative.GetWindowHandle(this));
 
-        var (host, port) = ParseEndpoint(Environment.GetEnvironmentVariable("NXTERM_ENDPOINT") ?? "127.0.0.1:7654");
-        try { await _client.ConnectAsync(host, port, cols, rows); }
+        // endpoint and (optional) session come from the command line, falling
+        // back to env vars then defaults: NxtermGui.exe <host:port> [session]
+        var argv = Environment.GetCommandLineArgs();
+        _endpoint = argv.Length > 1 ? argv[1] : (Environment.GetEnvironmentVariable("NXTERM_ENDPOINT") ?? "127.0.0.1:7654");
+        var session = argv.Length > 2 ? argv[2] : (Environment.GetEnvironmentVariable("NXTERM_SESSION") ?? "");
+        var (host, port) = ParseEndpoint(_endpoint);
+        try { await _client.ConnectAsync(host, port, _lastCols, _lastRows, session); }
         catch (Exception ex) { OnStatusChanged("connect failed: " + ex.Message); }
     }
 
     private void MeasureFont()
     {
-        _font = new CanvasTextFormat
-        {
-            FontFamily = "Consolas",
-            FontSize = 16,
-            WordWrapping = CanvasWordWrapping.NoWrap,
-        };
+        _font = new CanvasTextFormat { FontFamily = "Consolas", FontSize = 16, WordWrapping = CanvasWordWrapping.NoWrap };
         var dev = CanvasDevice.GetSharedDevice();
         using var probe = new CanvasTextLayout(dev, new string('M', 10), _font, 10000, 1000);
         _cellW = probe.LayoutBounds.Width / 10.0;
         _cellH = probe.LayoutBounds.Height;
     }
 
-    private (int cols, int rows) SizeToGrid(double w, double h)
-    {
-        int cols = w > 0 ? Math.Max(1, (int)(w / _cellW)) : 80;
-        int rows = h > 0 ? Math.Max(1, (int)(h / _cellH)) : 24;
-        return (cols, rows);
-    }
+    private (int cols, int rows) SizeToGrid(double w, double h) =>
+        (w > 0 ? Math.Max(1, (int)(w / _cellW)) : 80, h > 0 ? Math.Max(1, (int)(h / _cellH)) : 24);
 
     private static (string host, int port) ParseEndpoint(string spec)
     {
@@ -85,13 +87,69 @@ public sealed partial class MainWindow : Window
         return (spec[..i], int.TryParse(spec[(i + 1)..], out var p) ? p : 7654);
     }
 
+    // --- tab / region management (marshalled to the UI thread) --------------
+
+    private void OnSessionReady(string session, List<(string Id, string Name)> regions) => OnUi(() =>
+    {
+        _tabs.Clear();
+        foreach (var (id, name) in regions) _tabs.Add(new TabItem(id, name));
+        if (_tabs.Count > 0) ActivateRegion(_tabs[0].RegionId);
+        UiRefresh();
+    });
+
+    private void OnRegionAdded(string id, string name) => OnUi(() =>
+    {
+        if (_tabs.All(t => t.RegionId != id)) _tabs.Add(new TabItem(id, name));
+    });
+
+    private void OnRegionRemoved(string id) => OnUi(() =>
+    {
+        var tab = _tabs.FirstOrDefault(t => t.RegionId == id);
+        if (tab == null) return;
+        bool wasActive = id == _client.ActiveRegion;
+        int idx = _tabs.IndexOf(tab);
+        _tabs.Remove(tab);
+        if (wasActive && _tabs.Count > 0)
+            ActivateRegion(_tabs[Math.Min(idx, _tabs.Count - 1)].RegionId);
+        UiRefresh();
+    });
+
+    private void OnRegionSpawned(string id, string name, bool error, string message) => OnUi(() =>
+    {
+        if (error) { _status = "spawn failed: " + message; UiRefresh(); return; }
+        if (_tabs.All(t => t.RegionId != id)) _tabs.Add(new TabItem(id, name));
+        ActivateRegion(id);
+    });
+
+    private void ActivateRegion(string id)
+    {
+        _client.Activate(id);
+        lock (_gridLock) _grid = new TerminalGrid(_lastCols, _lastRows);
+        _client.SendResize(_lastCols, _lastRows);
+        foreach (var t in _tabs) t.IsActive = t.RegionId == id;
+        _title = "";
+        UiRefresh();
+    }
+
+    private void Tab_Tapped(object sender, Microsoft.UI.Xaml.Input.TappedRoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is TabItem t) ActivateRegion(t.RegionId);
+    }
+
+    private void TabClose_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is TabItem t) _client.Kill(t.RegionId);
+    }
+
+    private void NewTab_Click(object sender, RoutedEventArgs e) => _client.Spawn();
+
     // --- server callbacks (receive thread) ---------------------------------
 
     private void OnScreenUpdated(TermCell[][] cells, int cr, int cc, string? title)
     {
         if (title is { Length: > 0 }) _title = title.Trim();
         lock (_gridLock) _grid.ApplySnapshot(cells, cr, cc, title);
-        Redraw();
+        OnUi(UiRefresh);
     }
 
     private void OnEventsReceived(List<TermEvent> events)
@@ -101,22 +159,26 @@ public sealed partial class MainWindow : Window
             _grid.Apply(events);
             if (_grid.Title.Length > 0) _title = _grid.Title.Trim();
         }
-        Redraw();
+        OnUi(UiRefresh);
     }
 
     private void OnStatusChanged(string status)
     {
         _status = status;
-        Redraw();
+        OnUi(UiRefresh);
     }
 
-    private void Redraw()
+    private void OnUi(Action a) => DispatcherQueue.TryEnqueue(() => a());
+
+    private void UiRefresh()
     {
-        DispatcherQueue.TryEnqueue(() =>
-        {
-            this.Title = _title.Length > 0 ? $"nxterm — {_title}" : $"nxterm ({_status})";
-            TerminalCanvas.Invalidate();
-        });
+        this.Title = _title.Length > 0 ? $"nxterm — {_title}" : $"nxterm ({_status})";
+        var active = _tabs.FirstOrDefault(t => t.RegionId == _client.ActiveRegion);
+        if (active != null && _title.Length > 0) active.Title = _title;
+        StatusLeft.Text = string.IsNullOrEmpty(_client.Session) ? _endpoint : $"{_client.Session}@{_endpoint}";
+        ActiveRegionId.Text = _client.ActiveRegion ?? "";
+        StatusRight.Text = $"{_lastCols}×{_lastRows}   {_status}";
+        TerminalCanvas.Invalidate();
     }
 
     // --- rendering ----------------------------------------------------------
@@ -142,7 +204,6 @@ public sealed partial class MainWindow : Window
                     float x = (float)(c * _cellW), y = (float)(r * _cellH);
                     if (bg != Palette.DefaultBackground)
                         ds.FillRectangle(x, y, (float)_cellW + 1, (float)_cellH, Rgb(bg));
-
                     if (!string.IsNullOrWhiteSpace(cell.Text))
                         ds.DrawText(cell.Text, x, y, Rgb(fg), _font);
                 }
@@ -162,21 +223,17 @@ public sealed partial class MainWindow : Window
     private void TerminalCanvas_KeyDown(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs e)
     {
         var bytes = KeyEncoder.Encode(e.Key, IsDown(VirtualKey.Control), IsDown(VirtualKey.Shift), IsDown(VirtualKey.Menu));
-        if (bytes != null)
-        {
-            _client.SendInput(bytes);
-            e.Handled = true;
-        }
+        if (bytes != null) { _client.SendInput(bytes); e.Handled = true; }
     }
 
     private static bool IsDown(VirtualKey k) =>
         (InputKeyboardSource.GetKeyStateForCurrentThread(k) & CoreVirtualKeyStates.Down) == CoreVirtualKeyStates.Down;
 
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern bool SetForegroundWindow(IntPtr hWnd);
-
     private void TerminalCanvas_PointerPressed(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
         => TerminalCanvas.Focus(FocusState.Pointer);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
 
     // --- resize -------------------------------------------------------------
 
@@ -188,6 +245,6 @@ public sealed partial class MainWindow : Window
         _lastCols = cols; _lastRows = rows;
         lock (_gridLock) _grid.Resize(cols, rows);
         _client.SendResize(cols, rows);
-        TerminalCanvas.Invalidate();
+        UiRefresh();
     }
 }
