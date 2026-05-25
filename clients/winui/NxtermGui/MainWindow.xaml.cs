@@ -22,7 +22,7 @@ public sealed partial class MainWindow : Window
     private readonly ObservableCollection<TabItem> _tabs = new();
     private TerminalGrid _grid = new(80, 24);
 
-    private CanvasTextFormat _font = null!;
+    private CanvasTextFormat _font = null!, _fontBold = null!, _fontItalic = null!, _fontBoldItalic = null!;
     private double _cellW = 8, _cellH = 16;
     private bool _ready;
     private int _lastCols = 80, _lastRows = 24;
@@ -85,11 +85,29 @@ public sealed partial class MainWindow : Window
 
     private void MeasureFont()
     {
-        _font = new CanvasTextFormat { FontFamily = "Consolas", FontSize = 16, WordWrapping = CanvasWordWrapping.NoWrap };
+        _font = MakeFont(false, false);
+        _fontBold = MakeFont(true, false);
+        _fontItalic = MakeFont(false, true);
+        _fontBoldItalic = MakeFont(true, true);
         var dev = CanvasDevice.GetSharedDevice();
         using var probe = new CanvasTextLayout(dev, new string('M', 10), _font, 10000, 1000);
         _cellW = probe.LayoutBounds.Width / 10.0;
         _cellH = probe.LayoutBounds.Height;
+    }
+
+    private static CanvasTextFormat MakeFont(bool bold, bool italic) => new()
+    {
+        FontFamily = "Consolas",
+        FontSize = 16,
+        FontWeight = new Windows.UI.Text.FontWeight { Weight = (ushort)(bold ? 700 : 400) },
+        FontStyle = italic ? Windows.UI.Text.FontStyle.Italic : Windows.UI.Text.FontStyle.Normal,
+        WordWrapping = CanvasWordWrapping.NoWrap,
+    };
+
+    private CanvasTextFormat Font(CellAttr a)
+    {
+        bool b = (a & CellAttr.Bold) != 0, i = (a & CellAttr.Italic) != 0;
+        return b ? (i ? _fontBoldItalic : _fontBold) : (i ? _fontItalic : _font);
     }
 
     private (int cols, int rows) SizeToGrid(double w, double h) =>
@@ -201,26 +219,46 @@ public sealed partial class MainWindow : Window
     private void TerminalCanvas_Draw(CanvasControl sender, CanvasDrawEventArgs args)
     {
         var ds = args.DrawingSession;
+        float cw = (float)_cellW, ch = (float)_cellH;
         lock (_gridLock)
         {
             var g = _grid;
+            int style = g.CursorStyle;            // 0/1/2 block, 3/4 underline, 5/6 bar
+            bool blockShape = style <= 2;
             for (int r = 0; r < g.Rows; r++)
             {
                 for (int c = 0; c < g.Cols; c++)
                 {
                     var cell = g[r, c];
+                    var attrs = cell.Attrs;
                     uint fg = Palette.Resolve(cell.Fg, Palette.DefaultForeground);
                     uint bg = Palette.Resolve(cell.Bg, Palette.DefaultBackground);
-                    bool reverse = (cell.Attrs & CellAttr.Reverse) != 0;
-                    bool cursor = g.CursorVisible && r == g.CursorRow && c == g.CursorCol;
-                    if (reverse ^ cursor) (fg, bg) = (bg, fg);
-                    if ((cell.Attrs & CellAttr.Faint) != 0) fg = Dim(fg);
+                    if ((attrs & CellAttr.Reverse) != 0) (fg, bg) = (bg, fg);
+                    if ((attrs & CellAttr.Faint) != 0) fg = Dim(fg);
 
-                    float x = (float)(c * _cellW), y = (float)(r * _cellH);
-                    if (bg != Palette.DefaultBackground)
-                        ds.FillRectangle(x, y, (float)_cellW + 1, (float)_cellH, Rgb(bg));
-                    if (!string.IsNullOrWhiteSpace(cell.Text))
-                        ds.DrawText(cell.Text, x, y, Rgb(fg), _font);
+                    bool isCursor = g.CursorVisible && r == g.CursorRow && c == g.CursorCol;
+                    bool blockCursor = isCursor && blockShape;
+                    if (blockCursor) (fg, bg) = (bg, fg);
+
+                    float x = c * cw, y = r * ch;
+                    if (bg != Palette.DefaultBackground || blockCursor)
+                        ds.FillRectangle(x, y, cw + 1, ch, Rgb(bg));
+
+                    var fgc = Rgb(fg);
+                    if ((attrs & CellAttr.Conceal) == 0 && !string.IsNullOrWhiteSpace(cell.Text))
+                        ds.DrawText(cell.Text, x, y, fgc, Font(attrs));
+                    if ((attrs & CellAttr.Underline) != 0)
+                        ds.DrawLine(x, y + ch - 1.5f, x + cw, y + ch - 1.5f, fgc, 1.2f);
+                    if ((attrs & CellAttr.Strikethrough) != 0)
+                        ds.DrawLine(x, y + ch / 2, x + cw, y + ch / 2, fgc, 1.2f);
+
+                    // underline / bar cursor shapes (block handled by the fill above)
+                    if (isCursor && !blockShape)
+                    {
+                        var cursorColor = Rgb(Palette.DefaultForeground);
+                        if (style is 3 or 4) ds.FillRectangle(x, y + ch - 2.5f, cw, 2.5f, cursorColor);
+                        else ds.FillRectangle(x, y, 2.5f, ch, cursorColor);
+                    }
                 }
             }
         }

@@ -22,6 +22,7 @@ public sealed class TerminalGrid
     public int CursorRow { get; private set; }
     public int CursorCol { get; private set; }
     public bool CursorVisible { get; private set; } = true;
+    public int CursorStyle { get; private set; }   // DECSCUSR: 0/1/2 block, 3/4 underline, 5/6 bar
     public string Title { get; private set; } = "";
 
     private TermCell[][] _buf = Array.Empty<TermCell[]>();
@@ -34,6 +35,14 @@ public sealed class TerminalGrid
     private int _savRow, _savCol;
     private TermColor _savFg = TermColor.Default, _savBg = TermColor.Default;
     private CellAttr _savAttrs;
+
+    // Alternate screen (DECSET 1049/1047/47): the primary buffer + cursor are
+    // parked here while a full-screen app draws, and restored on exit.
+    private bool _altActive;
+    private TermCell[][]? _altBuf;
+    private int _altRow, _altCol, _altTop, _altBottom;
+    private TermColor _altFg = TermColor.Default, _altBg = TermColor.Default;
+    private CellAttr _altAttrs;
 
     public TerminalGrid(int cols, int rows) => Allocate(cols, rows);
 
@@ -59,13 +68,25 @@ public sealed class TerminalGrid
     public void Resize(int cols, int rows)
     {
         if (cols == Cols && rows == Rows) return;
-        var old = _buf; int oldRows = Rows, oldCols = Cols;
+        var old = _buf; var oldAlt = _altBuf; int oldRows = Rows, oldCols = Cols;
+        int curR = CursorRow, curC = CursorCol;
         Allocate(cols, rows);
-        for (int r = 0; r < Math.Min(oldRows, Rows); r++)
-            for (int c = 0; c < Math.Min(oldCols, Cols); c++)
-                _buf[r][c] = old[r][c];
-        CursorRow = Math.Min(CursorRow, Rows - 1);
-        CursorCol = Math.Min(CursorCol, Cols - 1);
+        CopyOverlap(_buf, old, oldRows, oldCols);
+        if (oldAlt != null)
+        {
+            _altBuf = new TermCell[Rows][];
+            for (int r = 0; r < Rows; r++) _altBuf[r] = NewRow(TermColor.Default);
+            CopyOverlap(_altBuf, oldAlt, oldRows, oldCols);
+        }
+        CursorRow = Math.Min(curR, Rows - 1);
+        CursorCol = Math.Min(curC, Cols - 1);
+    }
+
+    private void CopyOverlap(TermCell[][] dst, TermCell[][] src, int srcRows, int srcCols)
+    {
+        for (int r = 0; r < Math.Min(srcRows, Rows); r++)
+            for (int c = 0; c < Math.Min(srcCols, Cols); c++)
+                dst[r][c] = src[r][c];
     }
 
     // Install a full snapshot (subscribe response / mode-2026 sync).
@@ -135,8 +156,15 @@ public sealed class TerminalGrid
             case "sc": case "decsc": SaveCursor(); break;
             case "rc": case "decrc": RestoreCursor(); break;
 
-            case "sm": if (HasParam(e.Params, 25)) CursorVisible = true; break;
-            case "rm": if (HasParam(e.Params, 25)) CursorVisible = false; break;
+            case "sm":
+                if (HasParam(e.Params, 25)) CursorVisible = true;
+                if (IsAltParam(e.Params)) EnterAlt();
+                break;
+            case "rm":
+                if (HasParam(e.Params, 25)) CursorVisible = false;
+                if (IsAltParam(e.Params)) LeaveAlt();
+                break;
+            case "decscusr": CursorStyle = (e.Params != null && e.Params.Length > 0) ? e.Params[0] : 1; break;
 
             case "title": Title = e.Data ?? Title; break;
             case "reset": case "decstr": FullReset(); break;
@@ -232,11 +260,37 @@ public sealed class TerminalGrid
     private void SaveCursor() { _savRow = CursorRow; _savCol = CursorCol; _savFg = _penFg; _savBg = _penBg; _savAttrs = _penAttrs; }
     private void RestoreCursor() { CursorRow = _savRow; CursorCol = _savCol; _penFg = _savFg; _penBg = _savBg; _penAttrs = _savAttrs; }
 
+    private static bool IsAltParam(int[]? p) => HasParam(p, 1049) || HasParam(p, 1047) || HasParam(p, 47);
+
+    private void EnterAlt()
+    {
+        if (_altActive) return;
+        _altBuf = _buf;
+        _altRow = CursorRow; _altCol = CursorCol; _altTop = _top; _altBottom = _bottom;
+        _altFg = _penFg; _altBg = _penBg; _altAttrs = _penAttrs;
+
+        _buf = new TermCell[Rows][];
+        for (int r = 0; r < Rows; r++) _buf[r] = NewRow(TermColor.Default);
+        _top = 0; _bottom = Rows - 1; CursorRow = CursorCol = 0;
+        _altActive = true;
+    }
+
+    private void LeaveAlt()
+    {
+        if (!_altActive || _altBuf == null) return;
+        _buf = _altBuf;
+        CursorRow = Math.Min(_altRow, Rows - 1); CursorCol = Math.Min(_altCol, Cols - 1);
+        _top = _altTop; _bottom = _altBottom;
+        _penFg = _altFg; _penBg = _altBg; _penAttrs = _altAttrs;
+        _altBuf = null; _altActive = false;
+    }
+
     private void FullReset()
     {
         Allocate(Cols, Rows);
         _penFg = TermColor.Default; _penBg = TermColor.Default; _penAttrs = CellAttr.None;
         CursorVisible = true;
+        _altActive = false; _altBuf = null; CursorStyle = 0;
     }
 
     private void ApplySgr(int[]? a)
