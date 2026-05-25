@@ -400,17 +400,105 @@ func (f *GuiFrontend) Kill() {
 // observe; Kill terminates it.
 func (f *GuiFrontend) Wait(timeout time.Duration) error { return nil }
 
+// GuiWinApp is the WinUI client launched via WinAppDriver (so its XAML chrome —
+// tabs, buttons — can be clicked) while its rendered grid + state are still read
+// over the test hook. Used for tab/chrome tests. The Screen is the hook;
+// lifecycle and the tab operations go through WinAppDriver.
+type GuiWinApp struct {
+	*guiScreen
+	wad *WinAppDriver
+}
+
+// StartGuiWinApp launches appPath via WinAppDriver with "endpoint session" as
+// arguments (the test hook is supplied via the launched process's environment,
+// set machine-wide by the harness), and reads it back over the hook at
+// hookHostAddr.
+func StartGuiWinApp(wadAddr, appPath, endpoint, session, hookHostAddr string) (*GuiWinApp, error) {
+	wad := DialWinAppDriver(wadAddr)
+	if err := wad.NewSession(appPath, endpoint+" "+session); err != nil {
+		return nil, err
+	}
+	return &GuiWinApp{guiScreen: newGuiScreen(hookHostAddr), wad: wad}, nil
+}
+
+func (a *GuiWinApp) Kill() {
+	a.guiScreen.close()
+	a.wad.Close()
+}
+
+func (a *GuiWinApp) Wait(timeout time.Duration) error { return nil }
+
+// WaitReady blocks until the client is connected with an active region.
+func (a *GuiWinApp) WaitReady(timeout time.Duration) error {
+	return waitGuiReady(a.guiScreen, timeout)
+}
+
+// NewTab clicks the "+" button to spawn a region.
+func (a *GuiWinApp) NewTab() error {
+	ids, err := a.wad.FindByAID("NewTabButton")
+	if err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		return fmt.Errorf("NewTabButton not found")
+	}
+	return a.wad.Click(ids[0])
+}
+
+// SwitchToTab clicks the tab at index.
+func (a *GuiWinApp) SwitchToTab(index int) error {
+	ids, err := a.wad.FindByAID("TerminalTab")
+	if err != nil {
+		return err
+	}
+	if index < 0 || index >= len(ids) {
+		return fmt.Errorf("tab index %d out of range (%d tabs)", index, len(ids))
+	}
+	return a.wad.Click(ids[index])
+}
+
+// CloseTab clicks the close (✕) button inside the tab at index.
+func (a *GuiWinApp) CloseTab(index int) error {
+	ids, err := a.wad.FindByAID("TerminalTab")
+	if err != nil {
+		return err
+	}
+	if index < 0 || index >= len(ids) {
+		return fmt.Errorf("tab index %d out of range (%d tabs)", index, len(ids))
+	}
+	closeID, err := a.wad.FindInByAID(ids[index], "CloseTab")
+	if err != nil {
+		return err
+	}
+	return a.wad.Click(closeID)
+}
+
+// ActiveTabIndex returns the index of the active tab from the hook snapshot, or
+// -1 if none.
+func (a *GuiWinApp) ActiveTabIndex() int {
+	for i, t := range a.snapshot().Tabs {
+		if t.Active {
+			return i
+		}
+	}
+	return -1
+}
+
 // WaitReady blocks until the client reports a live connection and an active
 // region (its first tab), so a test can start driving the region.
 func (f *GuiFrontend) WaitReady(timeout time.Duration) error {
+	return waitGuiReady(f.guiScreen, timeout)
+}
+
+func waitGuiReady(g *guiScreen, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		st := f.snapshot()
+		st := g.snapshot()
 		if strings.Contains(st.Status, "connected") && st.ActiveRegion != "" {
 			return nil
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	st := f.snapshot()
+	st := g.snapshot()
 	return fmt.Errorf("gui client not ready within %v (status=%q active_region=%q)", timeout, st.Status, st.ActiveRegion)
 }
