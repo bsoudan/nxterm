@@ -223,6 +223,74 @@ func TestScrollbackAfterReconnect_GUI(t *testing.T) {
 	}, "oldest pre-reconnect line PRE0001 reachable after reconnect", 5*time.Second)
 }
 
+// TestScrollbackMode2026Delta_GUI verifies that rows scrolled off the screen
+// during a mode-2026 synchronized-output batch reach the client's scrollback via
+// the ScrollbackDelta on the flushed snapshot (the per-event replay never sees
+// them). Without the delta the scrolled-off rows would be lost until a re-fetch.
+func TestScrollbackMode2026Delta_GUI(t *testing.T) {
+	g := setupGui(t)
+	defer g.cleanup()
+
+	var buf bytes.Buffer
+	for i := 1; i <= 40; i++ {
+		fmt.Fprintf(&buf, "BASE_%d\r\n", i)
+	}
+	g.region.Output(buf.Bytes()).Sync(g.nxt, "feed BASE")
+
+	// Enter scrollback (fetch) so the client holds a populated local history.
+	syncs := g.gf.ScrollbackSyncs()
+	g.gf.ScrollHistory(1)
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if g.gf.ScrollbackSyncs() > syncs {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Mode-2026 batch: many unique lines scroll off; the server flushes a single
+	// snapshot whose ScrollbackDelta carries the scrolled-off rows.
+	buf.Reset()
+	buf.WriteString("\x1b[?2026h")
+	for i := 1; i <= 50; i++ {
+		fmt.Fprintf(&buf, "SYNC_%d\r\n", i)
+	}
+	buf.WriteString("\x1b[?2026l")
+	g.region.Output(buf.Bytes()).Sync(g.nxt, "feed mode-2026 batch")
+
+	// SYNC_1..~26 scrolled off during the batch; SYNC_27..50 stay on the live
+	// screen. Scroll up from live and find a scrolled-off SYNC line in history.
+	g.gf.ScrollToLive()
+	waitGuiOffset(t, g, 0)
+	found := false
+	for step := 0; step < 12 && !found; step++ {
+		for _, l := range g.nxt.ScreenLines() {
+			f := strings.Fields(l)
+			if len(f) == 0 || !strings.HasPrefix(f[0], "SYNC_") {
+				continue
+			}
+			var n int
+			if _, err := fmt.Sscanf(f[0], "SYNC_%d", &n); err == nil && n >= 1 && n <= 26 {
+				found = true
+				break
+			}
+		}
+		if found {
+			break
+		}
+		want := g.gf.ScrollOffset() + 6
+		if total := g.gf.ScrollTotal(); want > total {
+			want = total
+		}
+		g.gf.ScrollHistory(6)
+		waitGuiOffset(t, g, want)
+	}
+	if !found {
+		t.Fatalf("no scrolled-off SYNC_ line (1..26) reached scrollback via the 2026 delta:\n%s",
+			strings.Join(g.nxt.ScreenLines(), "\n"))
+	}
+}
+
 // walkScrollbackStrictGui jumps to the top of scrollback and pages down a half
 // screen at a time, asserting per-viewport monotonicity + no duplicates, and
 // returns every SEQ value seen.
