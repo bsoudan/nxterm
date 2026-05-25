@@ -1,7 +1,54 @@
 # WinUI GUI Client — E2E Testing Plan
 
-Status: **proposed** (design approved, not yet implemented)
+Status: **implemented** (host-Go harness + GUI test suite landed)
 Branch: `feat/winui-gui-client`
+
+## Implemented test suite
+
+Run with `make test-winui-e2e` (boots VM, builds app, starts WinAppDriver +
+SSH tunnel, then `go test -tags gui ./e2e -run _GUI$`). The TUI counterparts run
+in the normal `make test`.
+
+| GUI test (`_GUI`) | Launch | Covers | Shared body |
+|---|---|---|---|
+| `TestRenderBasic` | scheduled-task | text renders | ✅ `renderBasic` |
+| `TestRenderStyles` | scheduled-task | SGR color (ANSI16) + bold + reverse | ✅ `renderStyles` |
+| `TestRenderCursor` | scheduled-task | cursor follows text (row) | ✅ `renderCursor` |
+| `TestRenderAltScreen` | scheduled-task | DECSET 1049 enter/leave | ✅ `renderAltScreen` |
+| `TestNativeInputRoundTrip` | scheduled-task | keyboard → KeyEncoder → server | ✅ `nativeInputRoundTrip` |
+| `TestConnection` | scheduled-task | connected, session@endpoint, active region | GUI-only |
+| `TestReconnect` | scheduled-task | relaunch repicks region + restores screen | GUI-only |
+| `TestTabNewSwitchClose` | WinAppDriver | "+" / click / ✕ (incl. tree-remove) | GUI-only |
+| `TestMouseReporting` | WinAppDriver | SGR mouse report on click | GUI-only |
+| `TestMouseSelection` | WinAppDriver | click-drag forms a selection | GUI-only |
+
+Input/clicks: keyboard + raw mouse via QMP (`wintest-key`/`-type`/`-click`/the
+new `-drag`); chrome clicks via WinAppDriver. Grid + sync + chrome state read
+over the `NXTERM_TEST_HOOK` introspection server.
+
+### Known gaps
+
+- **Clipboard copy/paste round-trip**: synthetic `Ctrl+Shift+C` key events don't
+  reach the canvas after a synthetic mouse drag in the VM (a harness limitation,
+  not a client bug), so only the selection (not the clipboard) is asserted.
+- **Window resize, 256/truecolor, the full attribute matrix, cursor styles**:
+  not yet exercised; the harness supports them (`ScreenCells`, `Cursor`,
+  `Resize`) when wanted.
+
+### Environment gotchas (hard-won)
+
+- QEMU runs under `bwrap --unshare-pid`, so it's invisible to host `ps`/`kill`
+  and `is_running` is unreliable; a stale VM with old args persists. Recover by
+  SSH `shutdown /s` + killing the visible `swtpm`, then `wintest-start`.
+- **`hostfwd` changes need a full VM stop+start** to take effect.
+- The hook binds `0.0.0.0` (reachable via hostfwd to the guest NIC).
+  **WinAppDriver binds loopback only and rejects `0.0.0.0`**, so it's reached via
+  an SSH tunnel (host `:14723` → guest `127.0.0.1:4723`).
+- **`pkill -f <pattern>` matches the issuing shell's own cmdline** — using a port
+  string there SIGKILLs the command itself (exit 144). Kill by PID or `pgrep -x`.
+- Foreground `sleep` is blocked by the harness; rely on poll/retry loops.
+- WinAppDriver-launched apps must be force-killed on teardown (session DELETE is
+  async) or the next test can't bind the hook port.
 
 ## Goal
 
