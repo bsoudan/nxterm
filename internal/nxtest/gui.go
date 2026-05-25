@@ -1,0 +1,353 @@
+package nxtest
+
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"net"
+	"os"
+	"os/exec"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"nxtermd/pkg/te"
+)
+
+// guiScreen implements Screen by reading the WinUI client's rendered grid over
+// its NXTERM_TEST_HOOK introspection server (reached on the Linux host through
+// a QEMU hostfwd). A background goroutine polls {"op":"state"} and caches the
+// snapshot; WaitSync polls {"op":"sync_seen"}. This is the GUI analog of PtyIO
+// reading a PTY and tracking OSC acks. See clients/winui/E2E_TESTING_PLAN.md.
+type guiScreen struct {
+	addr string
+
+	connMu sync.Mutex
+	conn   net.Conn
+	rd     *bufio.Reader
+
+	stateMu sync.Mutex
+	state   guiState
+
+	ch       chan struct{}
+	stop     chan struct{}
+	stopOnce sync.Once
+}
+
+type guiCell struct {
+	C  string `json:"c"`
+	Fg string `json:"fg"`
+	Bg string `json:"bg"`
+	A  int    `json:"a"`
+}
+
+type guiTab struct {
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Active bool   `json:"active"`
+}
+
+type guiState struct {
+	Cols          int         `json:"cols"`
+	RowsCount     int         `json:"rows_count"`
+	CursorRow     int         `json:"cursor_row"`
+	CursorCol     int         `json:"cursor_col"`
+	CursorVisible bool        `json:"cursor_visible"`
+	Title         string      `json:"title"`
+	Rows          [][]guiCell `json:"rows"`
+	Session       string      `json:"session"`
+	ActiveRegion  string      `json:"active_region"`
+	Endpoint      string      `json:"endpoint"`
+	Status        string      `json:"status"`
+	Tabs          []guiTab    `json:"tabs"`
+}
+
+func newGuiScreen(addr string) *guiScreen {
+	g := &guiScreen{
+		addr: addr,
+		ch:   make(chan struct{}, 1),
+		stop: make(chan struct{}),
+	}
+	go g.pollLoop()
+	return g
+}
+
+func (g *guiScreen) pollLoop() {
+	t := time.NewTicker(40 * time.Millisecond)
+	defer t.Stop()
+	for {
+		select {
+		case <-g.stop:
+			return
+		case <-t.C:
+			var st guiState
+			if err := g.request(map[string]any{"op": "state"}, &st); err != nil {
+				continue
+			}
+			g.stateMu.Lock()
+			g.state = st
+			g.stateMu.Unlock()
+			select {
+			case g.ch <- struct{}{}:
+			default:
+			}
+		}
+	}
+}
+
+// request sends one JSON line and decodes the one-line response. A single
+// connection is reused; on any I/O error it is dropped and redialed next time.
+func (g *guiScreen) request(req any, out any) error {
+	g.connMu.Lock()
+	defer g.connMu.Unlock()
+
+	if g.conn == nil {
+		c, err := net.DialTimeout("tcp", g.addr, 2*time.Second)
+		if err != nil {
+			return err
+		}
+		g.conn, g.rd = c, bufio.NewReader(c)
+	}
+
+	b, _ := json.Marshal(req)
+	b = append(b, '\n')
+	_ = g.conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	if _, err := g.conn.Write(b); err != nil {
+		g.dropConn()
+		return err
+	}
+	_ = g.conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	line, err := g.rd.ReadBytes('\n')
+	if err != nil {
+		g.dropConn()
+		return err
+	}
+	if out != nil {
+		return json.Unmarshal(line, out)
+	}
+	return nil
+}
+
+func (g *guiScreen) dropConn() {
+	if g.conn != nil {
+		g.conn.Close()
+		g.conn, g.rd = nil, nil
+	}
+}
+
+func (g *guiScreen) close() {
+	g.stopOnce.Do(func() { close(g.stop) })
+	g.connMu.Lock()
+	g.dropConn()
+	g.connMu.Unlock()
+}
+
+func (g *guiScreen) snapshot() guiState {
+	g.stateMu.Lock()
+	defer g.stateMu.Unlock()
+	return g.state
+}
+
+// ScreenLines joins each row's cell text, matching te.Screen.Display: skip
+// empty-data cells (wide-char continuation), keep blanks (" ").
+func (g *guiScreen) ScreenLines() []string {
+	st := g.snapshot()
+	lines := make([]string, len(st.Rows))
+	for r, row := range st.Rows {
+		var b strings.Builder
+		for _, c := range row {
+			if c.C != "" {
+				b.WriteString(c.C)
+			}
+		}
+		lines[r] = b.String()
+	}
+	return lines
+}
+
+func (g *guiScreen) ScreenLine(row int) string {
+	lines := g.ScreenLines()
+	if row < 0 || row >= len(lines) {
+		return ""
+	}
+	return lines[row]
+}
+
+// ScreenCells maps the GUI grid to te.Cell. Colors carry Mode + Index (and the
+// hex for truecolor); te also stores a palette Name that this does not
+// reconstruct, so cross-backend color assertions should compare Mode/Index and
+// the attribute bools, not Color.Name.
+func (g *guiScreen) ScreenCells() [][]te.Cell {
+	st := g.snapshot()
+	out := make([][]te.Cell, len(st.Rows))
+	for r, row := range st.Rows {
+		cells := make([]te.Cell, len(row))
+		for c, cell := range row {
+			cells[c] = te.Cell{
+				Data: cell.C,
+				Attr: te.Attr{
+					Fg:            colorFromSpec(cell.Fg),
+					Bg:            colorFromSpec(cell.Bg),
+					Bold:          cell.A&1 != 0,
+					Italics:       cell.A&2 != 0,
+					Underline:     cell.A&4 != 0,
+					Strikethrough: cell.A&8 != 0,
+					Reverse:       cell.A&16 != 0,
+					Blink:         cell.A&32 != 0,
+					Conceal:       cell.A&64 != 0,
+					Faint:         cell.A&128 != 0,
+				},
+			}
+		}
+		out[r] = cells
+	}
+	return out
+}
+
+// colorFromSpec parses the server wire color spec emitted by the hook:
+// "" default, "5;N" indexed (ANSI16 if N<16 else ANSI256), "2;rrggbb" truecolor.
+func colorFromSpec(spec string) te.Color {
+	if spec == "" {
+		return te.Color{Mode: te.ColorDefault, Name: "default"}
+	}
+	semi := strings.IndexByte(spec, ';')
+	if semi <= 0 {
+		return te.Color{Mode: te.ColorDefault, Name: "default"}
+	}
+	tag, rest := spec[:semi], spec[semi+1:]
+	switch tag {
+	case "5":
+		n, _ := strconv.Atoi(rest)
+		mode := te.ColorANSI256
+		if n < 16 {
+			mode = te.ColorANSI16
+		}
+		return te.Color{Mode: mode, Index: uint8(n)}
+	case "2":
+		return te.Color{Mode: te.ColorTrueColor, Name: rest}
+	}
+	return te.Color{Mode: te.ColorDefault, Name: "default"}
+}
+
+// Cursor returns the current cursor row/col from the cached snapshot.
+func (g *guiScreen) Cursor() (row, col int) {
+	st := g.snapshot()
+	return st.CursorRow, st.CursorCol
+}
+
+func (g *guiScreen) WaitForScreen(check func([]string) bool, desc string, timeout time.Duration) ([]string, error) {
+	deadline := time.After(timeout)
+	for {
+		lines := g.ScreenLines()
+		if check(lines) {
+			return lines, nil
+		}
+		select {
+		case <-deadline:
+			return lines, fmt.Errorf("timeout (%v) waiting for %s\nscreen:\n%s", timeout, desc, strings.Join(lines, "\n"))
+		case <-g.ch:
+		}
+	}
+}
+
+func (g *guiScreen) WaitFor(needle string, timeout time.Duration) ([]string, error) {
+	return g.WaitForScreen(func(lines []string) bool {
+		for _, line := range lines {
+			if strings.Contains(line, needle) {
+				return true
+			}
+		}
+		return false
+	}, "screen to contain "+needle, timeout)
+}
+
+func (g *guiScreen) WaitForSilence(duration time.Duration) {
+	for {
+		select {
+		case <-g.ch:
+		case <-time.After(duration):
+			return
+		}
+	}
+}
+
+// Write injects keystrokes into the GUI. Implemented via QMP in the input
+// iteration; unused by render tests (which drive output through the server).
+func (g *guiScreen) Write(data []byte) {}
+
+// Resize changes the GUI window size. Not yet wired; render tests use the
+// launch-time default geometry.
+func (g *guiScreen) Resize(cols, rows uint16) {}
+
+// WriteSync is a no-op for the GUI: it has no stdin to inject input-side sync
+// markers into. Output-side sync arrives through the server (NativeRegion.Sync)
+// and is observed via WaitSync below.
+func (g *guiScreen) WriteSync(id string) {}
+
+// WaitSync polls the hook's sync_seen until the grid has processed the marker.
+func (g *guiScreen) WaitSync(id string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		var resp struct {
+			Seen bool `json:"seen"`
+		}
+		if err := g.request(map[string]any{"op": "sync_seen", "id": id}, &resp); err == nil && resp.Seen {
+			return nil
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	return fmt.Errorf("timeout (%v) waiting for gui sync ack %q", timeout, id)
+}
+
+func (g *guiScreen) Ch() <-chan struct{} { return g.ch }
+
+// GuiFrontend launches the WinUI client in the Windows VM and exposes it as a
+// Screen + lifecycle for a *T. Launch goes through the existing scheduled-task
+// path (run-gui-test.ps1) over SSH; the grid is read back over the test hook.
+// Requires the VM up + app built — see make test-winui-e2e.
+type GuiFrontend struct {
+	*guiScreen
+	Session string
+}
+
+// StartGuiFrontend launches the client pointed at endpoint (e.g.
+// "10.0.2.2:34567") + session, with the test hook on hookGuestPort, and reads
+// it back over the host-forwarded hook at hookHostAddr (e.g. "127.0.0.1:9300").
+func StartGuiFrontend(endpoint, session string, hookGuestPort int, hookHostAddr string) (*GuiFrontend, error) {
+	ps := fmt.Sprintf(
+		`powershell -NoProfile -ExecutionPolicy Bypass -File %%USERPROFILE%%\nxgui\scripts\run-gui-test.ps1 -Endpoint %s -Session %s -HookPort %d`,
+		endpoint, session, hookGuestPort)
+	cmd := exec.Command("wintest-run", ps)
+	cmd.Stderr = os.Stderr
+	if out, err := cmd.Output(); err != nil {
+		return nil, fmt.Errorf("launch gui client: %w\n%s", err, out)
+	}
+	return &GuiFrontend{guiScreen: newGuiScreen(hookHostAddr), Session: session}, nil
+}
+
+// Kill stops the client in the VM and the local poller.
+func (f *GuiFrontend) Kill() {
+	f.guiScreen.close()
+	_ = exec.Command("wintest-run",
+		`powershell -NoProfile -Command "Get-Process NxtermGui -ErrorAction SilentlyContinue | Stop-Process -Force"`).Run()
+}
+
+// Wait is a no-op: the GUI client is a long-lived window with no exit code we
+// observe; Kill terminates it.
+func (f *GuiFrontend) Wait(timeout time.Duration) error { return nil }
+
+// WaitReady blocks until the client reports a live connection and an active
+// region (its first tab), so a test can start driving the region.
+func (f *GuiFrontend) WaitReady(timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		st := f.snapshot()
+		if strings.Contains(st.Status, "connected") && st.ActiveRegion != "" {
+			return nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	st := f.snapshot()
+	return fmt.Errorf("gui client not ready within %v (status=%q active_region=%q)", timeout, st.Status, st.ActiveRegion)
+}

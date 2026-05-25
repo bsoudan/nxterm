@@ -91,6 +91,12 @@ build-winui:
 test-winui: build-server
 	clients/winui/run-uitest.sh
 
+# Host-driven Go e2e tests for the GUI client (go test -tags gui). Boots the VM,
+# builds the app, then runs the GUI test variants which read the client's
+# rendered grid back over the NXTERM_TEST_HOOK hostfwd. Run from the dev shell.
+test-winui-e2e: build-server
+	clients/winui/run-e2e.sh
+
 test: test-e2e
 
 test-e2e: all build-upgrade-test-binaries

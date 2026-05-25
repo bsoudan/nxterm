@@ -104,6 +104,15 @@ type T struct {
 	*testing.T
 	Screen
 	Frontend *Frontend // nil when wrapping a bare PtyIO or a non-PTY backend
+	life     lifecycle // process lifecycle (Kill/Wait); nil for bare PtyIO
+}
+
+// lifecycle is the process control a T's backend exposes. *Frontend (PTY) and
+// *GuiFrontend (WinUI client in the VM) both implement it, so a test body can
+// call nxt.Kill()/nxt.Wait() regardless of backend.
+type lifecycle interface {
+	Kill()
+	Wait(timeout time.Duration) error
 }
 
 // New wraps a bare PtyIO (no frontend process).
@@ -113,7 +122,14 @@ func New(t *testing.T, pio *PtyIO) *T {
 
 // NewFromFrontend wraps a Frontend (which embeds a PtyIO).
 func NewFromFrontend(t *testing.T, fe *Frontend) *T {
-	return &T{T: t, Screen: fe.PtyIO, Frontend: fe}
+	return &T{T: t, Screen: fe.PtyIO, Frontend: fe, life: fe}
+}
+
+// NewFromScreen wraps an arbitrary Screen backend with its lifecycle. Used by
+// the GUI backend, where the Screen reads a remote client over a test hook and
+// the lifecycle launches/kills that client.
+func NewFromScreen(t *testing.T, s Screen, life lifecycle) *T {
+	return &T{T: t, Screen: s, life: life}
 }
 
 // WaitFor waits for needle to appear on the virtual screen.
@@ -234,11 +250,11 @@ func (t *T) RequireTabBarDoesNotContain(unwanted string) {
 // Kill forcibly terminates the frontend process.
 // Panics if T was created with New (no frontend).
 func (t *T) Kill() {
-	t.Frontend.Kill()
+	t.life.Kill()
 }
 
 // Wait waits for the frontend process to exit.
 // Panics if T was created with New (no frontend).
 func (t *T) Wait(timeout time.Duration) error {
-	return t.Frontend.Wait(timeout)
+	return t.life.Wait(timeout)
 }
