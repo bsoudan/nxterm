@@ -9,10 +9,14 @@ deployed at runtime; the base image stays clean.
 
 ## Layout
 
+This environment is part of the root `nxterm` flake — there is no separate
+sub-flake. The root `flake.nix` exposes the base image as `.#image` and wires
+the `qemu`/`swtpm`/`virt-viewer`/`sshpass`/`socat` tooling and the `wintest-*`
+scripts into the main `nix develop` shell.
+
 ```
 testenv/windows/
-  flake.nix       sub-flake (own inputs, own lock — does not touch root flake)
-  image.nix       wfvm.makeWindowsImage call
+  image.nix       wfvm.makeWindowsImage call (imported by the root flake)
   bin/            wintest-* shell scripts (on PATH inside the dev shell)
   state/          runtime files (gitignored): qcow2 overlay, sockets, pid files
   ssh/            reserved for future per-env keys (gitignored)
@@ -27,13 +31,12 @@ testenv/windows/
 
 ## One-time setup
 
-1. **Enter the dev shell** (separate from the main `nxterm` shell):
+1. **Enter the dev shell** — the main `nxterm` shell, from the repo root:
    ```sh
-   cd testenv/windows
    nix develop
    ```
    This puts `qemu`, `virt-viewer`, `swtpm`, `sshpass`, and the `wintest-*`
-   scripts on PATH.
+   scripts on PATH (alongside the Go toolchain).
 
 2. **Add the Windows ISO to the nix store.** wfvm expects
    `Win11_25H2_English_x64_v2.iso`. Download from
@@ -45,7 +48,7 @@ testenv/windows/
    `windowsImage = pkgs.requireFile { ... };` with the correct sha256.
 
 3. **Build the base image** (one-time, slow — runs the full Windows install
-   under QEMU):
+   under QEMU), from the repo root:
    ```sh
    nix build .#image
    ```
@@ -56,8 +59,7 @@ testenv/windows/
 ## Daily workflow
 
 ```sh
-cd testenv/windows
-nix develop
+nix develop                            # from the repo root
 
 wintest-start                          # boots VM, waits for SSH ready
 wintest-view &                         # opens SPICE viewer for manual driving
@@ -77,7 +79,32 @@ wintest-stop                           # graceful shutdown
 | `wintest-view` | Open the SPICE viewer (`remote-viewer`) — interactive driver. |
 | `wintest-watch` | Open a second SPICE viewer for live monitoring (multi-client SPICE). See note below. |
 | `wintest-status` | Show QEMU/SSH/socket/overlay state. |
+| `wintest-selftest` | Exercise every wintest feature against the running VM and report PASS/FAIL. `--start` boots the VM first; `--stop` shuts it down after. |
 | `wintest-reset` | Stop the VM and delete the overlay + TPM state. Next start is fresh. |
+
+## Self-test
+
+`wintest-selftest` is an automated regression check for the tooling itself. It
+runs against a live VM and verifies each feature deterministically — no LLM, no
+reading screenshots by eye:
+
+```sh
+wintest-start
+wintest-selftest          # 7 checks; exits non-zero if any fail
+# or, all in one go:
+wintest-selftest --start --stop
+```
+
+Checks: `status` reporting, `run` stdout + exit-code propagation, `deploy` file
+round-trip, `screenshot` (valid PNG of plausible size), `type`+`key` (Win+R →
+type → Enter creates a uniquely-named file), and `click` (move the pointer, read
+the guest cursor back within tolerance).
+
+The GUI checks bounce results through the **filesystem** rather than reading
+them back over SSH directly. The OpenSSH server runs in a different Windows
+session than the autologon interactive desktop that QMP key/click events reach,
+and clipboard/cursor state is per-session — so the interactive session writes an
+artifact to the shared volume that the SSH side then reads.
 
 ## How it works
 

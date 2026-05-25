@@ -151,6 +151,31 @@ sc failure  vdservice reset= 86400 actions= restart/60000/restart/60000/restart/
 Delayed-auto starts ~2 min after normal auto services, well after PnP
 settles. Failure actions auto-restart on any subsequent failure.
 
+### 10. ssh "bad owner or permissions" inside the bwrap sandbox
+Every `ssh`/`sftp` connection died before connecting with `Bad owner or
+permissions on .../systemd-*/lib/systemd/ssh_config.d/20-systemd-ssh-proxy.conf`.
+The system `ssh_config` pulls in a systemd drop-in whose `/nix/store` path fails
+ssh's ownership/perms check inside the sandbox. This made `wintest-start` time
+out waiting for SSH even though the VM was fully booted (QMP screenshot proved
+it was at the desktop).
+
+**Fix:** `-F /dev/null` in `SSH_OPTS` (`bin/_common.sh`) — ignore system/user
+ssh_config entirely. All required options are already passed via `-o`.
+
+### 11. SSH session != interactive desktop session (GUI self-test)
+Building `wintest-selftest`, the first attempt verified `type`/`click` by reading
+the **clipboard** and **cursor position** back over SSH after driving the GUI
+with QMP. Both came back empty / `0,0`. Cause: the OpenSSH server runs in a
+separate Windows logon session (services, session 0) from the autologon
+interactive desktop (session 1) that QMP key/mouse events land on. Clipboard and
+cursor are per-session, so SSH reads the wrong desktop.
+
+**Fix:** bridge through the shared filesystem. The GUI checks drive the
+*interactive* session (via the Run dialog) to write an artifact to disk —
+`type`+`key` creates a uniquely-named file, `click` runs a deployed helper that
+samples its own DPI-aware `GetCursorPos` into a file — which the SSH side then
+reads. The filesystem is the one channel both sessions share.
+
 ## Final layer stack
 
 In `image.nix`, in order:

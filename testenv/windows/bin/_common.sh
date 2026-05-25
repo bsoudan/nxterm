@@ -3,8 +3,16 @@
 
 set -euo pipefail
 
-: "${WINTEST_ROOT:?WINTEST_ROOT not set — enter the wintest dev shell first (cd testenv/windows && nix develop)}"
-: "${WINTEST_OVMF_FD:?WINTEST_OVMF_FD not set — enter the wintest dev shell first}"
+# Derive the environment root from this file's own location, not from a
+# shell-exported variable. Every wintest-* script sources us by path, so we
+# always know where the env lives regardless of the caller's cwd or which dev
+# shell wired things up. This is what keeps the scripts cwd-independent (and
+# lets the dev shell be composed into another flake without a $PWD hazard).
+WINTEST_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# OVMF is a /nix/store path the dev shell injects — scripts can't compute it,
+# so it remains a required environment variable (and has no cwd dependency).
+: "${WINTEST_OVMF_FD:?WINTEST_OVMF_FD not set — enter the dev shell first (it exports the wfvm OVMF firmware path)}"
 
 STATE_DIR="$WINTEST_ROOT/state"
 SSH_PORT=2222
@@ -24,7 +32,12 @@ TPM_DIR="$STATE_DIR/tpm"
 OVERLAY="$STATE_DIR/overlay.qcow2"
 
 # Port is passed via -o so the same opts work for both ssh and sftp.
+# -F /dev/null: ignore the system/user ssh_config. Inside the bwrap sandbox the
+# system config pulls in a systemd ssh_config.d/ drop-in whose store path trips
+# ssh's "bad owner or permissions" check, aborting every connection before it
+# starts. We supply all needed options here, so skipping the config is safe.
 SSH_OPTS=(
+  -F /dev/null
   -o "Port=$SSH_PORT"
   -o StrictHostKeyChecking=no
   -o UserKnownHostsFile=/dev/null
