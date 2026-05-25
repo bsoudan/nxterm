@@ -326,6 +326,16 @@ func (g *guiScreen) Resize(cols, rows uint16) {
 	_ = g.request(map[string]any{"op": "resize", "cols": int(cols), "rows": int(rows)}, nil)
 }
 
+// ScrollHistory scrolls the client's local scrollback via the hook: positive
+// lines scroll up into history, negative toward the live bottom.
+func (g *guiScreen) ScrollHistory(lines int) {
+	_ = g.request(map[string]any{"op": "scroll", "lines": lines}, nil)
+}
+
+// ScrollToTop / ScrollToLive jump to the oldest history line / the live bottom.
+func (g *guiScreen) ScrollToTop()  { _ = g.request(map[string]any{"op": "scroll_to_top"}, nil) }
+func (g *guiScreen) ScrollToLive() { _ = g.request(map[string]any{"op": "scroll_to_live"}, nil) }
+
 // WriteSync is a no-op for the GUI: it has no stdin to inject input-side sync
 // markers into. Output-side sync arrives through the server (NativeRegion.Sync)
 // and is observed via WaitSync below.

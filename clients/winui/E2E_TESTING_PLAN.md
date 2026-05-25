@@ -37,6 +37,11 @@ over the `NXTERM_TEST_HOOK` introspection server.
   hook `overlay` field.
 - WinAppDriver Actions drag-select (`TestDragSelectActions_GUI`) — real input stack,
   foreground-safe (unlike QMP).
+- Multi-session switcher (`TestSessionSwitch_GUI`) + dual-backend tab `Chrome`
+  (`TestTabSpawnSwitchClose`(`_GUI`) over the shared `nxtest.Chrome` interface).
+- Local scrollback (`TestScrollback_GUI`): a history ring in `TerminalGrid`
+  captures evicted lines; viewport-from-history rendering; wheel/PageUp entry &
+  exit; offset/total + a `scroll`/`scroll_to_top`/`scroll_to_live` hook op.
 
 ### Known gaps
 
@@ -48,6 +53,12 @@ over the `NXTERM_TEST_HOOK` introspection server.
   handling); it needs local WinUI iteration to wire without regressing key
   routing, so the test asserts the selection only for now.
 - **Wide-char/CJK double-width, IME/layout-aware input**: deferred (font/tooling).
+- **Server-synced scrollback**: the client's scrollback is currently *local* (only
+  output it has received since connecting). Reconciling with the server's
+  authoritative scrollback — `get_scrollback_request` streaming, `scrollback_desync`
+  re-fetch, reconcile-by-seq (no duplicates / monotonic), eviction during sync, and
+  after-reconnect catch-up (the gold-standard `walkScrollbackStrict`/eviction/reconnect
+  bodies) — is the remaining large follow-on.
 
 ### Environment gotchas (hard-won)
 
