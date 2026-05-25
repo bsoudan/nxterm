@@ -1,4 +1,4 @@
-.PHONY: all build-server changelog build-tui build-termctl build-nxtest build-mousehelper build-nativeapp build-upgrade-test-binaries check-windows test test-e2e test-race test-upgrade test-stress test-stress-long rpm version clean
+.PHONY: all build-server changelog build-tui build-termctl build-nxtest build-mousehelper build-nativeapp build-upgrade-test-binaries check-windows test test-e2e test-race test-upgrade test-stress test-stress-long test-winapp rpm version clean
 
 # Binary names
 SERVER_BIN   := nxtermd
@@ -71,6 +71,13 @@ build-upgrade-test-binaries: changelog
 check-windows:
 	GOOS=windows GOARCH=amd64 go build -o /dev/null ./cmd/nxterm
 	GOOS=windows GOARCH=amd64 go build -o /dev/null ./internal/transport
+
+# Build and GUI-test the WinUI 3 HelloApp inside the Windows VM. Drives the
+# wfvm environment in testenv/windows (deploy -> provision -> build -> run the
+# WinAppDriver UI test). Run from the dev shell (`nix develop`) so the
+# wintest-* scripts are on PATH; the VM is started automatically if needed.
+test-winapp:
+	testenv/windows/helloapp/run-test.sh
 
 test: test-e2e
 
