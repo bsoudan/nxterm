@@ -49,25 +49,26 @@ type guiTab struct {
 }
 
 type guiState struct {
-	Cols          int         `json:"cols"`
-	RowsCount     int         `json:"rows_count"`
-	CursorRow     int         `json:"cursor_row"`
-	CursorCol     int         `json:"cursor_col"`
-	CursorVisible bool        `json:"cursor_visible"`
-	CursorStyle   int         `json:"cursor_style"`
-	Title         string      `json:"title"`
-	HasSelection  bool        `json:"has_selection"`
-	Clipboard     string      `json:"clipboard"`
-	ScrollOffset  int         `json:"scroll_offset"`
-	ScrollTotal   int         `json:"scroll_total"`
-	Overlay       string      `json:"overlay"`
-	Rows          [][]guiCell `json:"rows"`
-	Session       string      `json:"session"`
-	ActiveRegion  string      `json:"active_region"`
-	Endpoint      string      `json:"endpoint"`
-	Status        string      `json:"status"`
-	Reconnects    int         `json:"reconnects"`
-	Tabs          []guiTab    `json:"tabs"`
+	Cols            int         `json:"cols"`
+	RowsCount       int         `json:"rows_count"`
+	CursorRow       int         `json:"cursor_row"`
+	CursorCol       int         `json:"cursor_col"`
+	CursorVisible   bool        `json:"cursor_visible"`
+	CursorStyle     int         `json:"cursor_style"`
+	Title           string      `json:"title"`
+	HasSelection    bool        `json:"has_selection"`
+	Clipboard       string      `json:"clipboard"`
+	ScrollOffset    int         `json:"scroll_offset"`
+	ScrollTotal     int         `json:"scroll_total"`
+	ScrollbackSyncs int         `json:"scrollback_syncs"`
+	Overlay         string      `json:"overlay"`
+	Rows            [][]guiCell `json:"rows"`
+	Session         string      `json:"session"`
+	ActiveRegion    string      `json:"active_region"`
+	Endpoint        string      `json:"endpoint"`
+	Status          string      `json:"status"`
+	Reconnects      int         `json:"reconnects"`
+	Tabs            []guiTab    `json:"tabs"`
 }
 
 func newGuiScreen(addr string) *guiScreen {
@@ -380,6 +381,7 @@ func (g *guiScreen) ScrollOffset() int        { return g.snapshot().ScrollOffset
 func (g *guiScreen) ScrollTotal() int         { return g.snapshot().ScrollTotal }
 func (g *guiScreen) Overlay() string          { return g.snapshot().Overlay }
 func (g *guiScreen) Reconnects() int          { return g.snapshot().Reconnects }
+func (g *guiScreen) ScrollbackSyncs() int     { return g.snapshot().ScrollbackSyncs }
 
 func (g *guiScreen) Tabs() []TabInfo {
 	st := g.snapshot()

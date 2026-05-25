@@ -113,6 +113,192 @@ func TestScrollbackServerSync_GUI(t *testing.T) {
 	}, "oldest pre-connect line L001 fetched from server", 5*time.Second)
 }
 
+// TestScrollbackStrict_GUI feeds the region after the client connects (so the
+// client builds local history from live events), then fetches the server's
+// scrollback — which overlaps the local history. It walks the reconciled
+// scrollback top-to-bottom asserting SEQ values are strictly increasing within
+// each viewport, never duplicated within a viewport, and that every SEQ in the
+// server's scrollback is reachable. This is the GUI analog of the TUI's
+// walkScrollbackStrict: it proves reconcile-by-seq prepends nothing it already
+// has (no duplicates) across the local/server overlap.
+func TestScrollbackStrict_GUI(t *testing.T) {
+	g := setupGui(t)
+	defer g.cleanup()
+
+	var buf bytes.Buffer
+	for i := 1; i <= 200; i++ {
+		fmt.Fprintf(&buf, "SEQ%04d\r\n", i)
+	}
+	g.region.Output(buf.Bytes()).Sync(g.nxt, "feed 200 SEQ lines")
+
+	// Trigger the fetch and wait for the reconcile to complete (a reconcile that
+	// prepends nothing leaves ScrollTotal unchanged, so use the sync counter).
+	before := g.gf.ScrollbackSyncs()
+	g.gf.ScrollHistory(1)
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if g.gf.ScrollbackSyncs() > before {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if g.gf.ScrollbackSyncs() == before {
+		t.Fatal("scrollback fetch/reconcile did not complete")
+	}
+
+	// Ground truth: the server's scrollback SEQ set.
+	serverOut := runNxtermctl(t, g.socketPath, "region", "scrollback", g.region.ID())
+	var expected []int
+	for _, l := range strings.Split(strings.TrimSpace(serverOut), "\n") {
+		if n := parseSEQ(l); n > 0 {
+			expected = append(expected, n)
+		}
+	}
+	if len(expected) < 100 {
+		t.Fatalf("server scrollback too small (%d) — setup invalid", len(expected))
+	}
+
+	allSeen := walkScrollbackStrictGui(t, g)
+
+	var missing []int
+	for _, e := range expected {
+		if !allSeen[e] {
+			missing = append(missing, e)
+		}
+	}
+	if len(missing) > 0 {
+		head := missing
+		if len(head) > 20 {
+			head = head[:20]
+		}
+		t.Errorf("%d SEQ values missing from client scrollback (server had them); first: %v",
+			len(missing), head)
+	}
+}
+
+// TestScrollbackAfterReconnect_GUI generates scrollback, forces an in-process
+// reconnect (which re-subscribes with a fresh local history), then fetches the
+// server's scrollback and confirms the pre-disconnect lines are reachable.
+func TestScrollbackAfterReconnect_GUI(t *testing.T) {
+	g := setupGui(t)
+	defer g.cleanup()
+
+	var buf bytes.Buffer
+	for i := 1; i <= 200; i++ {
+		fmt.Fprintf(&buf, "PRE%04d\r\n", i)
+	}
+	g.region.Output(buf.Bytes()).Sync(g.nxt, "feed PRE lines")
+
+	// Force a reconnect.
+	before := g.gf.Reconnects()
+	killClientByProcess(t, g.socketPath, "nxterm-gui")
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		if g.gf.Reconnects() > before {
+			break
+		}
+		time.Sleep(40 * time.Millisecond)
+	}
+	if g.gf.Reconnects() == before {
+		t.Fatal("client did not reconnect")
+	}
+	if err := g.gf.WaitReady(30 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fetch the server's scrollback after reconnect; the oldest pre-disconnect
+	// line must be reachable.
+	syncs := g.gf.ScrollbackSyncs()
+	g.gf.ScrollHistory(1)
+	deadline = time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if g.gf.ScrollbackSyncs() > syncs {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	g.gf.ScrollToTop()
+	g.nxt.WaitForScreen(func(lines []string) bool {
+		return screenHasLine(lines, "PRE0001")
+	}, "oldest pre-reconnect line PRE0001 reachable after reconnect", 5*time.Second)
+}
+
+// walkScrollbackStrictGui jumps to the top of scrollback and pages down a half
+// screen at a time, asserting per-viewport monotonicity + no duplicates, and
+// returns every SEQ value seen.
+func walkScrollbackStrictGui(t *testing.T, g *guiSession) map[int]bool {
+	t.Helper()
+	g.gf.ScrollToTop()
+	waitGuiOffset(t, g, g.gf.ScrollTotal())
+
+	allSeen := map[int]bool{}
+	for step := 0; ; step++ {
+		lines := g.nxt.ScreenLines()
+		seen := map[int]bool{}
+		var vals []int
+		for _, l := range lines {
+			n := parseSEQ(l)
+			if n == 0 {
+				continue
+			}
+			if seen[n] {
+				t.Errorf("step %d: SEQ%04d appears more than once in one viewport:\n%s",
+					step, n, strings.Join(lines, "\n"))
+			}
+			seen[n] = true
+			vals = append(vals, n)
+		}
+		for i := 1; i < len(vals); i++ {
+			if vals[i] <= vals[i-1] {
+				t.Errorf("step %d: non-monotonic SEQ %d after %d", step, vals[i], vals[i-1])
+				break
+			}
+		}
+		for _, v := range vals {
+			allSeen[v] = true
+		}
+
+		if g.gf.ScrollOffset() <= 0 {
+			break
+		}
+		if step > 100 {
+			t.Fatal("too many walk steps; scrollback larger than expected")
+		}
+		pageGuiDown(t, g, len(lines)/2)
+	}
+	return allSeen
+}
+
+// waitGuiOffset blocks until the client's cached scroll offset equals want (the
+// hook state is polled, so a scroll op's effect appears on the next poll).
+func waitGuiOffset(t *testing.T, g *guiSession, want int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if g.gf.ScrollOffset() == want {
+			return
+		}
+		select {
+		case <-g.gf.Ch():
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
+
+// pageGuiDown scrolls down by `by` lines and waits for the offset to settle.
+func pageGuiDown(t *testing.T, g *guiSession, by int) {
+	t.Helper()
+	if by < 1 {
+		by = 1
+	}
+	want := g.gf.ScrollOffset() - by
+	if want < 0 {
+		want = 0
+	}
+	g.gf.ScrollHistory(-by)
+	waitGuiOffset(t, g, want)
+}
+
 // waitServerScrollback polls until the server's scrollback for regionID holds at
 // least want lines.
 func waitServerScrollback(t *testing.T, socketPath, regionID string, want int) {

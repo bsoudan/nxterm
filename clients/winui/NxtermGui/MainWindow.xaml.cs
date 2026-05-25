@@ -42,6 +42,10 @@ public sealed partial class MainWindow : Window
     // chunks oldest-first until Done, then reconciles into the grid by seq.
     private volatile bool _scrollbackRequested;
     private List<TermCell[]> _syncBuf = new();
+    // Count of completed scrollback reconciles, surfaced over the hook so a test
+    // can wait for a fetch to land (a reconcile that prepends nothing leaves
+    // ScrollTotal unchanged, so the count is the reliable "synced" signal).
+    private int _scrollbackSyncs;
 
     private (int row, int col) _selAnchor, _selCaret;
     private bool _selecting, _hasSelection;
@@ -372,6 +376,7 @@ public sealed partial class MainWindow : Window
         if (!c.Done) return;
         lock (_gridLock) _grid.ReconcileScrollback(_syncBuf, c.ScrollbackTotal);
         _syncBuf = new List<TermCell[]>();
+        _scrollbackSyncs++;
         OnUi(UiRefresh);
     }
 
@@ -810,6 +815,7 @@ public sealed partial class MainWindow : Window
                 clipboard = _lastClipboard,
                 scroll_offset = g.ScrollOffset,
                 scroll_total = g.ScrollTotal,
+                scrollback_syncs = _scrollbackSyncs,
                 overlay = _overlay,
                 rows,
                 session = _client.Session,
