@@ -18,9 +18,32 @@ import (
 
 // guiSession bundles a running WinUI client and the native region it displays.
 type guiSession struct {
-	nxt     *nxtest.T
-	region  *nxtest.NativeRegion
-	cleanup func()
+	t         *testing.T
+	nxt       *nxtest.T
+	gf        *nxtest.GuiFrontend
+	region    *nxtest.NativeRegion
+	session   string
+	endpoint  string
+	guestPort int
+	hostAddr  string
+	cleanup   func()
+}
+
+// relaunch kills the current client and starts a fresh one against the same
+// server, session, and region — exercising the client's reconnect path.
+func (g *guiSession) relaunch() {
+	g.t.Helper()
+	g.gf.Kill()
+	gf, err := nxtest.StartGuiFrontend(g.endpoint, g.session, g.guestPort, g.hostAddr)
+	if err != nil {
+		g.t.Fatal(err)
+	}
+	if err := gf.WaitReady(60 * time.Second); err != nil {
+		gf.Kill()
+		g.t.Fatal(err)
+	}
+	g.gf = gf
+	g.nxt = nxtest.NewFromScreen(g.t, gf, gf)
 }
 
 // hookPorts returns the guest port the client binds NXTERM_TEST_HOOK on and the
@@ -73,13 +96,20 @@ func setupGui(t *testing.T) *guiSession {
 	}
 	region.Sync(nxt, "gui boot + subscribe")
 
-	return &guiSession{
-		nxt:    nxt,
-		region: region,
-		cleanup: func() {
-			gf.Kill()
-			driver.Close()
-			srvCleanup()
-		},
+	g := &guiSession{
+		t:         t,
+		nxt:       nxt,
+		gf:        gf,
+		region:    region,
+		session:   session,
+		endpoint:  endpoint,
+		guestPort: guestPort,
+		hostAddr:  hostAddr,
 	}
+	g.cleanup = func() {
+		g.gf.Kill()
+		driver.Close()
+		srvCleanup()
+	}
+	return g
 }

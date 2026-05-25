@@ -340,6 +340,31 @@ func (g *guiScreen) WaitSync(id string, timeout time.Duration) error {
 
 func (g *guiScreen) Ch() <-chan struct{} { return g.ch }
 
+// TabInfo describes one tab as the client reports it: the region id, the tab
+// title, and whether it is the active tab.
+type TabInfo struct {
+	RegionID string
+	Title    string
+	Active   bool
+}
+
+// Status, HookSession, HookActiveRegion, HookEndpoint, and Tabs expose the
+// client's connection/chrome state from the latest polled snapshot, for
+// connection- and tab-oriented tests.
+func (g *guiScreen) Status() string          { return g.snapshot().Status }
+func (g *guiScreen) HookSession() string      { return g.snapshot().Session }
+func (g *guiScreen) HookActiveRegion() string { return g.snapshot().ActiveRegion }
+func (g *guiScreen) HookEndpoint() string     { return g.snapshot().Endpoint }
+
+func (g *guiScreen) Tabs() []TabInfo {
+	st := g.snapshot()
+	out := make([]TabInfo, len(st.Tabs))
+	for i, t := range st.Tabs {
+		out[i] = TabInfo{RegionID: t.ID, Title: t.Title, Active: t.Active}
+	}
+	return out
+}
+
 // GuiFrontend launches the WinUI client in the Windows VM and exposes it as a
 // Screen + lifecycle for a *T. Launch goes through the existing scheduled-task
 // path (run-gui-test.ps1) over SSH; the grid is read back over the test hook.
