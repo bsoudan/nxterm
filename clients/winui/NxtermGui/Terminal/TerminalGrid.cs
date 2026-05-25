@@ -23,6 +23,7 @@ public sealed class TerminalGrid
     public int CursorCol { get; private set; }
     public bool CursorVisible { get; private set; } = true;
     public int CursorStyle { get; private set; }   // DECSCUSR: 0/1/2 block, 3/4 underline, 5/6 bar
+    public bool BracketedPaste { get; private set; } // DECSET 2004
     public string Title { get; private set; } = "";
 
     private TermCell[][] _buf = Array.Empty<TermCell[]>();
@@ -158,10 +159,12 @@ public sealed class TerminalGrid
 
             case "sm":
                 if (HasParam(e.Params, 25)) CursorVisible = true;
+                if (HasParam(e.Params, 2004)) BracketedPaste = true;
                 if (IsAltParam(e.Params)) EnterAlt();
                 break;
             case "rm":
                 if (HasParam(e.Params, 25)) CursorVisible = false;
+                if (HasParam(e.Params, 2004)) BracketedPaste = false;
                 if (IsAltParam(e.Params)) LeaveAlt();
                 break;
             case "decscusr": CursorStyle = (e.Params != null && e.Params.Length > 0) ? e.Params[0] : 1; break;

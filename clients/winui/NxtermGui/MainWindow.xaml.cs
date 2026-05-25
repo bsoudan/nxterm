@@ -9,6 +9,7 @@ using NxtermGui.Input;
 using NxtermGui.Protocol;
 using NxtermGui.Terminal;
 using NxtermGui.Ui;
+using Windows.ApplicationModel.DataTransfer;
 using Windows.System;
 using Windows.UI;
 using Windows.UI.Core;
@@ -29,6 +30,9 @@ public sealed partial class MainWindow : Window
     private string _status = "starting…";
     private string _title = "";
     private string _endpoint = "";
+
+    private (int row, int col) _selAnchor, _selCaret;
+    private bool _selecting, _hasSelection;
 
     public MainWindow()
     {
@@ -225,6 +229,9 @@ public sealed partial class MainWindow : Window
             var g = _grid;
             int style = g.CursorStyle;            // 0/1/2 block, 3/4 underline, 5/6 bar
             bool blockShape = style <= 2;
+            bool hasSel = _hasSelection;
+            (int r, int c) selS = _selAnchor, selE = _selCaret;
+            if (hasSel && !LessEq(selS, selE)) (selS, selE) = (selE, selS);
             for (int r = 0; r < g.Rows; r++)
             {
                 for (int c = 0; c < g.Cols; c++)
@@ -239,6 +246,9 @@ public sealed partial class MainWindow : Window
                     bool isCursor = g.CursorVisible && r == g.CursorRow && c == g.CursorCol;
                     bool blockCursor = isCursor && blockShape;
                     if (blockCursor) (fg, bg) = (bg, fg);
+                    if (hasSel && !blockCursor && r >= selS.r && r <= selE.r
+                        && (r > selS.r || c >= selS.c) && (r < selE.r || c <= selE.c))
+                        bg = 0x264F78;   // selection highlight
 
                     float x = c * cw, y = r * ch;
                     if (bg != Palette.DefaultBackground || blockCursor)
@@ -275,15 +285,113 @@ public sealed partial class MainWindow : Window
 
     private void TerminalCanvas_KeyDown(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs e)
     {
-        var bytes = KeyEncoder.Encode(e.Key, IsDown(VirtualKey.Control), IsDown(VirtualKey.Shift), IsDown(VirtualKey.Menu));
-        if (bytes != null) { _client.SendInput(bytes); e.Handled = true; }
+        bool ctrl = IsDown(VirtualKey.Control), shift = IsDown(VirtualKey.Shift), alt = IsDown(VirtualKey.Menu);
+        if (ctrl && shift && e.Key == VirtualKey.C) { CopySelection(); e.Handled = true; return; }
+        if (ctrl && shift && e.Key == VirtualKey.V) { _ = PasteAsync(); e.Handled = true; return; }
+
+        var bytes = KeyEncoder.Encode(e.Key, ctrl, shift, alt);
+        if (bytes != null)
+        {
+            if (_hasSelection) { _hasSelection = false; TerminalCanvas.Invalidate(); }
+            _client.SendInput(bytes);
+            e.Handled = true;
+        }
     }
 
     private static bool IsDown(VirtualKey k) =>
         (InputKeyboardSource.GetKeyStateForCurrentThread(k) & CoreVirtualKeyStates.Down) == CoreVirtualKeyStates.Down;
 
     private void TerminalCanvas_PointerPressed(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
-        => TerminalCanvas.Focus(FocusState.Pointer);
+    {
+        TerminalCanvas.Focus(FocusState.Pointer);
+        SetForegroundWindow(WinRT.Interop.WindowNative.GetWindowHandle(this));
+        _selAnchor = _selCaret = CellAt(e.GetCurrentPoint(TerminalCanvas).Position);
+        _selecting = true;
+        _hasSelection = false;
+        TerminalCanvas.CapturePointer(e.Pointer);
+        TerminalCanvas.Invalidate();
+    }
+
+    private void TerminalCanvas_PointerMoved(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
+    {
+        if (!_selecting) return;
+        _selCaret = CellAt(e.GetCurrentPoint(TerminalCanvas).Position);
+        _hasSelection = _selCaret != _selAnchor;
+        TerminalCanvas.Invalidate();
+    }
+
+    private void TerminalCanvas_PointerReleased(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
+    {
+        if (_selecting)
+        {
+            // Finalize from the release point too, in case PointerMoved didn't
+            // fire (e.g. a synthetic pointer during automated testing).
+            _selCaret = CellAt(e.GetCurrentPoint(TerminalCanvas).Position);
+            _hasSelection = _selCaret != _selAnchor;
+            TerminalCanvas.Invalidate();
+        }
+        _selecting = false;
+        TerminalCanvas.ReleasePointerCapture(e.Pointer);
+    }
+
+    private (int row, int col) CellAt(Windows.Foundation.Point p) =>
+        (Math.Clamp((int)(p.Y / _cellH), 0, Math.Max(0, _lastRows - 1)),
+         Math.Clamp((int)(p.X / _cellW), 0, Math.Max(0, _lastCols - 1)));
+
+    private static bool LessEq((int r, int c) a, (int r, int c) b) => a.r < b.r || (a.r == b.r && a.c <= b.c);
+
+    private void CopySelection()
+    {
+        string text;
+        lock (_gridLock)
+        {
+            if (!_hasSelection) return;
+            var g = _grid;
+            (int r, int c) s = _selAnchor, e = _selCaret;
+            if (!LessEq(s, e)) (s, e) = (e, s);
+            var sb = new System.Text.StringBuilder();
+            for (int r = s.r; r <= e.r && r < g.Rows; r++)
+            {
+                int c0 = r == s.r ? s.c : 0;
+                int c1 = r == e.r ? e.c : g.Cols - 1;
+                var line = new System.Text.StringBuilder();
+                for (int c = c0; c <= c1 && c < g.Cols; c++)
+                {
+                    var t = g[r, c].Text;
+                    line.Append(string.IsNullOrEmpty(t) ? " " : t);
+                }
+                sb.Append(line.ToString().TrimEnd());
+                if (r < e.r) sb.Append('\n');
+            }
+            text = sb.ToString();
+        }
+        if (text.Length == 0) return;
+        var dp = new DataPackage();
+        dp.SetText(text);
+        Clipboard.SetContent(dp);
+    }
+
+    private async System.Threading.Tasks.Task PasteAsync()
+    {
+        var content = Clipboard.GetContent();
+        if (!content.Contains(StandardDataFormats.Text)) return;
+        string text;
+        try { text = await content.GetTextAsync(); } catch { return; }
+        if (string.IsNullOrEmpty(text)) return;
+
+        var body = System.Text.Encoding.UTF8.GetBytes(text);
+        if (_grid.BracketedPaste)
+        {
+            var pre = System.Text.Encoding.ASCII.GetBytes("\x1b[200~");
+            var post = System.Text.Encoding.ASCII.GetBytes("\x1b[201~");
+            var wrapped = new byte[pre.Length + body.Length + post.Length];
+            Buffer.BlockCopy(pre, 0, wrapped, 0, pre.Length);
+            Buffer.BlockCopy(body, 0, wrapped, pre.Length, body.Length);
+            Buffer.BlockCopy(post, 0, wrapped, pre.Length + body.Length, post.Length);
+            body = wrapped;
+        }
+        _client.SendInput(body);
+    }
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr hWnd);

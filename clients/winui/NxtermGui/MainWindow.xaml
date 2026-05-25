@@ -91,6 +91,8 @@
                               Draw="TerminalCanvas_Draw"
                               Loaded="TerminalCanvas_Loaded"
                               PointerPressed="TerminalCanvas_PointerPressed"
+                              PointerMoved="TerminalCanvas_PointerMoved"
+                              PointerReleased="TerminalCanvas_PointerReleased"
                               SizeChanged="TerminalCanvas_SizeChanged"
                               ClearColor="#0C0C0C" />
 
