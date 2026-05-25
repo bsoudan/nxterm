@@ -26,6 +26,13 @@ public sealed class TerminalGrid
     public bool BracketedPaste { get; private set; } // DECSET 2004
     public string Title { get; private set; } = "";
 
+    // Scrollback view position, surfaced over the test hook. ScrollOffset is how
+    // many lines above the live bottom the viewport is showing (0 = live);
+    // ScrollTotal is the number of history lines available. Both stay 0 until
+    // the scrollback feature lands.
+    public int ScrollOffset { get; private set; }
+    public int ScrollTotal { get; private set; }
+
     // Mouse tracking (DECSET 1000 normal / 1002 button-drag / 1003 any-motion,
     // 1006 = SGR encoding).
     private bool _m1000, _m1002, _m1003, _m1006;

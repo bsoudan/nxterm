@@ -18,8 +18,21 @@ public sealed class NxtermClient : IDisposable
     private readonly object _writeLock = new();
     private int _reqId;
 
+    // Connection parameters, retained so the reconnect loop can re-dial and
+    // re-run the handshake after the socket drops.
+    private string _host = "";
+    private int _port;
+    private int _cols = 80, _rows = 24;
+    private string _sessionArg = "";
+    private volatile bool _disposed;
+
     public string Session { get; private set; } = "";
     public string? ActiveRegion { get; private set; }
+
+    // Number of times the connection dropped and entered the reconnect loop.
+    // Latched (monotonic) so a test can observe that a reconnect happened even
+    // though the transient "reconnecting…" status is too brief to poll reliably.
+    public int Reconnects { get; private set; }
 
     // session name, regions (id, name)
     public event Action<string, List<(string Id, string Name)>>? SessionReady;
@@ -32,24 +45,44 @@ public sealed class NxtermClient : IDisposable
 
     public async Task ConnectAsync(string host, int port, int cols, int rows, string session = "")
     {
-        StatusChanged?.Invoke($"connecting to {host}:{port}…");
-        _tcp = new TcpClient { NoDelay = true };
-        await _tcp.ConnectAsync(host, port);
-        _stream = _tcp.GetStream();
-        _reader = new StreamReader(_stream, new UTF8Encoding(false));
+        _host = host; _port = port; _cols = cols; _rows = rows; _sessionArg = session;
+        await OpenAsync(reconnecting: false);
+    }
 
+    // OpenAsync dials the server and performs the identify + session_connect
+    // handshake, then starts the receive loop. Shared by the initial connect and
+    // the reconnect loop, so a reconnect re-runs the exact same handshake. On a
+    // reconnect the "reconnecting…" status is left in place through the (local,
+    // sub-second) re-dial so observers reliably see it, rather than flipping to
+    // a "connecting…" frame that races the handshake.
+    private async Task OpenAsync(bool reconnecting)
+    {
+        if (!reconnecting) StatusChanged?.Invoke($"connecting to {_host}:{_port}…");
+        var tcp = new TcpClient { NoDelay = true };
+        await tcp.ConnectAsync(_host, _port);
+        lock (_writeLock)
+        {
+            _tcp = tcp;
+            _stream = tcp.GetStream();
+            _reader = new StreamReader(_stream, new UTF8Encoding(false));
+        }
+        // Reconnect to the resolved session (set after the first response) so the
+        // server rejoins the existing session rather than creating a new one.
+        var sess = Session.Length > 0 ? Session : _sessionArg;
         SendLine("{\"type\":\"identify\",\"hostname\":\"nxterm-gui\",\"username\":\"gui\",\"pid\":0,\"process\":\"nxterm-gui\"}");
-        SendLine($"{{\"type\":\"session_connect_request\",\"session\":\"{session}\",\"width\":{cols},\"height\":{rows},\"req_id\":{++_reqId}}}");
+        SendLine($"{{\"type\":\"session_connect_request\",\"session\":\"{sess}\",\"width\":{_cols},\"height\":{_rows},\"req_id\":{++_reqId}}}");
 
         _ = Task.Run(ReceiveLoopAsync);
     }
 
     // Switch the subscribed region: drop the previous subscription, subscribe the
-    // new one (the server replies with a fresh screen_update snapshot).
-    public void Activate(string regionId)
+    // new one (the server replies with a fresh screen_update snapshot). force
+    // re-subscribes even when regionId is already active — used on reconnect,
+    // where the socket changed but ActiveRegion did not.
+    public void Activate(string regionId, bool force = false)
     {
-        if (regionId == ActiveRegion) return;
-        if (ActiveRegion != null)
+        if (!force && regionId == ActiveRegion) return;
+        if (ActiveRegion != null && ActiveRegion != regionId)
             SendLine($"{{\"type\":\"unsubscribe_request\",\"region_id\":\"{ActiveRegion}\",\"req_id\":{++_reqId}}}");
         ActiveRegion = regionId;
         SendLine($"{{\"type\":\"subscribe_request\",\"region_id\":\"{regionId}\",\"req_id\":{++_reqId}}}");
@@ -63,16 +96,48 @@ public sealed class NxtermClient : IDisposable
 
     private async Task ReceiveLoopAsync()
     {
+        var reader = _reader;
         try
         {
             string? line;
-            while ((line = await _reader!.ReadLineAsync()) != null)
+            while (reader != null && (line = await reader.ReadLineAsync()) != null)
                 if (line.Length > 0) Dispatch(line);
-            StatusChanged?.Invoke("disconnected");
         }
-        catch (Exception ex)
+        catch { /* socket dropped — fall through to reconnect */ }
+
+        if (_disposed) { StatusChanged?.Invoke("disconnected"); return; }
+        await ReconnectLoopAsync();
+    }
+
+    // ReconnectLoopAsync re-dials with capped backoff after the socket drops,
+    // surfacing "reconnecting…" while it retries. On success OpenAsync starts a
+    // fresh receive loop (which re-runs the handshake) and this returns; the
+    // session_connect_response then drives tab restore + re-subscribe upstream.
+    private async Task ReconnectLoopAsync()
+    {
+        CloseSocket();
+        Reconnects++;
+        var delayMs = 250;
+        while (!_disposed)
         {
-            StatusChanged?.Invoke("disconnected: " + ex.Message);
+            StatusChanged?.Invoke("reconnecting…");
+            try { await OpenAsync(reconnecting: true); return; }
+            catch
+            {
+                await Task.Delay(delayMs);
+                delayMs = Math.Min(3000, delayMs * 2);
+            }
+        }
+    }
+
+    private void CloseSocket()
+    {
+        lock (_writeLock)
+        {
+            try { _reader?.Dispose(); } catch { }
+            try { _stream?.Dispose(); } catch { }
+            try { _tcp?.Dispose(); } catch { }
+            _reader = null; _stream = null; _tcp = null;
         }
     }
 
@@ -230,8 +295,7 @@ public sealed class NxtermClient : IDisposable
 
     public void Dispose()
     {
-        try { _reader?.Dispose(); } catch { }
-        try { _stream?.Dispose(); } catch { }
-        try { _tcp?.Dispose(); } catch { }
+        _disposed = true;
+        CloseSocket();
     }
 }

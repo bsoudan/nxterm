@@ -27,15 +27,24 @@ public sealed partial class MainWindow : Window
     private CanvasTextFormat _font = null!, _fontBold = null!, _fontItalic = null!, _fontBoldItalic = null!;
     private double _cellW = 8, _cellH = 16;
     private bool _ready;
+    private bool _everConnected;
     private int _lastCols = 80, _lastRows = 24;
     private string _status = "starting…";
     private string _title = "";
     private string _endpoint = "";
+    private string _session = "";
+    // Name of the open overlay ("" = none); surfaced over the test hook.
+    private string _overlay = "";
 
     private (int row, int col) _selAnchor, _selCaret;
     private bool _selecting, _hasSelection;
     private bool _mouseDown;
     private (int row, int col) _lastMouseCell = (-1, -1);
+
+    // Last text copied to the clipboard, surfaced over the test hook so the e2e
+    // harness can assert a copy round-trip without reading the system clipboard
+    // (which a synthetic key event can't reliably populate cross-session).
+    private string _lastClipboard = "";
 
     // Test introspection (NXTERM_TEST_HOOK). _syncSeen records sync-marker ids
     // the grid has processed, so the e2e harness can wait deterministically.
@@ -87,17 +96,95 @@ public sealed partial class MainWindow : Window
         SetForegroundWindow(WinRT.Interop.WindowNative.GetWindowHandle(this));
 
         // endpoint and (optional) session come from the command line, falling
-        // back to env vars then defaults: NxtermGui.exe <host:port> [session]
+        // back to env vars: NxtermGui.exe <host:port> [session]. With no endpoint
+        // given, show the connect dialog instead of auto-connecting.
         var argv = Environment.GetCommandLineArgs();
-        _endpoint = argv.Length > 1 ? argv[1] : (Environment.GetEnvironmentVariable("NXTERM_ENDPOINT") ?? "127.0.0.1:7654");
-        var session = argv.Length > 2 ? argv[2] : (Environment.GetEnvironmentVariable("NXTERM_SESSION") ?? "");
+        string? endpointArg = argv.Length > 1 && argv[1].Length > 0
+            ? argv[1]
+            : Environment.GetEnvironmentVariable("NXTERM_ENDPOINT");
+        _session = argv.Length > 2 ? argv[2] : (Environment.GetEnvironmentVariable("NXTERM_SESSION") ?? "");
         _testHook = TestHook.FromEnv(HandleTestRequest);
         _testHook?.Start();
 
-        var (host, port) = ParseEndpoint(_endpoint);
+        if (string.IsNullOrWhiteSpace(endpointArg)) { ShowConnectDialog(); return; }
+        _endpoint = endpointArg;
+        await ConnectToEndpointAsync(_endpoint, _session);
+    }
+
+    private async Task ConnectToEndpointAsync(string endpoint, string session)
+    {
+        var (host, port) = ParseEndpoint(endpoint);
         try { await _client.ConnectAsync(host, port, _lastCols, _lastRows, session); }
         catch (Exception ex) { OnStatusChanged("connect failed: " + ex.Message); }
     }
+
+    private void ShowConnectDialog()
+    {
+        _overlay = "connect";
+        ConnectError.Text = "";
+        ConnectDialog.Visibility = Visibility.Visible;
+        EndpointBox.Focus(FocusState.Programmatic);
+        UiRefresh();
+    }
+
+    private async void ConnectButton_Click(object sender, RoutedEventArgs e)
+    {
+        var ep = EndpointBox.Text.Trim();
+        if (ep.Length == 0) { ConnectError.Text = "enter host:port"; return; }
+        _endpoint = ep;
+        _overlay = "";
+        ConnectDialog.Visibility = Visibility.Collapsed;
+        TerminalCanvas.Focus(FocusState.Programmatic);
+        await ConnectToEndpointAsync(ep, _session);
+    }
+
+    // --- overlays: command palette + help ----------------------------------
+
+    private void MenuButton_Click(object sender, RoutedEventArgs e) => ShowCommandPalette();
+
+    private void ShowCommandPalette()
+    {
+        _overlay = "palette";
+        HelpOverlay.Visibility = Visibility.Collapsed;
+        CommandPalette.Visibility = Visibility.Visible;
+        UiRefresh();
+    }
+
+    private void ShowHelp()
+    {
+        _overlay = "help";
+        CommandPalette.Visibility = Visibility.Collapsed;
+        HelpOverlay.Visibility = Visibility.Visible;
+        UiRefresh();
+    }
+
+    // CloseOverlays hides the palette + help (not the connect dialog, which has
+    // its own dismiss path) and returns focus to the terminal.
+    private void CloseOverlays()
+    {
+        _overlay = "";
+        CommandPalette.Visibility = Visibility.Collapsed;
+        HelpOverlay.Visibility = Visibility.Collapsed;
+        TerminalCanvas.Focus(FocusState.Programmatic);
+        UiRefresh();
+    }
+
+    private void Command_Click(object sender, RoutedEventArgs e)
+    {
+        var tag = (sender as FrameworkElement)?.Tag as string;
+        CommandPalette.Visibility = Visibility.Collapsed;
+        _overlay = "";
+        switch (tag)
+        {
+            case "new-tab": _client.Spawn(); break;
+            case "close-tab": if (_client.ActiveRegion != null) _client.Kill(_client.ActiveRegion); break;
+            case "connect": ShowConnectDialog(); break; // sets _overlay = "connect"
+            case "help": ShowHelp(); break;             // sets _overlay = "help"
+        }
+        UiRefresh();
+    }
+
+    private void HelpClose_Click(object sender, RoutedEventArgs e) => CloseOverlays();
 
     private void MeasureFont()
     {
@@ -140,9 +227,21 @@ public sealed partial class MainWindow : Window
 
     private void OnSessionReady(string session, List<(string Id, string Name)> regions) => OnUi(() =>
     {
+        // On a reconnect the session is already established; preserve the
+        // previously-active region and force a fresh subscribe (the socket
+        // changed but ActiveRegion did not), so the server resends its snapshot.
+        var prevActive = _tabs.FirstOrDefault(t => t.IsActive)?.RegionId;
+        bool reconnect = _everConnected;
+
         _tabs.Clear();
         foreach (var (id, name) in regions) _tabs.Add(new TabItem(id, name));
-        if (_tabs.Count > 0) ActivateRegion(_tabs[0].RegionId);
+
+        string? target = (prevActive != null && regions.Any(r => r.Id == prevActive))
+            ? prevActive
+            : (_tabs.Count > 0 ? _tabs[0].RegionId : null);
+        if (target != null) ActivateRegion(target, force: reconnect);
+
+        _everConnected = true;
         UiRefresh();
     });
 
@@ -170,9 +269,9 @@ public sealed partial class MainWindow : Window
         ActivateRegion(id);
     });
 
-    private void ActivateRegion(string id)
+    private void ActivateRegion(string id, bool force = false)
     {
-        _client.Activate(id);
+        _client.Activate(id, force);
         lock (_gridLock) _grid = new TerminalGrid(_lastCols, _lastRows);
         _client.SendResize(_lastCols, _lastRows);
         foreach (var t in _tabs) t.IsActive = t.RegionId == id;
@@ -306,6 +405,9 @@ public sealed partial class MainWindow : Window
         bool ctrl = IsDown(VirtualKey.Control), shift = IsDown(VirtualKey.Shift), alt = IsDown(VirtualKey.Menu);
         if (ctrl && shift && e.Key == VirtualKey.C) { CopySelection(); e.Handled = true; return; }
         if (ctrl && shift && e.Key == VirtualKey.V) { _ = PasteAsync(); e.Handled = true; return; }
+        if (ctrl && shift && e.Key == VirtualKey.O) { ShowConnectDialog(); e.Handled = true; return; }
+        if (ctrl && shift && e.Key == VirtualKey.P) { ShowCommandPalette(); e.Handled = true; return; }
+        if (e.Key == VirtualKey.Escape && _overlay is "palette" or "help") { CloseOverlays(); e.Handled = true; return; }
 
         var bytes = KeyEncoder.Encode(e.Key, ctrl, shift, alt);
         if (bytes != null)
@@ -449,6 +551,7 @@ public sealed partial class MainWindow : Window
             text = sb.ToString();
         }
         if (text.Length == 0) return;
+        _lastClipboard = text;
         var dp = new DataPackage();
         dp.SetText(text);
         Clipboard.SetContent(dp);
@@ -485,6 +588,17 @@ public sealed partial class MainWindow : Window
     {
         if (!_ready) return;
         var (cols, rows) = SizeToGrid(e.NewSize.Width, e.NewSize.Height);
+        ResizeGrid(cols, rows);
+    }
+
+    // ResizeGrid reflows the local grid to cols×rows and tells the server, the
+    // common path for a real canvas resize and for the test hook's "resize" op
+    // (which drives reflow deterministically without depending on pixel
+    // geometry). Must run on the UI thread.
+    private void ResizeGrid(int cols, int rows)
+    {
+        cols = Math.Max(1, cols);
+        rows = Math.Max(1, rows);
         if (cols == _lastCols && rows == _lastRows) return;
         _lastCols = cols; _lastRows = rows;
         lock (_gridLock) _grid.Resize(cols, rows);
@@ -507,6 +621,11 @@ public sealed partial class MainWindow : Window
                 bool seen;
                 lock (_syncLock) seen = id != null && _syncSeen.Contains(id);
                 return "{\"seen\":" + (seen ? "true" : "false") + "}";
+            case "resize":
+                int rc = doc.RootElement.TryGetProperty("cols", out var rcEl) ? rcEl.GetInt32() : _lastCols;
+                int rr = doc.RootElement.TryGetProperty("rows", out var rrEl) ? rrEl.GetInt32() : _lastRows;
+                OnUiSync(() => { ResizeGrid(rc, rr); return 0; });
+                return "{\"ok\":true}";
             default:
                 return "{\"error\":\"unknown op\"}";
         }
@@ -534,13 +653,19 @@ public sealed partial class MainWindow : Window
                 cursor_row = g.CursorRow,
                 cursor_col = g.CursorCol,
                 cursor_visible = g.CursorVisible,
+                cursor_style = g.CursorStyle,
                 title = g.Title,
                 has_selection = _hasSelection,
+                clipboard = _lastClipboard,
+                scroll_offset = g.ScrollOffset,
+                scroll_total = g.ScrollTotal,
+                overlay = _overlay,
                 rows,
                 session = _client.Session,
                 active_region = _client.ActiveRegion ?? "",
                 endpoint = _endpoint,
                 status = _status,
+                reconnects = _client.Reconnects,
                 tabs = _tabs.Select(t => new { id = t.RegionId, title = t.Title, active = t.IsActive }).ToArray(),
             };
         }
