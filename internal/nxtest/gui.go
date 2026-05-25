@@ -272,9 +272,47 @@ func (g *guiScreen) WaitForSilence(duration time.Duration) {
 	}
 }
 
-// Write injects keystrokes into the GUI. Implemented via QMP in the input
-// iteration; unused by render tests (which drive output through the server).
-func (g *guiScreen) Write(data []byte) {}
+// Write injects keystrokes into the focused GUI window via QMP (wintest-type
+// for printable runs, wintest-key for control keys). The client's KeyEncoder
+// turns the resulting key events back into terminal bytes, exercising the real
+// input path. Covers the printable ASCII + common control subset that e2e input
+// tests use; unsupported bytes are skipped.
+func (g *guiScreen) Write(data []byte) {
+	var printable []byte
+	flush := func() {
+		if len(printable) > 0 {
+			qmpType(string(printable))
+			printable = nil
+		}
+	}
+	for _, b := range data {
+		switch {
+		case b == '\r', b == '\n':
+			flush()
+			qmpKey("ret")
+		case b == '\t':
+			flush()
+			qmpKey("tab")
+		case b == 0x1b:
+			flush()
+			qmpKey("esc")
+		case b == 0x7f, b == 0x08:
+			flush()
+			qmpKey("backspace")
+		case b >= 1 && b <= 26: // Ctrl+A..Ctrl+Z
+			flush()
+			qmpKey("ctrl", string(rune('a'+b-1)))
+		case b >= 0x20 && b < 0x7f:
+			printable = append(printable, b)
+		}
+	}
+	flush()
+}
+
+func qmpType(s string) { _ = exec.Command("wintest-type", s).Run() }
+func qmpKey(keys ...string) {
+	_ = exec.Command("wintest-key", keys...).Run()
+}
 
 // Resize changes the GUI window size. Not yet wired; render tests use the
 // launch-time default geometry.
