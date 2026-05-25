@@ -55,6 +55,7 @@ type guiState struct {
 	CursorCol     int         `json:"cursor_col"`
 	CursorVisible bool        `json:"cursor_visible"`
 	Title         string      `json:"title"`
+	HasSelection  bool        `json:"has_selection"`
 	Rows          [][]guiCell `json:"rows"`
 	Session       string      `json:"session"`
 	ActiveRegion  string      `json:"active_region"`
@@ -309,10 +310,8 @@ func (g *guiScreen) Write(data []byte) {
 	flush()
 }
 
-func qmpType(s string) { _ = exec.Command("wintest-type", s).Run() }
-func qmpKey(keys ...string) {
-	_ = exec.Command("wintest-key", keys...).Run()
-}
+func qmpType(s string)            { _ = exec.Command("wintest-type", s).Run() }
+func qmpKey(keys ...string) error { return exec.Command("wintest-key", keys...).Run() }
 
 // Resize changes the GUI window size. Not yet wired; render tests use the
 // launch-time default geometry.
@@ -355,6 +354,7 @@ func (g *guiScreen) Status() string          { return g.snapshot().Status }
 func (g *guiScreen) HookSession() string      { return g.snapshot().Session }
 func (g *guiScreen) HookActiveRegion() string { return g.snapshot().ActiveRegion }
 func (g *guiScreen) HookEndpoint() string     { return g.snapshot().Endpoint }
+func (g *guiScreen) HasSelection() bool       { return g.snapshot().HasSelection }
 
 func (g *guiScreen) Tabs() []TabInfo {
 	st := g.snapshot()
@@ -471,6 +471,50 @@ func (a *GuiWinApp) CloseTab(index int) error {
 		return err
 	}
 	return a.wad.Click(closeID)
+}
+
+// ClickTerminalArea clicks inside the terminal canvas with a real pointer event
+// (QMP). The Win2D canvas has no UIA peer, so it can't be clicked by id; instead
+// we anchor off the status bar (which is findable) and click well above it,
+// which lands in the canvas.
+func (a *GuiWinApp) ClickTerminalArea() error {
+	ids, err := a.wad.FindByAID("ActiveRegionId")
+	if err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		return fmt.Errorf("status bar (ActiveRegionId) not found")
+	}
+	x, y, w, _, err := a.wad.ElementRect(ids[0])
+	if err != nil {
+		return err
+	}
+	return qmpClick(x+w/2, y-80) // 80px above the status bar => inside the canvas
+}
+
+func qmpClick(x, y int) error {
+	return exec.Command("wintest-click", strconv.Itoa(x), strconv.Itoa(y)).Run()
+}
+
+// DragInTerminal drags horizontally inside the canvas (anchored off the status
+// bar) to make a click-drag text selection.
+func (a *GuiWinApp) DragInTerminal() error {
+	ids, err := a.wad.FindByAID("ActiveRegionId")
+	if err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		return fmt.Errorf("status bar (ActiveRegionId) not found")
+	}
+	x, y, w, _, err := a.wad.ElementRect(ids[0])
+	if err != nil {
+		return err
+	}
+	row := y - 80 // inside the canvas, above the status bar
+	startX := x + w/4
+	return exec.Command("wintest-drag",
+		strconv.Itoa(startX), strconv.Itoa(row),
+		strconv.Itoa(startX+w/3), strconv.Itoa(row)).Run()
 }
 
 // ActiveTabIndex returns the index of the active tab from the hook snapshot, or

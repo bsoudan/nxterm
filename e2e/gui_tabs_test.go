@@ -16,6 +16,7 @@ import (
 type guiTabSession struct {
 	t       *testing.T
 	app     *nxtest.GuiWinApp
+	nxt     *nxtest.T
 	driver  *nxtest.Driver
 	region  *nxtest.NativeRegion
 	session string
@@ -64,6 +65,7 @@ func setupGuiTabs(t *testing.T) *guiTabSession {
 	return &guiTabSession{
 		t:       t,
 		app:     app,
+		nxt:     nxtest.NewFromScreen(t, app, app),
 		driver:  driver,
 		region:  region,
 		session: session,

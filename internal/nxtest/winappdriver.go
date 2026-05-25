@@ -116,6 +116,27 @@ func (w *WinAppDriver) Click(elementID string) error {
 	return w.do("POST", "/session/"+w.sid+"/element/"+elementID+"/click", map[string]any{}, nil)
 }
 
+// ElementRect returns the element's absolute screen rectangle, via the legacy
+// /location and /size endpoints.
+func (w *WinAppDriver) ElementRect(elementID string) (x, y, width, height int, err error) {
+	var loc struct {
+		Value struct{ X, Y int } `json:"value"`
+	}
+	if err = w.do("GET", "/session/"+w.sid+"/element/"+elementID+"/location", nil, &loc); err != nil {
+		return
+	}
+	var size struct {
+		Value struct {
+			Width  int `json:"width"`
+			Height int `json:"height"`
+		} `json:"value"`
+	}
+	if err = w.do("GET", "/session/"+w.sid+"/element/"+elementID+"/size", nil, &size); err != nil {
+		return
+	}
+	return loc.Value.X, loc.Value.Y, size.Value.Width, size.Value.Height, nil
+}
+
 // elementID pulls the element id out of a find-response map, tolerating both
 // the legacy "ELEMENT" key and the W3C element key.
 func elementID(m map[string]string) string {

@@ -535,6 +535,7 @@ public sealed partial class MainWindow : Window
                 cursor_col = g.CursorCol,
                 cursor_visible = g.CursorVisible,
                 title = g.Title,
+                has_selection = _hasSelection,
                 rows,
                 session = _client.Session,
                 active_region = _client.ActiveRegion ?? "",

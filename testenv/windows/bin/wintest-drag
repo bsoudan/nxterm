@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Drag the absolute pointer via QMP: move to (X1,Y1), press, move to (X2,Y2),
+# release. Used to drive click-drag selection in GUI tests. Requires the
+# usb-tablet device (added in wintest-start) for absolute positioning.
+#
+# usage:
+#   wintest-drag X1 Y1 X2 Y2 [left|right|middle]
+#
+# Coordinates are guest pixels (as in wintest-screenshot / wintest-click).
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+
+is_running || die "VM not running — start it with wintest-start"
+(( $# >= 4 )) || die "usage: wintest-drag X1 Y1 X2 Y2 [left|right|middle]"
+X1="$1"; Y1="$2"; X2="$3"; Y2="$4"; BTN="${5:-left}"
+
+PROBE="$STATE_DIR/.drag-probe.png"
+rm -f "$PROBE"
+wintest_qmp "$(jq -nc --arg f "$PROBE" \
+  '{execute:"screendump",arguments:{filename:$f,format:"png"}}')" >/dev/null
+read -r W H < <(png_dims "$PROBE"); rm -f "$PROBE"
+(( W > 1 && H > 1 )) || die "could not determine guest resolution"
+
+for c in "$X1 $Y1" "$X2 $Y2"; do
+  read -r x y <<<"$c"
+  (( x >= 0 && x < W && y >= 0 && y < H )) || die "coords ${x},${y} out of range (screen ${W}x${H})"
+done
+
+moveto() { # x y
+  local ax ay
+  ax=$(( $1 * QMP_ABS_MAX / (W - 1) ))
+  ay=$(( $2 * QMP_ABS_MAX / (H - 1) ))
+  wintest_qmp "$(jq -nc --argjson x "$ax" --argjson y "$ay" \
+    '{execute:"input-send-event",arguments:{events:[
+       {type:"abs",data:{axis:"x",value:$x}},
+       {type:"abs",data:{axis:"y",value:$y}}]}}')" >/dev/null
+}
+btn() { # down|up
+  local d=$1
+  wintest_qmp "$(jq -nc --arg b "$BTN" --argjson d "$d" \
+    '{execute:"input-send-event",arguments:{events:[{type:"btn",data:{down:$d,button:$b}}]}}')" >/dev/null
+}
+
+moveto "$X1" "$Y1"
+btn true
+# Interpolate intermediate moves while the button is held so the GUI sees real
+# pointer motion (a single jump can be coalesced and read as a click, not a drag).
+STEPS=8
+for (( i=1; i<=STEPS; i++ )); do
+  ix=$(( X1 + (X2 - X1) * i / STEPS ))
+  iy=$(( Y1 + (Y2 - Y1) * i / STEPS ))
+  moveto "$ix" "$iy"
+done
+btn false
+log "dragged $BTN from ${X1},${Y1} to ${X2},${Y2} (screen ${W}x${H})"
