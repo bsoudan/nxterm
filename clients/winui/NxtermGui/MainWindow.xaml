@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="NxtermGui.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:canvas="using:Microsoft.Graphics.Canvas.UI.Xaml"
+    Title="nxterm">
+
+    <Grid Background="#0C0C0C">
+        <canvas:CanvasControl x:Name="TerminalCanvas"
+                              IsTabStop="True"
+                              Draw="TerminalCanvas_Draw"
+                              Loaded="TerminalCanvas_Loaded"
+                              PointerPressed="TerminalCanvas_PointerPressed"
+                              SizeChanged="TerminalCanvas_SizeChanged"
+                              ClearColor="#0C0C0C" />
+    </Grid>
+
+</Window>

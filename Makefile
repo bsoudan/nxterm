@@ -1,4 +1,4 @@
-.PHONY: all build-server changelog build-tui build-termctl build-nxtest build-mousehelper build-nativeapp build-upgrade-test-binaries check-windows test test-e2e test-race test-upgrade test-stress test-stress-long test-winapp rpm version clean
+.PHONY: all build-server changelog build-tui build-termctl build-nxtest build-mousehelper build-nativeapp build-upgrade-test-binaries check-windows test test-e2e test-race test-upgrade test-stress test-stress-long test-winapp build-winui rpm version clean
 
 # Binary names
 SERVER_BIN   := nxtermd
@@ -78,6 +78,12 @@ check-windows:
 # wintest-* scripts are on PATH; the VM is started automatically if needed.
 test-winapp:
 	testenv/windows/helloapp/run-test.sh
+
+# Build the WinUI 3 nxterm GUI client inside the Windows VM (deploy -> provision
+# -> publish). Running it is a separate visual step; see clients/winui/README.md.
+# Run from the dev shell (`nix develop`).
+build-winui:
+	clients/winui/build.sh
 
 test: test-e2e
 
