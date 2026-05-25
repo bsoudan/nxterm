@@ -6,12 +6,14 @@ Companion: `clients/winui/E2E_TESTING_PLAN.md` (the implemented e2e harness).
 Done & VM-verified: cross-cutting harness extensions (hook fields + WAD
 SendKeys/Actions + resize/scroll ops); connect dialog + in-process reconnect;
 multi-session switcher + dual-backend tab `Chrome`; command-palette + help
-overlays; resize/styles+/drag-select polish; **local** scrollback (history ring
-+ viewport render + wheel/PageUp + offset/total). Remaining: **server-synced
-scrollback** (get_scrollback streaming / desync / reconcile-by-seq / eviction /
-reconnect — the `walkScrollbackStrict` bodies); clipboard copy-chord round-trip
-(synthetic-modifier gap — needs a KeyboardAccelerator); full tab_test.go content
-promotion (QMP-input dependent). See E2E_TESTING_PLAN.md "Known gaps".
+overlays; resize/styles+/drag-select polish; scrollback — local history ring +
+**server-synced reconcile-by-seq** (fetch fills pre-connect history; strict
+no-duplicate walk; after-reconnect; mode-2026 delta — the `walkScrollbackStrict`
+gold-standard cases). Remaining: scrollback eviction-during-sync + desync-on-drop
+edge tests (handled by reconcile-by-seq, not yet GUI-tested); clipboard
+copy-chord round-trip (synthetic-modifier gap — needs a KeyboardAccelerator);
+full tab_test.go content promotion (QMP-input dependent). See E2E_TESTING_PLAN.md
+"Known gaps".
 
 ## Done so far (for context)
 - Phases 1–2: live viewport (render + replay), title-bar tabs, status bar.

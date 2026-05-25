@@ -42,6 +42,13 @@ over the `NXTERM_TEST_HOOK` introspection server.
 - Local scrollback (`TestScrollback_GUI`): a history ring in `TerminalGrid`
   captures evicted lines; viewport-from-history rendering; wheel/PageUp entry &
   exit; offset/total + a `scroll`/`scroll_to_top`/`scroll_to_live` hook op.
+- Server-synced scrollback (reconcile-by-seq, matching the TUI):
+  `TestScrollbackServerSync_GUI` (fetch fills pre-connect history),
+  `TestScrollbackStrict_GUI` (per-viewport monotonic + no duplicates across the
+  local/server overlap — the `walkScrollbackStrict` analog),
+  `TestScrollbackAfterReconnect_GUI` (pre-disconnect history reachable after an
+  in-process reconnect), `TestScrollbackMode2026Delta_GUI` (rows scrolled off
+  during a synchronized-output batch reach history via `ScrollbackDelta`).
 
 ### Known gaps
 
@@ -53,12 +60,13 @@ over the `NXTERM_TEST_HOOK` introspection server.
   handling); it needs local WinUI iteration to wire without regressing key
   routing, so the test asserts the selection only for now.
 - **Wide-char/CJK double-width, IME/layout-aware input**: deferred (font/tooling).
-- **Server-synced scrollback**: the client's scrollback is currently *local* (only
-  output it has received since connecting). Reconciling with the server's
-  authoritative scrollback — `get_scrollback_request` streaming, `scrollback_desync`
-  re-fetch, reconcile-by-seq (no duplicates / monotonic), eviction during sync, and
-  after-reconnect catch-up (the gold-standard `walkScrollbackStrict`/eviction/reconnect
-  bodies) — is the remaining large follow-on.
+- **Server-synced scrollback — done** (fetch + reconcile-by-seq, strict no-dup
+  walk, after-reconnect, mode-2026 delta; see above). Remaining edges, handled in
+  principle by reconcile-by-seq but not yet explicitly GUI-tested: **eviction
+  during sync** (server scrollback cap exceeded mid-fetch — the hardest TUI test;
+  needs a small-cap server + the desync re-fetch path) and **desync on dropped
+  broadcast** (needs backpressure setup). The client clears its "queried" flag on
+  `scrollback_desync` so the next scroll re-fetches; the dedicated tests are TODO.
 
 ### Environment gotchas (hard-won)
 
