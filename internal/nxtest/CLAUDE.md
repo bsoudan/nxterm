@@ -5,7 +5,17 @@ Reusable test harness for driving nxterm/nxtermd in a PTY with virtual screen em
 ## Key Types
 
 ### T
-Wraps `*testing.T` with `PtyIO` and optional `Frontend` for ergonomic test code.
+Wraps `*testing.T` with an embedded `Screen` and optional `Frontend` for
+ergonomic test code.
+
+### Screen (interface)
+The polymorphic client backend that `T` embeds (`screen.go`): the virtual-screen
++ input + sync surface. `*PtyIO` implements it for the TUI; a GUI-client screen
+reader implements it for the WinUI client (read over a test hook). Test bodies
+written against `*T` run against either backend. The error-returning forms
+(`Screen.WaitSync(id, timeout)`, `Screen.WaitFor`, `Screen.WaitForScreen`) are
+reached via the qualified `nxt.Screen.X` when a test wants the error rather than
+`T`'s fatal-on-timeout wrappers.
 
 ### PtyIO
 Reads PTY output and maintains a virtual screen via `pkg/te` terminal emulator:

@@ -54,7 +54,7 @@ func syncWithRetry(t *testing.T, region *nxtest.NativeRegion, nxt *nxtest.T, des
 		attempt++
 		id := fmt.Sprintf("retry-%s-%d", desc, attempt)
 		region.WriteSync(id)
-		err := nxt.PtyIO.WaitSync(id, 500*time.Millisecond)
+		err := nxt.Screen.WaitSync(id, 500*time.Millisecond)
 		if err == nil {
 			return
 		}
@@ -403,7 +403,7 @@ func TestSlowClientSyncMarkerLost(t *testing.T) {
 	// happened. Reach into the PtyIO directly.
 	id := "slow-client-paused-sync"
 	region.WriteSync(id)
-	err := nxterm.PtyIO.WaitSync(id, 2*time.Second)
+	err := nxterm.Screen.WaitSync(id, 2*time.Second)
 	if err == nil {
 		t.Fatal("expected sync marker to time out while TUI is paused, got ack")
 	}

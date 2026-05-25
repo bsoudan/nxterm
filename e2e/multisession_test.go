@@ -52,7 +52,7 @@ func TestNewSession(t *testing.T) {
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		nxt.Write([]byte("echo RECONNECTED\r"))
-		if _, err := nxt.PtyIO.WaitFor("RECONNECTED", 500*time.Millisecond); err == nil {
+		if _, err := nxt.Screen.WaitFor("RECONNECTED", 500*time.Millisecond); err == nil {
 			return
 		}
 	}
