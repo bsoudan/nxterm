@@ -37,6 +37,12 @@ public sealed partial class MainWindow : Window
     // Name of the open overlay ("" = none); surfaced over the test hook.
     private string _overlay = "";
 
+    // Server-scrollback fetch state: _scrollbackRequested gates a once-per-region
+    // GetScrollbackRequest; _syncBuf accumulates the (newest-first) response
+    // chunks oldest-first until Done, then reconciles into the grid by seq.
+    private volatile bool _scrollbackRequested;
+    private List<TermCell[]> _syncBuf = new();
+
     private (int row, int col) _selAnchor, _selCaret;
     private bool _selecting, _hasSelection;
     private bool _mouseDown;
@@ -80,6 +86,7 @@ public sealed partial class MainWindow : Window
         _client.RegionSpawned += OnRegionSpawned;
         _client.ScreenUpdated += OnScreenUpdated;
         _client.EventsReceived += OnEventsReceived;
+        _client.ScrollbackReceived += OnScrollbackReceived;
         _client.StatusChanged += OnStatusChanged;
         _client.SessionsChanged += () => OnUi(RefreshSessions);
     }
@@ -309,6 +316,9 @@ public sealed partial class MainWindow : Window
     {
         _client.Activate(id, force);
         lock (_gridLock) _grid = new TerminalGrid(_lastCols, _lastRows);
+        // New region (or re-subscribe): its scrollback must be fetched afresh.
+        _scrollbackRequested = false;
+        _syncBuf = new List<TermCell[]>();
         _client.SendResize(_lastCols, _lastRows);
         foreach (var t in _tabs) t.IsActive = t.RegionId == id;
         _title = "";
@@ -329,11 +339,51 @@ public sealed partial class MainWindow : Window
 
     // --- server callbacks (receive thread) ---------------------------------
 
-    private void OnScreenUpdated(TermCell[][] cells, int cr, int cc, string? title)
+    private void OnScreenUpdated(ScreenSnapshot s)
     {
-        if (title is { Length: > 0 }) _title = title.Trim();
-        lock (_gridLock) _grid.ApplySnapshot(cells, cr, cc, title);
+        if (s.Title is { Length: > 0 }) _title = s.Title.Trim();
+        lock (_gridLock)
+        {
+            // Rows that scrolled into history during a mode-2026 batch arrive in
+            // the delta (the per-event replay missed them); append before the
+            // new screen cells replace the live buffer.
+            if (s.ScrollbackDelta is { Length: > 0 })
+                _grid.AppendHistoryRows(s.ScrollbackDelta);
+            _grid.ApplySnapshot(s.Cells, s.CursorRow, s.CursorCol, s.Title);
+            // Initial subscribe to a region that already has scrollback: adopt the
+            // server's count (local history is empty) so a later fetch reconciles
+            // by seq.
+            if (s.ScrollbackTotal > _grid.ScrollbackTotal && _grid.ScrollTotal == 0)
+                _grid.SetTotalAdded(s.ScrollbackTotal);
+        }
+        if (s.ScrollbackDesync) _scrollbackRequested = false; // local scrollback stale → re-fetch
         OnUi(UiRefresh);
+    }
+
+    // OnScrollbackReceived accumulates get_scrollback chunks (which arrive
+    // newest-first) into _syncBuf oldest-first, then reconciles by seq on the
+    // final chunk.
+    private void OnScrollbackReceived(ScrollbackChunk c)
+    {
+        var combined = new List<TermCell[]>(c.Lines.Length + _syncBuf.Count);
+        combined.AddRange(c.Lines);
+        combined.AddRange(_syncBuf);
+        _syncBuf = combined;
+        if (!c.Done) return;
+        lock (_gridLock) _grid.ReconcileScrollback(_syncBuf, c.ScrollbackTotal);
+        _syncBuf = new List<TermCell[]>();
+        OnUi(UiRefresh);
+    }
+
+    // RequestScrollbackOnce fetches the server's authoritative scrollback the
+    // first time the user scrolls back into a region (reset on re-subscribe and
+    // on a desync), so local scrollback is reconciled with rows the client never
+    // received as live events.
+    private void RequestScrollbackOnce()
+    {
+        if (_scrollbackRequested) return;
+        _scrollbackRequested = true;
+        _client.RequestScrollback();
     }
 
     private void OnEventsReceived(List<TermEvent> events)
@@ -456,6 +506,7 @@ public sealed partial class MainWindow : Window
             bool up = e.Key == VirtualKey.PageUp;
             if (up || _grid.ScrollOffset > 0)
             {
+                if (up) RequestScrollbackOnce();
                 lock (_gridLock) { if (up) _grid.ScrollUp(_lastRows - 1); else _grid.ScrollDown(_lastRows - 1); }
                 TerminalCanvas.Invalidate();
                 UiRefresh();
@@ -550,7 +601,9 @@ public sealed partial class MainWindow : Window
             e.Handled = true;
             return;
         }
-        // Otherwise the wheel drives local scrollback.
+        // Otherwise the wheel drives scrollback (fetch the server's history on
+        // the first scroll-up).
+        if (pp.Properties.MouseWheelDelta > 0) RequestScrollbackOnce();
         lock (_gridLock)
         {
             if (pp.Properties.MouseWheelDelta > 0) _grid.ScrollUp(3);
@@ -680,6 +733,7 @@ public sealed partial class MainWindow : Window
     // history, negative = toward live). Drives the test hook's scroll op.
     private void ScrollHistory(int lines)
     {
+        if (lines >= 0) RequestScrollbackOnce();
         lock (_gridLock)
         {
             if (lines >= 0) _grid.ScrollUp(lines);
@@ -714,7 +768,7 @@ public sealed partial class MainWindow : Window
                 OnUiSync(() => { ScrollHistory(sl); return 0; });
                 return "{\"ok\":true}";
             case "scroll_to_top":
-                OnUiSync(() => { lock (_gridLock) _grid.ScrollToTop(); TerminalCanvas.Invalidate(); UiRefresh(); return 0; });
+                OnUiSync(() => { RequestScrollbackOnce(); lock (_gridLock) _grid.ScrollToTop(); TerminalCanvas.Invalidate(); UiRefresh(); return 0; });
                 return "{\"ok\":true}";
             case "scroll_to_live":
                 OnUiSync(() => { lock (_gridLock) _grid.ScrollToLive(); TerminalCanvas.Invalidate(); UiRefresh(); return 0; });

@@ -6,6 +6,29 @@ using NxtermGui.Terminal;
 
 namespace NxtermGui.Protocol;
 
+// ScreenSnapshot is a screen_update / get_screen snapshot for the active region,
+// including the server's scrollback bookkeeping (total/desync/delta) used to
+// reconcile local scrollback by absolute seq.
+public sealed class ScreenSnapshot
+{
+    public TermCell[][] Cells = Array.Empty<TermCell[]>();
+    public int CursorRow, CursorCol;
+    public string? Title;
+    public ulong ScrollbackTotal;     // server's monotonic rows-ever-added
+    public TermCell[][]? ScrollbackDelta; // rows scrolled into history during a 2026 batch
+    public bool ScrollbackDesync;     // local scrollback fell behind; re-fetch
+}
+
+// ScrollbackChunk is one get_scrollback_response chunk. Chunks arrive
+// newest-first; the snapshot covers seq [ScrollbackTotal - Total, ScrollbackTotal).
+public sealed class ScrollbackChunk
+{
+    public TermCell[][] Lines = Array.Empty<TermCell[]>();
+    public int Total;
+    public bool Done;
+    public ulong ScrollbackTotal;
+}
+
 // nxterm protocol client: newline-delimited JSON over a raw TCP transport
 // (transport spec "tcp:host:port"). Connects, tracks the regions in the default
 // session, and surfaces screen snapshots / event batches for whichever region
@@ -52,8 +75,9 @@ public sealed class NxtermClient : IDisposable
     public event Action<string, string>? RegionAdded;        // id, name
     public event Action<string>? RegionRemoved;              // id
     public event Action<string, string, bool, string>? RegionSpawned; // id, name, error, message
-    public event Action<TermCell[][], int, int, string?>? ScreenUpdated; // active region only
+    public event Action<ScreenSnapshot>? ScreenUpdated;      // active region only
     public event Action<List<TermEvent>>? EventsReceived;    // active region only
+    public event Action<ScrollbackChunk>? ScrollbackReceived; // active region only
     public event Action<string>? StatusChanged;
 
     public async Task ConnectAsync(string host, int port, int cols, int rows, string session = "")
@@ -207,6 +231,10 @@ public sealed class NxtermClient : IDisposable
             case "terminal_events":
                 if (RegionOf(root) == ActiveRegion) EventsReceived?.Invoke(ParseEvents(root));
                 break;
+
+            case "get_scrollback_response":
+                HandleScrollbackResponse(root);
+                break;
         }
     }
 
@@ -285,11 +313,40 @@ public sealed class NxtermClient : IDisposable
     {
         if (!root.TryGetProperty("cells", out var cellsEl) || cellsEl.ValueKind != JsonValueKind.Array)
             return;
-        var cells = ParseCells(cellsEl);
-        int cr = root.TryGetProperty("cursor_row", out var crEl) ? crEl.GetInt32() : 0;
-        int cc = root.TryGetProperty("cursor_col", out var ccEl) ? ccEl.GetInt32() : 0;
-        string? title = root.TryGetProperty("title", out var t) ? t.GetString() : null;
-        ScreenUpdated?.Invoke(cells, cr, cc, title);
+        var snap = new ScreenSnapshot
+        {
+            Cells = ParseCells(cellsEl),
+            CursorRow = root.TryGetProperty("cursor_row", out var crEl) ? crEl.GetInt32() : 0,
+            CursorCol = root.TryGetProperty("cursor_col", out var ccEl) ? ccEl.GetInt32() : 0,
+            Title = root.TryGetProperty("title", out var t) ? t.GetString() : null,
+            ScrollbackTotal = root.TryGetProperty("scrollback_total", out var st) ? st.GetUInt64() : 0,
+            ScrollbackDesync = root.TryGetProperty("scrollback_desync", out var sd) && sd.GetBoolean(),
+        };
+        if (root.TryGetProperty("scrollback_delta", out var deltaEl) && deltaEl.ValueKind == JsonValueKind.Array)
+            snap.ScrollbackDelta = ParseCells(deltaEl);
+        ScreenUpdated?.Invoke(snap);
+    }
+
+    private void HandleScrollbackResponse(JsonElement root)
+    {
+        if (RegionOf(root) != ActiveRegion) return;
+        var chunk = new ScrollbackChunk
+        {
+            Lines = root.TryGetProperty("lines", out var l) && l.ValueKind == JsonValueKind.Array
+                ? ParseCells(l) : Array.Empty<TermCell[]>(),
+            Total = root.TryGetProperty("total", out var tot) ? tot.GetInt32() : 0,
+            Done = root.TryGetProperty("done", out var d) && d.GetBoolean(),
+            ScrollbackTotal = root.TryGetProperty("scrollback_total", out var st) ? st.GetUInt64() : 0,
+        };
+        ScrollbackReceived?.Invoke(chunk);
+    }
+
+    // RequestScrollback asks the server for the active region's full scrollback;
+    // the response streams back as one or more get_scrollback_response chunks.
+    public void RequestScrollback()
+    {
+        if (ActiveRegion == null) return;
+        SendLine($"{{\"type\":\"get_scrollback_request\",\"region_id\":\"{ActiveRegion}\"}}");
     }
 
     private static TermCell[][] ParseCells(JsonElement arr)

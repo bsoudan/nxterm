@@ -33,10 +33,60 @@ public sealed class TerminalGrid
     // seen; reconciling with the server's authoritative scrollback (pre-connect
     // history, post-eviction, post-reconnect) is a separate follow-on.
     private readonly List<TermCell[]> _history = new();
-    private const int HistoryCap = 5000;
+    private const int HistoryCap = 10000;
     public int ScrollOffset { get; private set; }
     public int ScrollTotal => _history.Count;
     public bool AltActive => _altActive;
+
+    // Absolute-seq tracking for reconciling with the server's authoritative
+    // scrollback. _totalAdded is the monotonic count of rows ever pushed to
+    // history (the server's ScrollbackTotal analog); the retained rows occupy
+    // seq range [FirstSeq, _totalAdded) where FirstSeq = _totalAdded - count.
+    private ulong _totalAdded;
+    public ulong ScrollbackTotal => _totalAdded;
+    public ulong FirstSeq => _totalAdded - (ulong)_history.Count;
+
+    public void SetTotalAdded(ulong t) => _totalAdded = t;
+
+    // ResetHistory drops retained rows (used when the client fell behind and
+    // must rebuild from a server response). The caller sets _totalAdded.
+    public void ResetHistory() { _history.Clear(); ScrollOffset = 0; }
+
+    // PrependHistory inserts older rows at the front (reconcile fill). The view
+    // stays stable: ViewportRow indexes by distance from the live bottom, which
+    // a front insert does not change.
+    public void PrependHistory(IReadOnlyList<TermCell[]> rows)
+    {
+        if (rows.Count == 0) return;
+        _history.InsertRange(0, rows);
+    }
+
+    // AppendHistoryRows appends server-supplied rows that scrolled into history
+    // (mode-2026 delta), advancing _totalAdded by the count.
+    public void AppendHistoryRows(IReadOnlyList<TermCell[]> rows)
+    {
+        foreach (var row in rows) { _history.Add(row); _totalAdded++; }
+        if (_history.Count > HistoryCap) _history.RemoveRange(0, _history.Count - HistoryCap);
+    }
+
+    // ReconcileScrollback merges a complete server scrollback response (rows
+    // oldest-first, covering seq [serverTotal - rows.Count, serverTotal)) into
+    // local history by absolute seq: if the client fell behind the server,
+    // rebuild from the response; otherwise prepend only the older rows the
+    // client is missing — zero when it already has them (no duplicates).
+    public void ReconcileScrollback(List<TermCell[]> rows, ulong serverTotal)
+    {
+        long responseFirstSeq = (long)serverTotal - rows.Count;
+        if (_totalAdded < serverTotal)
+        {
+            ResetHistory();
+            _totalAdded = serverTotal;
+        }
+        int prepend = (int)((long)FirstSeq - responseFirstSeq);
+        if (prepend < 0) prepend = 0;
+        if (prepend > rows.Count) prepend = rows.Count;
+        if (prepend > 0) PrependHistory(rows.GetRange(0, prepend));
+    }
 
     // Mouse tracking (DECSET 1000 normal / 1002 button-drag / 1003 any-motion,
     // 1006 = SGR encoding).
@@ -251,6 +301,7 @@ public sealed class TerminalGrid
     private void PushHistory(TermCell[] row)
     {
         _history.Add(row);
+        _totalAdded++;
         if (ScrollOffset > 0) ScrollOffset++; // keep the view stable as output scrolls past
         if (_history.Count > HistoryCap)
         {
