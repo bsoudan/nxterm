@@ -1,0 +1,5 @@
+state/
+ssh/
+result
+result-*
+*.iso

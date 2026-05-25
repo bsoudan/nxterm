@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Move the absolute pointer (and optionally click) at guest pixel coordinates
+# via QMP input-send-event. Requires the usb-tablet device (added in
+# wintest-start) for absolute positioning.
+#
+# usage:
+#   wintest-click X Y [left|right|middle]   # move + click (default left)
+#   wintest-click --move X Y                 # move only, no button press
+#
+# X,Y are pixels in the screenshot you captured with wintest-screenshot.
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+
+is_running || die "VM not running — start it with wintest-start"
+
+move_only=false
+if [[ "${1:-}" == "--move" ]]; then move_only=true; shift; fi
+(( $# >= 2 )) || die "usage: wintest-click X Y [left|right|middle] | wintest-click --move X Y"
+X="$1"; Y="$2"; BTN="${3:-left}"
+
+# The abs axis is normalized 0..QMP_ABS_MAX over the full screen, so we need
+# the current resolution to place the pointer at a specific pixel.
+PROBE="$STATE_DIR/.click-probe.png"
+rm -f "$PROBE"
+wintest_qmp "$(jq -nc --arg f "$PROBE" \
+  '{execute:"screendump",arguments:{filename:$f,format:"png"}}')" >/dev/null
+read -r W H < <(png_dims "$PROBE"); rm -f "$PROBE"
+(( W > 1 && H > 1 )) || die "could not determine guest resolution"
+(( X >= 0 && X < W && Y >= 0 && Y < H )) || die "coords ${X},${Y} out of range (screen ${W}x${H})"
+
+ax=$(( X * QMP_ABS_MAX / (W - 1) ))
+ay=$(( Y * QMP_ABS_MAX / (H - 1) ))
+
+wintest_qmp "$(jq -nc --argjson x "$ax" --argjson y "$ay" \
+  '{execute:"input-send-event",arguments:{events:[
+     {type:"abs",data:{axis:"x",value:$x}},
+     {type:"abs",data:{axis:"y",value:$y}}]}}')" >/dev/null
+
+if $move_only; then
+  log "moved to ${X},${Y} (screen ${W}x${H})"
+  exit 0
+fi
+
+wintest_qmp "$(jq -nc --arg b "$BTN" \
+  '{execute:"input-send-event",arguments:{events:[{type:"btn",data:{down:true,button:$b}}]}}')" >/dev/null
+wintest_qmp "$(jq -nc --arg b "$BTN" \
+  '{execute:"input-send-event",arguments:{events:[{type:"btn",data:{down:false,button:$b}}]}}')" >/dev/null
+log "clicked $BTN at ${X},${Y} (screen ${W}x${H})"

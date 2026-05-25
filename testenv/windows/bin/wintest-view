@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+
+is_running || die "VM not running — start it with wintest-start"
+exec remote-viewer "spice://$SPICE_ADDR:$SPICE_PORT" "$@"

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+
+(( $# >= 1 )) || die "usage: wintest-run <command...>"
+ssh_ready || die "VM SSH not reachable. Is wintest-start running?"
+
+sshpass -p "$SSH_PASS" ssh "${SSH_OPTS[@]}" "$SSH_USER@127.0.0.1" -- "$@"

@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+
+if is_running; then
+  printf 'QEMU:    running (pid %s)\n' "$(cat "$QEMU_PID_FILE")"
+else
+  printf 'QEMU:    stopped\n'
+fi
+
+if ssh_ready; then
+  printf 'SSH:     ready (127.0.0.1:%s, user %s)\n' "$SSH_PORT" "$SSH_USER"
+else
+  printf 'SSH:     unreachable\n'
+fi
+
+if is_running; then
+  printf 'SPICE:   spice://%s:%s  (no auth, localhost only)\n' "$SPICE_ADDR" "$SPICE_PORT"
+else
+  printf 'SPICE:   (vm not running)\n'
+fi
+
+if [[ -S "$QMP_SOCK" ]]; then
+  printf 'QMP:     %s\n' "$QMP_SOCK"
+else
+  printf 'QMP:     (socket missing)\n'
+fi
+
+if [[ -f "$OVERLAY" ]]; then
+  printf 'Overlay: %s (%s)\n' "$OVERLAY" "$(du -h "$OVERLAY" | awk '{print $1}')"
+else
+  printf 'Overlay: not created\n'
+fi

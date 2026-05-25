@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Capture the guest framebuffer to a PNG via QMP screendump. Fully headless —
+# no SPICE/VNC viewer needed. Prints the absolute path of the written file so
+# it can be fed straight to an image-reading tool.
+#
+# usage: wintest-screenshot [out.png]   (default: state/screen.png)
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+
+is_running || die "VM not running — start it with wintest-start"
+
+OUT="${1:-$STATE_DIR/screen.png}"
+case "$OUT" in /*) ;; *) OUT="$PWD/$OUT" ;; esac
+
+rm -f "$OUT"
+wintest_qmp "$(jq -nc --arg f "$OUT" \
+  '{execute:"screendump",arguments:{filename:$f,format:"png"}}')" >/dev/null
+[[ -f "$OUT" ]] || die "screendump produced no file ($OUT)"
+
+read -r W H < <(png_dims "$OUT")
+log "captured ${W}x${H} -> $OUT"
+printf '%s\n' "$OUT"

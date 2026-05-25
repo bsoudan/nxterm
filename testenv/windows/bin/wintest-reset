@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+
+if is_running; then
+  log "Stopping VM first..."
+  "$WINTEST_ROOT/bin/wintest-stop"
+fi
+
+[[ -f "$OVERLAY" ]] && { log "Removing overlay: $OVERLAY"; rm -f "$OVERLAY"; }
+[[ -d "$TPM_DIR" ]] && { log "Resetting TPM state..."; rm -rf "$TPM_DIR"; }
+
+log "Reset complete. Next wintest-start will build a fresh overlay."
