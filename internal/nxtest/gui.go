@@ -424,6 +424,10 @@ func StartGuiWinApp(wadAddr, appPath, endpoint, session, hookHostAddr string) (*
 func (a *GuiWinApp) Kill() {
 	a.guiScreen.close()
 	a.wad.Close()
+	// wad.Close ends the session asynchronously; force-kill the process too so
+	// the test hook port is freed before the next GUI test binds it.
+	_ = exec.Command("wintest-run",
+		`powershell -NoProfile -Command "Get-Process NxtermGui -ErrorAction SilentlyContinue | Stop-Process -Force"`).Run()
 }
 
 func (a *GuiWinApp) Wait(timeout time.Duration) error { return nil }
