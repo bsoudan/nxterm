@@ -14,29 +14,36 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <!-- Tab strip (Windows Terminal style) -->
-        <Grid Grid.Row="0" Background="#1B1B1B">
+        <!-- Tab strip in the title bar (Windows Terminal style). The whole row is
+             the draggable caption; the system caption buttons sit over the
+             right reserve column. -->
+        <Grid Grid.Row="0" x:Name="AppTitleBar" Background="#1B1B1B" Height="40">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="140" />
             </Grid.ColumnDefinitions>
             <ScrollViewer Grid.Column="0"
+                          VerticalAlignment="Bottom"
                           HorizontalScrollMode="Auto"
                           HorizontalScrollBarVisibility="Hidden"
                           VerticalScrollBarVisibility="Disabled">
                 <ItemsControl x:Name="TabStrip">
                     <ItemsControl.ItemsPanel>
                         <ItemsPanelTemplate>
-                            <StackPanel Orientation="Horizontal" />
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Bottom" />
                         </ItemsPanelTemplate>
                     </ItemsControl.ItemsPanel>
                     <ItemsControl.ItemTemplate>
                         <DataTemplate x:DataType="ui:TabItem">
-                            <Border Background="{x:Bind Background, Mode=OneWay}"
+                            <!-- A Button (not a Border) so it stays interactive
+                                 inside the title-bar drag region. -->
+                            <Button Click="Tab_Click"
+                                    Background="{x:Bind Background, Mode=OneWay}"
+                                    BorderThickness="0"
                                     CornerRadius="6,6,0,0"
-                                    Margin="2,5,0,0"
-                                    Padding="12,5,6,5"
-                                    Tapped="Tab_Tapped"
+                                    Margin="2,8,0,0"
+                                    Padding="12,4,6,4"
                                     AutomationProperties.AutomationId="TerminalTab"
                                     AutomationProperties.Name="{x:Bind Title, Mode=OneWay}">
                                 <StackPanel Orientation="Horizontal" Spacing="8">
@@ -56,22 +63,25 @@
                                             AutomationProperties.AutomationId="CloseTab"
                                             Content="&#xE8BB;" />
                                 </StackPanel>
-                            </Border>
+                            </Button>
                         </DataTemplate>
                     </ItemsControl.ItemTemplate>
                 </ItemsControl>
             </ScrollViewer>
             <Button Grid.Column="1"
                     x:Name="NewTabButton"
+                    VerticalAlignment="Bottom"
                     Click="NewTab_Click"
                     Background="Transparent"
                     BorderThickness="0"
-                    Margin="4,5,6,0"
+                    Margin="4,0,6,4"
                     FontFamily="Segoe MDL2 Assets"
                     FontSize="12"
                     Foreground="#C8C8C8"
                     AutomationProperties.AutomationId="NewTabButton"
                     Content="&#xE710;" />
+            <!-- reserve space under the system caption buttons -->
+            <Border Grid.Column="2" Background="Transparent" />
         </Grid>
 
         <!-- Terminal viewport -->

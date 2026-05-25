@@ -35,6 +35,21 @@ public sealed partial class MainWindow : Window
         this.InitializeComponent();
         TabStrip.ItemsSource = _tabs;
 
+        // Windows-Terminal-style: draw the tab strip into the caption area and
+        // make the strip the draggable title bar. Interactive children (tabs,
+        // + button) automatically pass input through.
+        ExtendsContentIntoTitleBar = true;
+        SetTitleBar(AppTitleBar);
+        var tb = AppWindow.TitleBar;
+        tb.ButtonBackgroundColor = Microsoft.UI.Colors.Transparent;
+        tb.ButtonInactiveBackgroundColor = Microsoft.UI.Colors.Transparent;
+        tb.ButtonForegroundColor = Color.FromArgb(255, 0xC8, 0xC8, 0xC8);
+        tb.ButtonInactiveForegroundColor = Color.FromArgb(255, 0x8A, 0x8A, 0x8A);
+        tb.ButtonHoverBackgroundColor = Color.FromArgb(255, 0x3A, 0x3A, 0x3A);
+        tb.ButtonHoverForegroundColor = Microsoft.UI.Colors.White;
+        tb.ButtonPressedBackgroundColor = Color.FromArgb(255, 0x2A, 0x2A, 0x2A);
+        tb.ButtonPressedForegroundColor = Microsoft.UI.Colors.White;
+
         _client.SessionReady += OnSessionReady;
         _client.RegionAdded += OnRegionAdded;
         _client.RegionRemoved += OnRegionRemoved;
@@ -131,7 +146,7 @@ public sealed partial class MainWindow : Window
         UiRefresh();
     }
 
-    private void Tab_Tapped(object sender, Microsoft.UI.Xaml.Input.TappedRoutedEventArgs e)
+    private void Tab_Click(object sender, RoutedEventArgs e)
     {
         if ((sender as FrameworkElement)?.DataContext is TabItem t) ActivateRegion(t.RegionId);
     }
