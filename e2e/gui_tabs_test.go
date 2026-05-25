@@ -112,39 +112,11 @@ func (g *guiTabSession) waitTabCount(want int) {
 	g.t.Fatalf("tab count = %d, want %d", len(g.app.Tabs()), want)
 }
 
-func (g *guiTabSession) waitActiveIndex(want int) {
-	g.t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
-	for time.Now().Before(deadline) {
-		if g.app.ActiveTabIndex() == want {
-			return
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	g.t.Fatalf("active tab index = %d, want %d", g.app.ActiveTabIndex(), want)
-}
-
-// TestTabNewSwitchClose_GUI drives the tab chrome: the "+" button spawns a tab,
-// clicking a tab activates it, and the close button removes it.
-func TestTabNewSwitchClose_GUI(t *testing.T) {
+// TestTabSpawnSwitchClose_GUI drives the tab chrome (the "+" button spawns a
+// tab, clicking a tab activates it, the close button removes it) via the shared
+// dual-backend body — the same body TestTabSpawnSwitchClose runs on the TUI.
+func TestTabSpawnSwitchClose_GUI(t *testing.T) {
 	g := setupGuiTabs(t)
 	defer g.cleanup()
-
-	g.waitTabCount(1)
-	if err := g.app.NewTab(); err != nil {
-		t.Fatal(err)
-	}
-	g.waitTabCount(2)
-	g.waitActiveIndex(1) // the new tab becomes active
-
-	if err := g.app.SwitchToTab(0); err != nil {
-		t.Fatal(err)
-	}
-	g.waitActiveIndex(0)
-
-	if err := g.app.CloseTab(1); err != nil {
-		t.Fatal(err)
-	}
-	// Closing kills the region; the tab disappears via tree-event sync.
-	g.waitTabCount(1)
+	tabSpawnSwitchClose(t, g.app)
 }
