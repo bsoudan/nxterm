@@ -11,7 +11,9 @@
 set -euo pipefail
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-BIN="$(cd -- "$HERE/../../testenv/windows/bin" && pwd)"
+ROOT="$(cd -- "$HERE/../.." && pwd)"
+BIN="$ROOT/testenv/windows/bin"
+OUT="$ROOT/.local/bin"
 PS='powershell -NoProfile -ExecutionPolicy Bypass -File'
 
 log() { printf '\n=== %s ===\n' "$*" >&2; }
@@ -31,11 +33,25 @@ log "provision toolchain (idempotent)"
 log "build GUI client"
 "$BIN/wintest-run" "$PS %USERPROFILE%\\nxgui\\scripts\\build.ps1"
 
-cat >&2 <<'EOF'
+# Pull the self-contained publish output back to .local/bin (where the other
+# binaries land). It's a folder of runtime DLLs + the exe, so keep it whole and
+# expose a stable NxtermGui.exe symlink alongside it — mirroring how the
+# Makefile symlinks nxterm.exe.
+log "fetch published client into .local/bin"
+mkdir -p "$OUT"
+rm -rf "$OUT/NxtermGui" "$OUT/publish"
+"$BIN/wintest-fetch" nxgui/publish "$OUT"
+mv "$OUT/publish" "$OUT/NxtermGui"
+ln -sf NxtermGui/NxtermGui.exe "$OUT/NxtermGui.exe"
 
-Built. To run it (visual):
+cat >&2 <<EOF
+
+Built. Host copy: $OUT/NxtermGui.exe -> NxtermGui/NxtermGui.exe
+(self-contained win-x64; the whole $OUT/NxtermGui/ folder is the runnable unit).
+
+To run it in the VM (visual):
   1. Start a server on the host:   .local/bin/nxtermd tcp:0.0.0.0:7654
   2. Watch the VM desktop:          wintest-view &
-  3. Launch the client (session 1): wintest-run 'powershell -NoProfile -ExecutionPolicy Bypass -File %USERPROFILE%\nxgui\scripts\run-gui.ps1'
+  3. Launch the client (session 1): wintest-run 'powershell -NoProfile -ExecutionPolicy Bypass -File %USERPROFILE%\\nxgui\\scripts\\run-gui.ps1'
      (it connects to the host at 10.0.2.2:7654 — override with NXTERM_ENDPOINT)
 EOF
