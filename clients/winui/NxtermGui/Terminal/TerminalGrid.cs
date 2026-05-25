@@ -26,6 +26,14 @@ public sealed class TerminalGrid
     public bool BracketedPaste { get; private set; } // DECSET 2004
     public string Title { get; private set; } = "";
 
+    // Mouse tracking (DECSET 1000 normal / 1002 button-drag / 1003 any-motion,
+    // 1006 = SGR encoding).
+    private bool _m1000, _m1002, _m1003, _m1006;
+    public bool MouseReportsPress => _m1000 || _m1002 || _m1003;
+    public bool MouseReportsDrag => _m1002 || _m1003;
+    public bool MouseReportsAny => _m1003;
+    public bool MouseSgr => _m1006;
+
     private TermCell[][] _buf = Array.Empty<TermCell[]>();
     private int _top, _bottom;                 // scroll region (inclusive)
     private TermColor _penFg = TermColor.Default, _penBg = TermColor.Default;
@@ -160,11 +168,13 @@ public sealed class TerminalGrid
             case "sm":
                 if (HasParam(e.Params, 25)) CursorVisible = true;
                 if (HasParam(e.Params, 2004)) BracketedPaste = true;
+                ApplyMouseMode(e.Params, true);
                 if (IsAltParam(e.Params)) EnterAlt();
                 break;
             case "rm":
                 if (HasParam(e.Params, 25)) CursorVisible = false;
                 if (HasParam(e.Params, 2004)) BracketedPaste = false;
+                ApplyMouseMode(e.Params, false);
                 if (IsAltParam(e.Params)) LeaveAlt();
                 break;
             case "decscusr": CursorStyle = (e.Params != null && e.Params.Length > 0) ? e.Params[0] : 1; break;
@@ -265,6 +275,19 @@ public sealed class TerminalGrid
 
     private static bool IsAltParam(int[]? p) => HasParam(p, 1049) || HasParam(p, 1047) || HasParam(p, 47);
 
+    private void ApplyMouseMode(int[]? p, bool on)
+    {
+        if (p == null) return;
+        foreach (var m in p)
+            switch (m)
+            {
+                case 1000: _m1000 = on; break;
+                case 1002: _m1002 = on; break;
+                case 1003: _m1003 = on; break;
+                case 1006: _m1006 = on; break;
+            }
+    }
+
     private void EnterAlt()
     {
         if (_altActive) return;
@@ -294,6 +317,7 @@ public sealed class TerminalGrid
         _penFg = TermColor.Default; _penBg = TermColor.Default; _penAttrs = CellAttr.None;
         CursorVisible = true;
         _altActive = false; _altBuf = null; CursorStyle = 0;
+        _m1000 = _m1002 = _m1003 = _m1006 = false;
     }
 
     private void ApplySgr(int[]? a)

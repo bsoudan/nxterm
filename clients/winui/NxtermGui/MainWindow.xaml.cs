@@ -33,6 +33,8 @@ public sealed partial class MainWindow : Window
 
     private (int row, int col) _selAnchor, _selCaret;
     private bool _selecting, _hasSelection;
+    private bool _mouseDown;
+    private (int row, int col) _lastMouseCell = (-1, -1);
 
     public MainWindow()
     {
@@ -305,33 +307,98 @@ public sealed partial class MainWindow : Window
     {
         TerminalCanvas.Focus(FocusState.Pointer);
         SetForegroundWindow(WinRT.Interop.WindowNative.GetWindowHandle(this));
-        _selAnchor = _selCaret = CellAt(e.GetCurrentPoint(TerminalCanvas).Position);
+        var (row, col) = CellAt(e.GetCurrentPoint(TerminalCanvas).Position);
+        TerminalCanvas.CapturePointer(e.Pointer);
+
+        if (_grid.MouseReportsPress)        // forward to the app instead of selecting
+        {
+            _mouseDown = true;
+            _lastMouseCell = (row, col);
+            SendMouse(0, col, row, press: true);
+            return;
+        }
+        _selAnchor = _selCaret = (row, col);
         _selecting = true;
         _hasSelection = false;
-        TerminalCanvas.CapturePointer(e.Pointer);
         TerminalCanvas.Invalidate();
     }
 
     private void TerminalCanvas_PointerMoved(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
     {
+        var (row, col) = CellAt(e.GetCurrentPoint(TerminalCanvas).Position);
+        if (_grid.MouseReportsPress)
+        {
+            bool report = _grid.MouseReportsAny || (_grid.MouseReportsDrag && _mouseDown);
+            if (report && (row, col) != _lastMouseCell)
+            {
+                _lastMouseCell = (row, col);
+                SendMouse((_mouseDown ? 0 : 3) + 32, col, row, press: true);  // +32 = motion
+            }
+            return;
+        }
         if (!_selecting) return;
-        _selCaret = CellAt(e.GetCurrentPoint(TerminalCanvas).Position);
+        _selCaret = (row, col);
         _hasSelection = _selCaret != _selAnchor;
         TerminalCanvas.Invalidate();
     }
 
     private void TerminalCanvas_PointerReleased(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
     {
+        var (row, col) = CellAt(e.GetCurrentPoint(TerminalCanvas).Position);
+        if (_grid.MouseReportsPress)
+        {
+            if (_mouseDown) SendMouse(0, col, row, press: false);
+            _mouseDown = false;
+            TerminalCanvas.ReleasePointerCapture(e.Pointer);
+            return;
+        }
         if (_selecting)
         {
             // Finalize from the release point too, in case PointerMoved didn't
             // fire (e.g. a synthetic pointer during automated testing).
-            _selCaret = CellAt(e.GetCurrentPoint(TerminalCanvas).Position);
+            _selCaret = (row, col);
             _hasSelection = _selCaret != _selAnchor;
             TerminalCanvas.Invalidate();
         }
         _selecting = false;
         TerminalCanvas.ReleasePointerCapture(e.Pointer);
+    }
+
+    private void TerminalCanvas_PointerWheelChanged(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
+    {
+        if (!_grid.MouseReportsPress) return;   // (scrollback handled in a later phase)
+        var pp = e.GetCurrentPoint(TerminalCanvas);
+        var (row, col) = CellAt(pp.Position);
+        SendMouse(pp.Properties.MouseWheelDelta > 0 ? 64 : 65, col, row, press: true);
+        e.Handled = true;
+    }
+
+    // Encode an xterm mouse event (SGR 1006 if enabled, else legacy X10) and send it.
+    private void SendMouse(int button, int col, int row, bool press)
+    {
+        int cb = button;
+        if (IsDown(VirtualKey.Shift)) cb += 4;
+        if (IsDown(VirtualKey.Menu)) cb += 8;
+        if (IsDown(VirtualKey.Control)) cb += 16;
+        int x = col + 1, y = row + 1;
+
+        byte[] seq;
+        if (_grid.MouseSgr)
+            seq = System.Text.Encoding.ASCII.GetBytes($"\x1b[<{cb};{x};{y}{(press ? 'M' : 'm')}");
+        else
+        {
+            int b = press ? cb : 3;   // legacy release reports button 3
+            seq = new byte[] { 0x1b, (byte)'[', (byte)'M', (byte)(b + 32), (byte)(x + 32), (byte)(y + 32) };
+        }
+        if (LastInput != null) LastInput.Text = Escape(seq);
+        _client.SendInput(seq);
+    }
+
+    private static string Escape(byte[] b)
+    {
+        var sb = new System.Text.StringBuilder();
+        foreach (var x in b) sb.Append(x == 0x1b ? "\\e" : ((char)x).ToString());
+        return sb.ToString();
     }
 
     private (int row, int col) CellAt(Windows.Foundation.Point p) =>

@@ -93,6 +93,7 @@
                               PointerPressed="TerminalCanvas_PointerPressed"
                               PointerMoved="TerminalCanvas_PointerMoved"
                               PointerReleased="TerminalCanvas_PointerReleased"
+                              PointerWheelChanged="TerminalCanvas_PointerWheelChanged"
                               SizeChanged="TerminalCanvas_SizeChanged"
                               ClearColor="#0C0C0C" />
 
@@ -102,13 +103,17 @@
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
             <TextBlock Grid.Column="0" x:Name="StatusLeft" Foreground="#B0B0B0" FontSize="12"
                        AutomationProperties.AutomationId="StatusLeft" />
-            <TextBlock Grid.Column="1" x:Name="ActiveRegionId" Foreground="#6A6A6A" FontSize="12"
+            <TextBlock Grid.Column="1" x:Name="LastInput" Foreground="#5A5A5A" FontSize="11"
+                       Margin="0,0,16,0" MaxWidth="220" TextTrimming="CharacterEllipsis"
+                       AutomationProperties.AutomationId="LastInput" />
+            <TextBlock Grid.Column="2" x:Name="ActiveRegionId" Foreground="#6A6A6A" FontSize="12"
                        Margin="0,0,16,0" MaxWidth="220" TextTrimming="CharacterEllipsis"
                        AutomationProperties.AutomationId="ActiveRegionId" />
-            <TextBlock Grid.Column="2" x:Name="StatusRight" Foreground="#B0B0B0" FontSize="12"
+            <TextBlock Grid.Column="3" x:Name="StatusRight" Foreground="#B0B0B0" FontSize="12"
                        AutomationProperties.AutomationId="StatusRight" />
         </Grid>
     </Grid>
