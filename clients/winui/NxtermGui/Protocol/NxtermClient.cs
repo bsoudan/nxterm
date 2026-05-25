@@ -29,6 +29,19 @@ public sealed class NxtermClient : IDisposable
     public string Session { get; private set; } = "";
     public string? ActiveRegion { get; private set; }
 
+    // All session names known from the server tree (snapshot + tree_events),
+    // for the session switcher. Guarded by _sessionsLock (touched on the receive
+    // thread; read on the UI thread).
+    private readonly object _sessionsLock = new();
+    private readonly SortedSet<string> _sessions = new(StringComparer.Ordinal);
+
+    public IReadOnlyList<string> Sessions
+    {
+        get { lock (_sessionsLock) return _sessions.ToList(); }
+    }
+
+    public event Action? SessionsChanged;
+
     // Number of times the connection dropped and entered the reconnect loop.
     // Latched (monotonic) so a test can observe that a reconnect happened even
     // though the transient "reconnecting…" status is too brief to poll reliably.
@@ -90,6 +103,14 @@ public sealed class NxtermClient : IDisposable
 
     public void Spawn(string program = "")
         => SendLine($"{{\"type\":\"spawn_request\",\"session\":\"{Session}\",\"program\":\"{program}\"}}");
+
+    // SwitchSession re-runs session_connect for a different session on the same
+    // connection; the response drives the tab rebuild + re-subscribe upstream.
+    public void SwitchSession(string name)
+    {
+        if (name.Length == 0 || name == Session) return;
+        SendLine($"{{\"type\":\"session_connect_request\",\"session\":\"{name}\",\"width\":{_cols},\"height\":{_rows},\"req_id\":{++_reqId}}}");
+    }
 
     public void Kill(string regionId)
         => SendLine($"{{\"type\":\"kill_region_request\",\"region_id\":\"{regionId}\"}}");
@@ -160,6 +181,11 @@ public sealed class NxtermClient : IDisposable
                 SessionReady?.Invoke(Session, regions);
                 break;
 
+            // Full tree on connect: seed the known-session set for the switcher.
+            case "tree_snapshot":
+                HandleTreeSnapshot(root);
+                break;
+
             // The server announces region add/remove via the tree, not via
             // region_created/region_destroyed (those broadcasts were removed).
             case "tree_events":
@@ -187,12 +213,49 @@ public sealed class NxtermClient : IDisposable
     private static string? RegionOf(JsonElement root)
         => root.TryGetProperty("region_id", out var r) ? r.GetString() : null;
 
+    // Track session create/delete from tree ops (set|delete /sessions/<name>,
+    // not the /region_ids sub-path) so the switcher's list stays current.
+    private void TrackSessions(JsonElement ops)
+    {
+        bool changed = false;
+        lock (_sessionsLock)
+        {
+            foreach (var op in ops.EnumerateArray())
+            {
+                var path = op.TryGetProperty("path", out var p) ? p.GetString() : null;
+                if (path == null || !path.StartsWith("/sessions/")) continue;
+                var rest = path["/sessions/".Length..];
+                if (rest.Length == 0 || rest.Contains('/')) continue; // skip /region_ids etc.
+                var kind = op.TryGetProperty("op", out var k) ? k.GetString() : null;
+                if (kind == "set") changed |= _sessions.Add(rest);
+                else if (kind is "delete" or "remove") changed |= _sessions.Remove(rest);
+            }
+        }
+        if (changed) SessionsChanged?.Invoke();
+    }
+
+    // Seed the known-session set from a full tree snapshot (sent on connect).
+    private void HandleTreeSnapshot(JsonElement root)
+    {
+        if (!root.TryGetProperty("tree", out var tree) ||
+            !tree.TryGetProperty("sessions", out var sessions) ||
+            sessions.ValueKind != JsonValueKind.Object)
+            return;
+        lock (_sessionsLock)
+        {
+            _sessions.Clear();
+            foreach (var s in sessions.EnumerateObject()) _sessions.Add(s.Name);
+        }
+        SessionsChanged?.Invoke();
+    }
+
     // Track region add/remove for our session from tree ops:
     //   set /regions/<id> {…name…}   and   add|remove /sessions/<session>/region_ids "<id>"
     private void HandleTreeEvents(JsonElement root)
     {
-        if (Session.Length == 0) return;
         if (!root.TryGetProperty("ops", out var ops) || ops.ValueKind != JsonValueKind.Array) return;
+        TrackSessions(ops);
+        if (Session.Length == 0) return;
 
         var names = new Dictionary<string, string>();
         foreach (var op in ops.EnumerateArray())

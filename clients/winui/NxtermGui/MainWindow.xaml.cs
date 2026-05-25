@@ -22,6 +22,7 @@ public sealed partial class MainWindow : Window
     private readonly NxtermClient _client = new();
     private readonly object _gridLock = new();
     private readonly ObservableCollection<TabItem> _tabs = new();
+    private readonly ObservableCollection<string> _sessionNames = new();
     private TerminalGrid _grid = new(80, 24);
 
     private CanvasTextFormat _font = null!, _fontBold = null!, _fontItalic = null!, _fontBoldItalic = null!;
@@ -56,6 +57,7 @@ public sealed partial class MainWindow : Window
     {
         this.InitializeComponent();
         TabStrip.ItemsSource = _tabs;
+        SessionList.ItemsSource = _sessionNames;
 
         // Windows-Terminal-style: draw the tab strip into the caption area and
         // make the strip the draggable title bar. Interactive children (tabs,
@@ -79,6 +81,7 @@ public sealed partial class MainWindow : Window
         _client.ScreenUpdated += OnScreenUpdated;
         _client.EventsReceived += OnEventsReceived;
         _client.StatusChanged += OnStatusChanged;
+        _client.SessionsChanged += () => OnUi(RefreshSessions);
     }
 
     private async void TerminalCanvas_Loaded(object sender, RoutedEventArgs e)
@@ -158,14 +161,46 @@ public sealed partial class MainWindow : Window
         UiRefresh();
     }
 
-    // CloseOverlays hides the palette + help (not the connect dialog, which has
-    // its own dismiss path) and returns focus to the terminal.
+    // CloseOverlays hides the palette/help/session-picker (not the connect
+    // dialog, which has its own dismiss path) and returns focus to the terminal.
     private void CloseOverlays()
     {
         _overlay = "";
         CommandPalette.Visibility = Visibility.Collapsed;
         HelpOverlay.Visibility = Visibility.Collapsed;
+        SessionPicker.Visibility = Visibility.Collapsed;
         TerminalCanvas.Focus(FocusState.Programmatic);
+        UiRefresh();
+    }
+
+    private void ShowSessionPicker()
+    {
+        RefreshSessions();
+        _overlay = "sessions";
+        CommandPalette.Visibility = Visibility.Collapsed;
+        HelpOverlay.Visibility = Visibility.Collapsed;
+        SessionPicker.Visibility = Visibility.Visible;
+        UiRefresh();
+    }
+
+    // RefreshSessions reconciles the picker's list with the client's known
+    // sessions in place (so the SessionPicker updates live if a session appears
+    // while it is open).
+    private void RefreshSessions()
+    {
+        var want = _client.Sessions;
+        for (int i = _sessionNames.Count - 1; i >= 0; i--)
+            if (!want.Contains(_sessionNames[i])) _sessionNames.RemoveAt(i);
+        foreach (var s in want)
+            if (!_sessionNames.Contains(s)) _sessionNames.Add(s);
+    }
+
+    private void Session_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.Tag is not string name) return;
+        SessionPicker.Visibility = Visibility.Collapsed;
+        _overlay = "";
+        _client.SwitchSession(name);
         UiRefresh();
     }
 
@@ -178,8 +213,9 @@ public sealed partial class MainWindow : Window
         {
             case "new-tab": _client.Spawn(); break;
             case "close-tab": if (_client.ActiveRegion != null) _client.Kill(_client.ActiveRegion); break;
-            case "connect": ShowConnectDialog(); break; // sets _overlay = "connect"
-            case "help": ShowHelp(); break;             // sets _overlay = "help"
+            case "sessions": ShowSessionPicker(); break; // sets _overlay = "sessions"
+            case "connect": ShowConnectDialog(); break;  // sets _overlay = "connect"
+            case "help": ShowHelp(); break;              // sets _overlay = "help"
         }
         UiRefresh();
     }
