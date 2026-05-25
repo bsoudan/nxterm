@@ -7,7 +7,24 @@ grid and replays the server's structured `terminal_events` into it.
 
 ## Status
 
-**Phase 1 (render) + Phase 2 (tabs & status bar): complete and verified.**
+**Phases 1–2 complete; Phase 3 in progress.** All verified in the VM, with
+`make test-winui` (tabs + status bar) green throughout.
+
+Phase 3 done so far:
+- **alt-screen buffer** (DECSET 1049/1047/47) so full-screen apps (vim/less/htop)
+  render and restore the primary screen on exit;
+- **attributes**: bold, italic, underline, strikethrough, reverse, faint,
+  conceal; **cursor shape** from `decscusr` (block / underline / bar);
+- **text selection + clipboard**: drag to select, `Ctrl+Shift+C` / `Ctrl+Shift+V`
+  (bracketed-paste aware);
+- **mouse reporting**: forward click/drag/wheel to apps that enable mouse
+  tracking (DECSET 1000/1002/1003), SGR (1006) or legacy X10.
+
+Phase 3 remaining: connect dialog + reconnect, scrollback, multiple sessions,
+command-palette/help overlays, and layout/IME-aware text input via
+`CoreTextEditContext`. Deferred follow-ups: wide-char/CJK double-width rendering
+(font-limited in the VM), and a durable WinAppDriver mouse test (the
+UIA-readable `LastInput` element is in place for it).
 
 Phase 1 — the terminal viewport:
 - renders the live screen as a Win2D cell grid (colors via the Campbell 16-color
@@ -24,10 +41,6 @@ Phase 2 — chrome (covered by the `make test-winui` WinAppDriver test):
   `+` spawns (`spawn_request`), `×` closes (`kill_region_request`);
 - a bottom **status bar**: `session@endpoint`, the active region, and
   `cols×rows` + connection state.
-
-Deferred to Phase 3: scrollback, mouse reporting, reconnect, multiple sessions,
-the command-palette/help overlays, and proper layout/IME-aware text input via
-`CoreTextEditContext`.
 
 ## Layout
 
