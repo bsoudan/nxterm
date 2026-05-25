@@ -21,6 +21,7 @@ type Screen interface {
 	ScreenLines() []string
 	ScreenLine(row int) string
 	ScreenCells() [][]te.Cell
+	Cursor() (row, col int)
 
 	// Waiting on screen content.
 	WaitFor(needle string, timeout time.Duration) ([]string, error)
