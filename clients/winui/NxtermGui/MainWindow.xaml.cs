@@ -148,7 +148,7 @@ public sealed partial class MainWindow : Window
         _endpoint = ep;
         _overlay = "";
         ConnectDialog.Visibility = Visibility.Collapsed;
-        TerminalCanvas.Focus(FocusState.Programmatic);
+        FocusTerminal();
         await ConnectToEndpointAsync(ep, _session);
     }
 
@@ -180,8 +180,8 @@ public sealed partial class MainWindow : Window
         CommandPalette.Visibility = Visibility.Collapsed;
         HelpOverlay.Visibility = Visibility.Collapsed;
         SessionPicker.Visibility = Visibility.Collapsed;
-        TerminalCanvas.Focus(FocusState.Programmatic);
         UiRefresh();
+        FocusTerminal();
     }
 
     private void ShowSessionPicker()
@@ -327,6 +327,19 @@ public sealed partial class MainWindow : Window
         foreach (var t in _tabs) t.IsActive = t.RegionId == id;
         _title = "";
         UiRefresh();
+        FocusTerminal();
+    }
+
+    // FocusTerminal gives the terminal canvas keyboard focus, deferred to the
+    // next UI tick — focusing synchronously right after a chrome interaction
+    // (tab click, dismissing the connect dialog) is unreliable in WinUI. The
+    // overlay guard avoids stealing focus from an open overlay.
+    private void FocusTerminal()
+    {
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (_overlay == "") TerminalCanvas.Focus(FocusState.Programmatic);
+        });
     }
 
     private void Tab_Click(object sender, RoutedEventArgs e)
