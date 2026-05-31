@@ -1,9 +1,11 @@
 // Command nx2d is the nx2 broker: it accepts host connections, runs per-app
 // server-side companions, and relays the opaque data plane between them.
 //
-// Apps are registered with repeatable -app flags:
+// Apps are registered with repeatable -app flags, and a guest WASM module is
+// attached per app with -guest so remote hosts can fetch it by content hash:
 //
-//	nx2d -listen unix:/tmp/nx2d.sock -app echo=nx2-echo -app term="nx2-term --shell /bin/bash"
+//	nx2d -listen tcp:0.0.0.0:7777 \
+//	     -app term="nx2-term bash" -guest term=.local/share/nx2/apps/terminal-guest.wasm
 package main
 
 import (
@@ -34,11 +36,27 @@ func (a *appFlags) Set(s string) error {
 	return nil
 }
 
+// guestFlags maps app name -> guest WASM path (repeatable -guest name=path).
+type guestFlags map[string]string
+
+func (g guestFlags) String() string { return "" }
+
+func (g guestFlags) Set(s string) error {
+	name, path, ok := strings.Cut(s, "=")
+	if !ok || name == "" || path == "" {
+		return fmt.Errorf("guest must be name=path, got %q", s)
+	}
+	g[name] = path
+	return nil
+}
+
 func main() {
 	listen := flag.String("listen", "unix:/tmp/nx2d.sock", "transport listen spec")
 	debug := flag.Bool("debug", false, "enable debug logging")
 	var apps appFlags
 	flag.Var(&apps, "app", "register an app: name=command [args...] (repeatable)")
+	guests := guestFlags{}
+	flag.Var(guests, "guest", "attach a guest WASM module: name=path.wasm (repeatable)")
 	flag.Parse()
 
 	level := slog.LevelInfo
@@ -49,8 +67,16 @@ func main() {
 
 	b := broker.New()
 	for _, a := range apps {
-		b.Register(a)
-		slog.Info("registered app", "name", a.Name, "command", a.Command)
+		if path, ok := guests[a.Name]; ok {
+			wasm, err := os.ReadFile(path)
+			if err != nil {
+				slog.Error("read guest wasm failed", "app", a.Name, "path", path, "err", err)
+				os.Exit(1)
+			}
+			a.GuestWASM = wasm
+		}
+		reg := b.Register(a)
+		slog.Info("registered app", "name", reg.Name, "command", reg.Command, "hash", reg.Hash)
 	}
 
 	l, err := transport.Listen(*listen)
