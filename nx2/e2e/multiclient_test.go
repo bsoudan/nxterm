@@ -51,7 +51,7 @@ type mclient struct {
 	sendCh   chan []byte
 }
 
-func attach(t *testing.T, b *broker.Broker, hash, session string) *mclient {
+func attach(t *testing.T, b *broker.Broker, appName, hash, session string) *mclient {
 	t.Helper()
 	cli, srv := net.Pipe()
 	go b.ServeConn(srv)
@@ -77,7 +77,7 @@ func attach(t *testing.T, b *broker.Broker, hash, session string) *mclient {
 		t.Fatal(err)
 	}
 
-	sel, err := control.Marshal(control.TypeSelectApp, control.SelectApp{App: "term", Session: session})
+	sel, err := control.Marshal(control.TypeSelectApp, control.SelectApp{App: appName, Session: session})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,12 +169,12 @@ func TestMultiClientLateJoinSnapshot(t *testing.T) {
 	// Host A joins first and observes the live output. Once A sees "hello", the
 	// companion's canonical screen is guaranteed to contain it (it feeds the
 	// screen before broadcasting the raw bytes).
-	a := attach(t, b, app.Hash, "s1")
+	a := attach(t, b, "term", app.Hash, "s1")
 	a.waitText(t, "hello")
 
 	// Host B joins the SAME session afterward. The raw "hello" is already in the
 	// past; B can only learn it from the snapshot the companion emits on attach.
-	bc := attach(t, b, app.Hash, "s1")
+	bc := attach(t, b, "term", app.Hash, "s1")
 	bc.waitText(t, "hello")
 }
 
@@ -194,10 +194,10 @@ func TestSeparateSessionsAreIsolated(t *testing.T) {
 		GuestWASM: guestWasm,
 	})
 
-	a := attach(t, b, app.Hash, "alpha")
+	a := attach(t, b, "term", app.Hash, "alpha")
 	a.waitText(t, "session-specific")
 	// A different session must spawn its own companion and also print the banner.
-	c := attach(t, b, app.Hash, "beta")
+	c := attach(t, b, "term", app.Hash, "beta")
 	c.waitText(t, "session-specific")
 }
 
@@ -214,7 +214,7 @@ func TestInputReachesCompanion(t *testing.T) {
 	b := broker.New()
 	app := b.Register(broker.App{Name: "term", Command: termBin, Args: []string{"cat"}, GuestWASM: guestWasm})
 
-	m := attach(t, b, app.Hash, "io")
+	m := attach(t, b, "term", app.Hash, "io")
 	m.sendInput(t, "ping\r")
 	m.waitText(t, "ping")
 }
@@ -256,7 +256,7 @@ func TestSlowHostDoesNotBlockOthers(t *testing.T) {
 	// Intentionally never read sconn again -> its broker-side sink fills and drops.
 
 	// A healthy host on the same session must still render despite the stall.
-	h := attach(t, b, app.Hash, "slow")
+	h := attach(t, b, "term", app.Hash, "slow")
 	h.waitText(t, "hello")
 }
 
@@ -279,10 +279,10 @@ func TestLateJoinReceivesScrollback(t *testing.T) {
 		GuestWASM: guestWasm,
 	})
 
-	a := attach(t, b, app.Hash, "sb")
+	a := attach(t, b, "term", app.Hash, "sb")
 	a.waitText(t, "line60") // last line visible => all 60 produced and parsed
 
-	bc := attach(t, b, app.Hash, "sb")
+	bc := attach(t, b, "term", app.Hash, "sb")
 	bc.waitText(t, "line60") // snapshot delivered to the late joiner
 	if sb := bc.inst.Scrollback(); sb <= 0 {
 		t.Fatalf("late joiner received no scrollback history, want >0 (got %d)", sb)

@@ -1,4 +1,4 @@
-.PHONY: all build-server changelog build-tui build-termctl build-nxtest build-mousehelper build-nativeapp build-nx2-guest build-nx2-echo build-nx2d build-nx2-term build-nx2-host check-wasm test-nx2 build-upgrade-test-binaries check-windows test test-e2e test-race test-upgrade test-stress test-stress-long rpm version clean
+.PHONY: all build-server changelog build-tui build-termctl build-nxtest build-mousehelper build-nativeapp build-nx2-guest build-nx2-echo build-nx2d build-nx2-term build-nx2-host build-nx2-files-guest build-nx2-files check-wasm test-nx2 build-upgrade-test-binaries check-windows test test-e2e test-race test-upgrade test-stress test-stress-long rpm version clean
 
 # Binary names
 SERVER_BIN   := nxtermd
@@ -72,9 +72,16 @@ build-nx2-term:
 build-nx2-host:
 	go build $(GCFLAGS) -o .local/bin/nx2-host-tui ./nx2/cmd/nx2-host-tui
 
+build-nx2-files-guest:
+	@mkdir -p .local/share/nx2/apps
+	GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared $(GCFLAGS) -o .local/share/nx2/apps/files-guest.wasm ./nx2/apps/files/guest
+
+build-nx2-files:
+	go build $(GCFLAGS) -o .local/bin/nx2-files ./nx2/apps/files/companion
+
 # Build the guest + companions + binaries, then run the nx2 tests (which load the
 # .wasm and spawn the echo/terminal companions).
-test-nx2: build-nx2-guest build-nx2-echo build-nx2d build-nx2-term build-nx2-host
+test-nx2: build-nx2-guest build-nx2-echo build-nx2d build-nx2-term build-nx2-host build-nx2-files-guest build-nx2-files
 	go test ./nx2/...
 
 # Cross-compile gate (mirrors check-windows): fail fast if a WASM-hostile
@@ -82,6 +89,7 @@ test-nx2: build-nx2-guest build-nx2-echo build-nx2d build-nx2-term build-nx2-hos
 check-wasm:
 	GOOS=wasip1 GOARCH=wasm go build -o /dev/null ./pkg/te
 	GOOS=wasip1 GOARCH=wasm go build -o /dev/null ./nx2/apps/terminal/guest
+	GOOS=wasip1 GOARCH=wasm go build -o /dev/null ./nx2/apps/files/guest
 	GOOS=js GOARCH=wasm go build -o /dev/null ./pkg/te
 
 build-termctl:
