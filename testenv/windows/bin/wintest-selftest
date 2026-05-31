@@ -333,9 +333,16 @@ check_mi_concurrency() {
   fi
   # Primary still up?
   is_running || { echo "primary VM went down while second started"; return 1; }
-  # Second up, on its own QMP socket + ports, distinct from primary?
-  WINTEST_INSTANCE="$MI_VM" "$BINDIR/wintest-status" 2>&1 | grep -q running \
-    || { echo "second VM not reporting running"; return 1; }
+  # Second up, on its own QMP socket + ports, distinct from primary? Retry the
+  # status probe briefly: with two fresh VMs booting at once the QMP query can be
+  # slow to round-trip (qmp_alive's socat has a 1s timeout), so a single immediate
+  # probe can false-negative even though the VM is healthy.
+  local i up=false
+  for i in $(seq 1 15); do
+    if WINTEST_INSTANCE="$MI_VM" "$BINDIR/wintest-status" 2>&1 | grep -q running; then up=true; break; fi
+    sleep 2
+  done
+  $up || { echo "second VM not reporting running after retries; qemu.log: $(tail -2 "$sdir/qemu.log" 2>/dev/null | tr '\n' ' ')"; return 1; }
   [[ -S "$sdir/qmp.sock" ]] || { echo "second VM has no qmp.sock"; return 1; }
   local p2; p2=$(grep -h SSH_PORT "$sdir/instance.env" | cut -d= -f2)
   (( p2 != SSH_PORT )) || { echo "second VM reused the primary SSH port $SSH_PORT"; return 1; }
