@@ -320,9 +320,12 @@ MI_VM="selftest-vm-$$"
 check_mi_concurrency() {
   local sdir; sdir=$(inst_state_dir "$MI_VM")
   # Boot the second VM all in this process (it dies with us, which is fine —
-  # we shut it down explicitly anyway).
-  WINTEST_INSTANCE="$MI_VM" "$BINDIR/wintest-start" >/dev/null 2>&1 \
-    || { echo "second VM ($MI_VM) failed to start"; return 1; }
+  # we shut it down explicitly anyway). On failure, surface the qemu log tail so
+  # the cause (port clash, OOM, boot timeout, …) is visible.
+  if ! WINTEST_INSTANCE="$MI_VM" "$BINDIR/wintest-start" >/tmp/selftest-vm2-start.log 2>&1; then
+    echo "second VM ($MI_VM) failed to start; start log: $(tail -2 /tmp/selftest-vm2-start.log | tr '\n' ' '); qemu.log: $(tail -3 "$sdir/qemu.log" 2>/dev/null | tr '\n' ' ')"
+    return 1
+  fi
   # Primary still up?
   is_running || { echo "primary VM went down while second started"; return 1; }
   # Second up, on its own QMP socket + ports, distinct from primary?
@@ -336,8 +339,13 @@ check_mi_concurrency() {
   is_running || { echo "primary VM died when the second was stopped"; return 1; }
 }
 if $DO_CONCURRENCY; then
-  run_check "multi-instance: two VMs coexist; stop one leaves the other" check_mi_concurrency
-  rm -rf "$(inst_state_dir "$MI_VM")" 2>/dev/null
+  if detail=$(check_mi_concurrency 2>&1); then
+    ok "multi-instance: two VMs coexist; stop one leaves the other"
+    rm -rf "$(inst_state_dir "$MI_VM")" 2>/dev/null   # clean only on success
+  else
+    no "multi-instance: two VMs coexist; stop one leaves the other — $detail"
+    WINTEST_INSTANCE="$MI_VM" "$BINDIR/wintest-stop" >/dev/null 2>&1 || true
+  fi
 else
   log "skipping full two-VM concurrency check (pass --concurrency to include it)"
 fi

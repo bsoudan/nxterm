@@ -40,10 +40,18 @@ SPICE_PORT="${SPICE_PORT:-5930}"
 
 QEMU_PID_FILE="$STATE_DIR/qemu.pid"
 SWTPM_PID_FILE="$STATE_DIR/swtpm.pid"
-QMP_SOCK="$STATE_DIR/qmp.sock"
-TPM_SOCK="$STATE_DIR/tpm.sock"
 TPM_DIR="$STATE_DIR/tpm"
 OVERLAY="$STATE_DIR/overlay.qcow2"
+
+# Unix sockets must live under a SHORT path: sockaddr_un.sun_path caps at ~108
+# chars, and the worktree state dir alone (state/<instance>/tpm.sock) already
+# nears that for "default" and overflows for longer instance names. Put the
+# sockets in a per-instance runtime dir keyed by a hash of STATE_DIR (stable
+# across invocations) so the absolute socket path stays well under the limit.
+RUNTIME_BASE="${XDG_RUNTIME_DIR:-/tmp}/wintest"
+SOCK_DIR="$RUNTIME_BASE/$(printf '%s' "$STATE_DIR" | cksum | cut -d' ' -f1)"
+QMP_SOCK="$SOCK_DIR/qmp.sock"
+TPM_SOCK="$SOCK_DIR/tpm.sock"
 
 # Adopt this instance's allocated ports (written by wintest-start). Sourced
 # after the bases so a running instance's choices win.
@@ -124,7 +132,7 @@ port_in_use() {
 # wintest-start before its already-running guard so every wintest-* targets the
 # same VM; also unit-testable on its own (no VM needed).
 ensure_instance_env() {
-  mkdir -p "$STATE_DIR" "$TPM_DIR"
+  mkdir -p "$STATE_DIR" "$TPM_DIR" "$SOCK_DIR"
   if [[ ! -f "$INSTANCE_ENV" ]]; then
     local stride
     stride=$(( $(printf '%s' "$WINTEST_INSTANCE" | cksum | cut -d' ' -f1) % 100 * 10 ))
