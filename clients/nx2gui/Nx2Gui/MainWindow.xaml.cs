@@ -33,14 +33,22 @@ public sealed partial class MainWindow : Window
     private TestHook? _testHook;
     private readonly CancellationTokenSource _cts = new();
 
+    private static void Trace(string msg)
+    {
+        try { System.IO.File.AppendAllText(@"C:\nx2gui-startup.log", $"{System.DateTime.Now:HH:mm:ss.fff} MW {msg}\r\n"); } catch { }
+    }
+
     public MainWindow()
     {
+        Trace("ctor: begin");
         this.InitializeComponent();
         Title = "nx2";
+        Trace("ctor: done");
     }
 
     private void TerminalCanvas_Loaded(object sender, RoutedEventArgs e)
     {
+        Trace("Canvas_Loaded: begin");
         MeasureFont();
         _ready = true;
         (_cols, _rows) = SizeToGrid(TerminalCanvas.ActualWidth, TerminalCanvas.ActualHeight);
@@ -58,6 +66,7 @@ public sealed partial class MainWindow : Window
         _testHook = TestHook.FromEnv(HandleTestRequest);
         _testHook?.Start();
 
+        Trace($"Canvas_Loaded: connecting to {_endpoint} app={_app}");
         _ = ConnectAsync();
     }
 
@@ -71,26 +80,33 @@ public sealed partial class MainWindow : Window
             _conn.StatusChanged += s => OnUi(() => { _status = s; RefreshStatus(); });
             _conn.DataReceived += OnData;
 
+            Trace($"ConnectAsync: dialing {host}:{port}");
             await _conn.ConnectAsync(host, port, _cts.Token);
+            Trace("ConnectAsync: connected; resolving");
             string hash = await _conn.ResolveAsync(_app, _cts.Token);
+            Trace($"ConnectAsync: resolved {hash}; fetching");
             byte[] wasm = await _conn.FetchAsync(hash, _cts.Token);
+            Trace($"ConnectAsync: fetched {wasm.Length} bytes; instantiating guest");
 
             var guest = new GuestInstance(wasm)
             {
                 OnFrame = OnFrame,
                 OnChannelSend = bytes => { _ = _conn!.SendDataAsync(bytes, _cts.Token); },
             };
+            Trace("ConnectAsync: guest instantiated; configuring");
             lock (_guestLock)
             {
                 guest.Configure(_cols, _rows);
                 _guest = guest;
             }
             await _conn.SelectAppAsync(_app, _session, _cts.Token);
+            Trace("ConnectAsync: select_app sent; entering read loop");
             OnUi(() => { _status = $"running {_app}"; RefreshStatus(); });
             _ = _conn.RunReadLoopAsync(_cts.Token);
         }
         catch (Exception ex)
         {
+            Trace("ConnectAsync EXCEPTION: " + ex);
             OnUi(() => { _status = "error: " + ex.Message; RefreshStatus(); });
         }
     }
