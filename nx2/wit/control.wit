@@ -1,0 +1,29 @@
+// nx2 control plane — surface lifecycle + content-addressed app distribution.
+//
+// STATUS: north-star spec; realized as newline-JSON control messages over the
+// transport (see nx2/internal/control). Distinct from the opaque binary data
+// plane (app-channel.wit). An app is identified by the hash of its WASM module;
+// the OSC/control "announce" only names a hash — the host fetches the blob over
+// the side channel if not already cached, then selects it for a surface.
+
+package nx2:control@0.1.0;
+
+record app-id {
+    // Content hash (e.g. "sha256:...") of the WASM module.
+    hash: string,
+    // Optional human label.
+    name: string,
+}
+
+interface control {
+    // App-side: advertise the app that should drive a surface.
+    announce: func(surface: u32, app: app-id);
+
+    // Host-side: fetch a WASM module by hash (chunked under the hood).
+    fetch: func(hash: string) -> result<list<u8>, string>;
+
+    // Bind a (cached) app to a surface and start its companion.
+    select: func(surface: u32, app: app-id) -> result<_, string>;
+
+    // Future: capability-tier negotiation (grid / canvas / widgets). Deferred.
+}

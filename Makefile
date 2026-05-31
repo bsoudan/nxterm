@@ -1,4 +1,4 @@
-.PHONY: all build-server changelog build-tui build-termctl build-nxtest build-mousehelper build-nativeapp build-upgrade-test-binaries check-windows test test-e2e test-race test-upgrade test-stress test-stress-long rpm version clean
+.PHONY: all build-server changelog build-tui build-termctl build-nxtest build-mousehelper build-nativeapp build-nx2-guest build-nx2-echo build-nx2d build-nx2-term check-wasm test-nx2 build-upgrade-test-binaries check-windows test test-e2e test-race test-upgrade test-stress test-stress-long rpm version clean
 
 # Binary names
 SERVER_BIN   := nxtermd
@@ -53,6 +53,33 @@ build-mousehelper:
 
 build-nativeapp:
 	cd e2e/testdata/nativeapp && go build -o ../../../.local/bin/nativeapp .
+
+# nx2 (terminal-native application platform spike). The terminal "app" is a
+# client-side WASM module built from pkg/te; the host loads it via wazero.
+build-nx2-guest:
+	@mkdir -p .local/share/nx2/apps
+	GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared $(GCFLAGS) -o .local/share/nx2/apps/terminal-guest.wasm ./nx2/apps/terminal/guest
+
+build-nx2-echo:
+	go build $(GCFLAGS) -o .local/bin/nx2-echo ./nx2/apps/echo/companion
+
+build-nx2d:
+	go build $(GCFLAGS) -o .local/bin/nx2d ./nx2/cmd/nx2d
+
+build-nx2-term:
+	go build $(GCFLAGS) -o .local/bin/nx2-term ./nx2/apps/terminal/companion
+
+# Build the guest + companions, then run the nx2 tests (which load the .wasm and
+# spawn the echo/terminal companions).
+test-nx2: build-nx2-guest build-nx2-echo build-nx2d build-nx2-term
+	go test ./nx2/...
+
+# Cross-compile gate (mirrors check-windows): fail fast if a WASM-hostile
+# dependency creeps into pkg/te or any nx2 guest. Run in CI.
+check-wasm:
+	GOOS=wasip1 GOARCH=wasm go build -o /dev/null ./pkg/te
+	GOOS=wasip1 GOARCH=wasm go build -o /dev/null ./nx2/apps/terminal/guest
+	GOOS=js GOARCH=wasm go build -o /dev/null ./pkg/te
 
 build-termctl:
 	go build $(RACEFLAG) $(GCFLAGS) -ldflags "$(LDFLAGS)" -o .local/bin/$(CTL_BIN) ./cmd/nxtermctl

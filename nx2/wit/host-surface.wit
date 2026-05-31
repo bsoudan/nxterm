@@ -1,0 +1,52 @@
+// nx2 host-surface interface — the v1 contract between a client-side app
+// (the WASM guest) and its native host (the "shell").
+//
+// STATUS: north-star spec. The Component Model is not yet host-mature in the
+// Go/.NET runtimes nx2 targets (verified 2026-05), so v1 is REALIZED over core
+// WebAssembly with a hand-written (ptr,len) ABI in nx2/internal/wasmhost that
+// mirrors the function shapes below. When component hosting matures, this WIT
+// becomes the generated contract unchanged.
+//
+// v1 surface = styled CELL GRID + input + clipboard. Canvas / native-widget
+// tiers are a deferred capability-negotiation TODO and intentionally absent.
+
+package nx2:surface@0.1.0;
+
+// Functions the HOST exports to the guest (guest imports these). In the core-wasm
+// realization these are host functions in module "nx2".
+interface host {
+    // Hand the host one fully-encoded cell-grid frame (see cellgrid frame format).
+    // Called at most once per render; the buffer is valid only for the call.
+    submit-cells: func(frame: list<u8>);
+
+    // Pull pending user input (opaque bytes the app forwards to its companion,
+    // e.g. keystrokes). Returns the bytes read; empty when none pending.
+    read-input: func() -> list<u8>;
+
+    // Clipboard (deferred capability; declared for shape, may be unimplemented).
+    clipboard-write: func(text: string);
+    clipboard-read: func() -> string;
+}
+
+// Functions the GUEST exports to the host (host calls these). In the core-wasm
+// realization these are //go:wasmexport functions; byte payloads are passed as
+// (ptr,len) into guest linear memory via the guest's exported allocator.
+interface guest {
+    // (Re)initialize the surface to the given dimensions.
+    configure: func(cols: u32, rows: u32);
+
+    // Deliver opaque bytes from the app's companion (for the terminal app, PTY
+    // output). The guest updates its model.
+    feed: func(data: list<u8>);
+
+    // Render the current model; the guest calls host.submit-cells exactly once.
+    render: func();
+
+    // Surface resized by the user.
+    resize: func(cols: u32, rows: u32);
+}
+
+world terminal-app {
+    import host;
+    export guest;
+}

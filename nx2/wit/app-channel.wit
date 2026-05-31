@@ -1,0 +1,18 @@
+// nx2 app-channel — the opaque, broker-relayed data plane between a client-side
+// app and its server-side companion process.
+//
+// STATUS: north-star spec; realized over the broker's binary relay (see
+// nx2/internal/broker). The broker is a BLIND pipe: it never inspects or
+// interprets these bytes. Each app pair (guest + companion) defines its own
+// protocol over the channel. For the terminal app the channel carries PTY
+// output (companion -> guest) and keystrokes (guest -> companion).
+
+package nx2:channel@0.1.0;
+
+interface channel {
+    // Send opaque bytes to the peer (companion).
+    send: func(data: list<u8>);
+
+    // Receive opaque bytes from the peer; empty when none pending.
+    recv: func() -> list<u8>;
+}
