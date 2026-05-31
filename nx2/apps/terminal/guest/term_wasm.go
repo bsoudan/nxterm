@@ -19,16 +19,17 @@ const historyLines = 1000
 //go:wasmimport nx2 submit_cells
 func hostSubmitCells(ptr, n int32)
 
-//go:wasmimport nx2 read_input
-func hostReadInput(ptr, capacity int32) int32
+//go:wasmimport nx2 channel_send
+func hostChannelSend(ptr, n int32)
 
 var (
 	hscreen *te.HistoryScreen
 	stream  *te.Stream
 	dec     proto.Decoder // reassembles companion data-plane frames
 
-	inBuf  []byte // host writes feed() input here (via alloc)
-	outBuf []byte // encoded frame handed to the host in render()
+	inBuf   []byte // host writes feed()/input() bytes here (via alloc)
+	outBuf  []byte // encoded frame handed to the host in render()
+	sendBuf []byte // encoded data-plane frame handed to the host in input()
 )
 
 // alloc returns a linear-memory offset to n writable bytes. The host calls this
@@ -101,6 +102,23 @@ func render() {
 		p = int32(uintptr(unsafe.Pointer(&outBuf[0])))
 	}
 	hostSubmitCells(p, int32(len(outBuf)))
+}
+
+// input forwards user input bytes to the companion: it wraps them as a proto.Raw
+// data-plane frame and hands it to the host (channel_send), which relays it.
+//
+//go:wasmexport input
+func input(ptr, n int32) {
+	if n <= 0 {
+		return
+	}
+	data := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(ptr))), int(n))
+	sendBuf = proto.Encode(proto.Raw, data, sendBuf[:0])
+	var p int32
+	if len(sendBuf) > 0 {
+		p = int32(uintptr(unsafe.Pointer(&sendBuf[0])))
+	}
+	hostChannelSend(p, int32(len(sendBuf)))
 }
 
 // scrollback reports the number of lines in the guest's scrollback history.
@@ -218,5 +236,3 @@ func cvtAttrs(a te.Attr) uint16 {
 	return f
 }
 
-// keep hostReadInput referenced so the import is retained until input is wired.
-var _ = hostReadInput

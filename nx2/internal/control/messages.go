@@ -9,6 +9,10 @@ import "encoding/json"
 type Type string
 
 const (
+	// TypeResolve (host->broker): resolve an app name to its content hash.
+	TypeResolve Type = "resolve"
+	// TypeResolved (broker->host): result of a resolve.
+	TypeResolved Type = "resolved"
 	// TypeAnnounce (broker->host): which app should drive a surface.
 	TypeAnnounce Type = "announce"
 	// TypeFetch (host->broker): request an app's WASM module by hash.
@@ -21,6 +25,19 @@ const (
 	// TypeSelected (broker->host): result of a select_app.
 	TypeSelected Type = "selected"
 )
+
+// Resolve asks the broker for the content hash of a named app.
+type Resolve struct {
+	App string `json:"app"`
+}
+
+// Resolved returns a named app's content hash.
+type Resolved struct {
+	App     string `json:"app"`
+	Hash    string `json:"hash"`
+	Error   bool   `json:"error,omitempty"`
+	Message string `json:"message,omitempty"`
+}
 
 // AppID names an app by content hash (of its WASM module) plus an optional label.
 type AppID struct {

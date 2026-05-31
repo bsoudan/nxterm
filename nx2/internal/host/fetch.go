@@ -12,6 +12,42 @@ import (
 	"nxtermd/nx2/internal/wire"
 )
 
+// Resolve asks the broker for the content hash of a named app. Call during
+// setup, before starting a concurrent read loop on conn.
+func Resolve(conn *wire.Conn, app string) (string, error) {
+	req, err := control.Marshal(control.TypeResolve, control.Resolve{App: app})
+	if err != nil {
+		return "", err
+	}
+	if err := conn.Write(wire.Control, req); err != nil {
+		return "", err
+	}
+	for {
+		t, payload, err := conn.Read()
+		if err != nil {
+			return "", err
+		}
+		if t != wire.Control {
+			continue
+		}
+		typ, rawmsg, err := control.Parse(payload)
+		if err != nil {
+			return "", err
+		}
+		if typ != control.TypeResolved {
+			continue
+		}
+		var r control.Resolved
+		if err := json.Unmarshal(rawmsg, &r); err != nil {
+			return "", err
+		}
+		if r.Error {
+			return "", fmt.Errorf("resolve %s: %s", app, r.Message)
+		}
+		return r.Hash, nil
+	}
+}
+
 // Fetch returns the WASM module for hash. A valid cache entry is used directly;
 // otherwise the module is fetched from the broker over conn, verified, and
 // cached. It reads control frames from conn directly, so call it during setup

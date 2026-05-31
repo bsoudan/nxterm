@@ -4,16 +4,18 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sync"
 )
 
 // companion is a running server-side app companion process. The broker speaks
 // the opaque data plane over stdin/stdout, signals attach events over an extra
 // control pipe (the child's fd 3), and inherits stderr for logging.
 type companion struct {
-	cmd     *exec.Cmd
-	stdin   io.WriteCloser
-	stdout  io.ReadCloser
-	control io.WriteCloser // broker -> companion (fd 3)
+	cmd       *exec.Cmd
+	stdin     io.WriteCloser
+	stdout    io.ReadCloser
+	control   io.WriteCloser // broker -> companion (fd 3)
+	closeOnce sync.Once
 }
 
 func startCompanion(app App) (*companion, error) {
@@ -64,13 +66,15 @@ func (c *companion) signalAttach() {
 }
 
 func (c *companion) close() {
-	c.stdin.Close()
-	if c.control != nil {
-		c.control.Close()
-	}
-	if c.cmd.Process != nil {
-		_ = c.cmd.Process.Kill()
-	}
-	_ = c.cmd.Wait()
-	c.stdout.Close()
+	c.closeOnce.Do(func() {
+		c.stdin.Close()
+		if c.control != nil {
+			c.control.Close()
+		}
+		if c.cmd.Process != nil {
+			_ = c.cmd.Process.Kill()
+		}
+		_ = c.cmd.Wait()
+		c.stdout.Close()
+	})
 }

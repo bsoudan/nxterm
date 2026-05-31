@@ -19,8 +19,9 @@ import (
 )
 
 type syncSurface struct {
-	mu    sync.Mutex
-	frame *cellgrid.Frame
+	mu     sync.Mutex
+	frame  *cellgrid.Frame
+	onSend func([]byte)
 }
 
 func (s *syncSurface) SubmitCells(f *cellgrid.Frame) {
@@ -28,7 +29,11 @@ func (s *syncSurface) SubmitCells(f *cellgrid.Frame) {
 	s.frame = f
 	s.mu.Unlock()
 }
-func (s *syncSurface) ReadInput([]byte) int { return 0 }
+func (s *syncSurface) ChannelSend(b []byte) {
+	if s.onSend != nil {
+		s.onSend(b)
+	}
+}
 
 func (s *syncSurface) text() string {
 	s.mu.Lock()
@@ -43,6 +48,7 @@ type mclient struct {
 	inst     *wasmhost.Instance
 	surf     *syncSurface
 	rendered chan struct{}
+	sendCh   chan []byte
 }
 
 func attach(t *testing.T, b *broker.Broker, hash, session string) *mclient {
@@ -79,9 +85,32 @@ func attach(t *testing.T, b *broker.Broker, hash, session string) *mclient {
 		t.Fatal(err)
 	}
 
-	m := &mclient{conn: conn, inst: inst, surf: surf, rendered: make(chan struct{}, 1)}
+	m := &mclient{conn: conn, inst: inst, surf: surf, rendered: make(chan struct{}, 1), sendCh: make(chan []byte, 64)}
+	// The guest's ChannelSend (user input) is drained to the broker by a dedicated
+	// goroutine so Instance calls never block on a network write.
+	surf.onSend = func(b []byte) {
+		select {
+		case m.sendCh <- b:
+		default:
+		}
+	}
+	go func() {
+		for b := range m.sendCh {
+			if err := conn.Write(wire.Data, b); err != nil {
+				return
+			}
+		}
+	}()
 	go m.pump()
 	return m
+}
+
+// sendInput delivers user-input bytes through the guest to the companion.
+func (m *mclient) sendInput(t *testing.T, s string) {
+	t.Helper()
+	if err := m.inst.Input([]byte(s)); err != nil {
+		t.Fatalf("input: %v", err)
+	}
 }
 
 // pump feeds the data plane to the guest, rendering after each chunk. It must run
@@ -170,6 +199,65 @@ func TestSeparateSessionsAreIsolated(t *testing.T) {
 	// A different session must spawn its own companion and also print the banner.
 	c := attach(t, b, app.Hash, "beta")
 	c.waitText(t, "session-specific")
+}
+
+// TestInputReachesCompanion proves the input path: bytes handed to the guest are
+// wrapped, relayed by the host, and reach the companion's PTY — here echoed back
+// by `cat` and rendered.
+func TestInputReachesCompanion(t *testing.T) {
+	guestWasm, err := os.ReadFile(repoFile(t, ".local", "share", "nx2", "apps", "terminal-guest.wasm"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	termBin := repoFile(t, ".local", "bin", "nx2-term")
+
+	b := broker.New()
+	app := b.Register(broker.App{Name: "term", Command: termBin, Args: []string{"cat"}, GuestWASM: guestWasm})
+
+	m := attach(t, b, app.Hash, "io")
+	m.sendInput(t, "ping\r")
+	m.waitText(t, "ping")
+}
+
+// TestSlowHostDoesNotBlockOthers proves per-host buffered writers: a host that
+// stops reading must not stall the companion's fan-out to a healthy host.
+func TestSlowHostDoesNotBlockOthers(t *testing.T) {
+	guestWasm, err := os.ReadFile(repoFile(t, ".local", "share", "nx2", "apps", "terminal-guest.wasm"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	termBin := repoFile(t, ".local", "bin", "nx2-term")
+
+	b := broker.New()
+	app := b.Register(broker.App{
+		Name:      "term",
+		Command:   termBin,
+		Args:      []string{"sh", "-c", "echo hello; exec cat"},
+		GuestWASM: guestWasm,
+	})
+
+	// A stalled host: connect, fetch, select, then never read its conn again.
+	stalled, ssrv := net.Pipe()
+	go b.ServeConn(ssrv)
+	t.Cleanup(func() { stalled.Close() })
+	_ = stalled.SetDeadline(time.Now().Add(20 * time.Second))
+	sconn := wire.NewConn(stalled)
+	scache, err := capsule.NewCache(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.Fetch(sconn, scache, app.Hash); err != nil {
+		t.Fatal(err)
+	}
+	ssel, _ := control.Marshal(control.TypeSelectApp, control.SelectApp{App: "term", Session: "slow"})
+	if err := sconn.Write(wire.Control, ssel); err != nil {
+		t.Fatal(err)
+	}
+	// Intentionally never read sconn again -> its broker-side sink fills and drops.
+
+	// A healthy host on the same session must still render despite the stall.
+	h := attach(t, b, app.Hash, "slow")
+	h.waitText(t, "hello")
 }
 
 // TestLateJoinReceivesScrollback proves the companion's canonical state includes

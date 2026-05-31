@@ -88,7 +88,7 @@ func (b *Broker) attach(app App, session string, conn *wire.Conn) (*shared, erro
 			b.mu.Unlock()
 			return nil, fmt.Errorf("start companion %q: %w", app.Name, err)
 		}
-		sc = &shared{key: key, broker: b, cp: cp, hosts: make(map[*wire.Conn]struct{})}
+		sc = &shared{key: key, broker: b, cp: cp, hosts: make(map[*wire.Conn]*hostSink)}
 		b.shared[key] = sc
 		slog.Debug("nx2 companion started", "app", app.Name, "session", session, "pid", cp.pid())
 	}
@@ -119,25 +119,29 @@ func (b *Broker) ServeConn(rwc io.ReadWriteCloser) {
 }
 
 // shared is one companion process and the set of host connections attached to it.
+// Each host has its own buffered sink so a slow host can't block the others.
 type shared struct {
 	key    string
 	broker *Broker
 	cp     *companion
 
 	mu    sync.Mutex
-	hosts map[*wire.Conn]struct{}
+	hosts map[*wire.Conn]*hostSink
 }
 
 func (sc *shared) addHost(c *wire.Conn) {
 	sc.mu.Lock()
-	sc.hosts[c] = struct{}{}
+	sc.hosts[c] = newHostSink(c, nil) // TODO: onDrop -> targeted resync snapshot
 	sc.mu.Unlock()
 }
 
 // detach removes c; when the last host leaves, the companion is reaped.
 func (sc *shared) detach(c *wire.Conn) {
 	sc.mu.Lock()
-	delete(sc.hosts, c)
+	if s, ok := sc.hosts[c]; ok {
+		s.close()
+		delete(sc.hosts, c)
+	}
 	empty := len(sc.hosts) == 0
 	sc.mu.Unlock()
 	if empty {
@@ -146,20 +150,16 @@ func (sc *shared) detach(c *wire.Conn) {
 	}
 }
 
-// broadcast fans one data-plane chunk out to all attached hosts. A host whose
-// write fails is detached. (Backpressure/per-host buffering is a later refinement.)
+// broadcast fans one data-plane chunk out to all attached hosts via their sinks.
+// Sends are non-blocking (the blocking I/O lives in each sink's goroutine), so
+// holding the lock here is cheap and makes send/close mutually exclusive with
+// detach — preventing a send on a closed sink channel.
 func (sc *shared) broadcast(b []byte) {
 	sc.mu.Lock()
-	conns := make([]*wire.Conn, 0, len(sc.hosts))
-	for c := range sc.hosts {
-		conns = append(conns, c)
+	for _, s := range sc.hosts {
+		s.send(b)
 	}
 	sc.mu.Unlock()
-	for _, c := range conns {
-		if err := c.Write(wire.Data, b); err != nil {
-			sc.detach(c)
-		}
-	}
 }
 
 // pump forwards companion stdout to all hosts until the companion exits.
@@ -222,6 +222,21 @@ func (s *session) handleControl(b []byte) {
 		return
 	}
 	switch typ {
+	case control.TypeResolve:
+		var m control.Resolve
+		if err := json.Unmarshal(raw, &m); err != nil {
+			return
+		}
+		resp := control.Resolved{App: m.App}
+		if app, ok := s.broker.lookup(m.App); ok && app.Hash != "" {
+			resp.Hash = app.Hash
+		} else {
+			resp.Error = true
+			resp.Message = "unknown app or no module"
+		}
+		if out, err := control.Marshal(control.TypeResolved, resp); err == nil {
+			_ = s.conn.Write(wire.Control, out)
+		}
 	case control.TypeFetch:
 		var m control.Fetch
 		if err := json.Unmarshal(raw, &m); err != nil {

@@ -24,8 +24,9 @@ import (
 type Surface interface {
 	// SubmitCells receives one decoded cell-grid frame per render().
 	SubmitCells(*cellgrid.Frame)
-	// ReadInput fills dst with pending user input and returns the count.
-	ReadInput(dst []byte) int
+	// ChannelSend receives opaque data-plane bytes the guest wants relayed to its
+	// companion (e.g. wrapped user input). The slice is owned by the callee.
+	ChannelSend([]byte)
 }
 
 // Instance is a running guest bound to a Surface.
@@ -40,7 +41,7 @@ type Instance struct {
 	mu sync.Mutex
 
 	alloc, configure, feed, render, resize api.Function
-	scrollback                            api.Function // optional
+	input, scrollback                     api.Function // optional
 }
 
 // New instantiates the guest WASM module and wires the host functions.
@@ -65,20 +66,18 @@ func New(ctx context.Context, wasm []byte, surf Surface) (*Instance, error) {
 			surf.SubmitCells(f)
 		}).Export("submit_cells").
 		NewFunctionBuilder().
-		WithFunc(func(_ context.Context, m api.Module, ptr, capacity int32) int32 {
-			if capacity <= 0 {
-				return 0
-			}
-			tmp := make([]byte, capacity)
-			n := surf.ReadInput(tmp)
+		WithFunc(func(_ context.Context, m api.Module, ptr, n int32) {
 			if n <= 0 {
-				return 0
+				return
 			}
-			if !m.Memory().Write(uint32(ptr), tmp[:n]) {
-				return 0
+			buf, ok := m.Memory().Read(uint32(ptr), uint32(n))
+			if !ok {
+				return
 			}
-			return int32(n)
-		}).Export("read_input").
+			cp := make([]byte, n)
+			copy(cp, buf)
+			surf.ChannelSend(cp)
+		}).Export("channel_send").
 		Instantiate(ctx)
 	if err != nil {
 		rt.Close(ctx)
@@ -103,6 +102,7 @@ func New(ctx context.Context, wasm []byte, surf Surface) (*Instance, error) {
 		feed:      mod.ExportedFunction("feed"),
 		render:     mod.ExportedFunction("render"),
 		resize:     mod.ExportedFunction("resize"),
+		input:      mod.ExportedFunction("input"),
 		scrollback: mod.ExportedFunction("scrollback"),
 	}
 	for name, f := range map[string]api.Function{
@@ -149,6 +149,26 @@ func (i *Instance) Feed(data []byte) error {
 		return fmt.Errorf("feed: memory write out of range")
 	}
 	_, err = i.feed.Call(i.ctx, api.EncodeI32(ptr), api.EncodeI32(int32(len(data))))
+	return err
+}
+
+// Input hands user-input bytes to the guest, which wraps and relays them to the
+// companion via Surface.ChannelSend.
+func (i *Instance) Input(data []byte) error {
+	if len(data) == 0 || i.input == nil {
+		return nil
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	res, err := i.alloc.Call(i.ctx, api.EncodeI32(int32(len(data))))
+	if err != nil {
+		return fmt.Errorf("alloc: %w", err)
+	}
+	ptr := api.DecodeI32(res[0])
+	if !i.mod.Memory().Write(uint32(ptr), data) {
+		return fmt.Errorf("input: memory write out of range")
+	}
+	_, err = i.input.Call(i.ctx, api.EncodeI32(ptr), api.EncodeI32(int32(len(data))))
 	return err
 }
 

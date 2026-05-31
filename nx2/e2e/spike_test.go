@@ -37,7 +37,7 @@ func repoFile(t *testing.T, parts ...string) string {
 type captureSurface struct{ frame *cellgrid.Frame }
 
 func (c *captureSurface) SubmitCells(f *cellgrid.Frame) { c.frame = f }
-func (c *captureSurface) ReadInput(dst []byte) int      { return 0 }
+func (c *captureSurface) ChannelSend([]byte)            {}
 
 func frameText(f *cellgrid.Frame) string {
 	if f == nil {

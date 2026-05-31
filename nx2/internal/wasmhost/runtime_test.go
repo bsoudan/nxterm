@@ -13,28 +13,54 @@ import (
 
 type captureSurface struct {
 	frames []*cellgrid.Frame
-	input  []byte
+	sent   [][]byte
 }
 
 func (c *captureSurface) SubmitCells(f *cellgrid.Frame) { c.frames = append(c.frames, f) }
+func (c *captureSurface) ChannelSend(b []byte)          { c.sent = append(c.sent, b) }
 
-func (c *captureSurface) ReadInput(dst []byte) int {
-	n := copy(dst, c.input)
-	c.input = c.input[n:]
-	return n
-}
-
-func guestWasm(t *testing.T) []byte {
-	t.Helper()
+func guestWasm(tb testing.TB) []byte {
+	tb.Helper()
 	p, err := filepath.Abs(filepath.Join("..", "..", "..", ".local", "share", "nx2", "apps", "terminal-guest.wasm"))
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	b, err := os.ReadFile(p)
 	if err != nil {
-		t.Skipf("guest wasm not built (%v); run: make build-nx2-guest", err)
+		tb.Skipf("guest wasm not built (%v); run: make build-nx2-guest", err)
 	}
 	return b
+}
+
+type countSurface struct{ submits int }
+
+func (c *countSurface) SubmitCells(*cellgrid.Frame) { c.submits++ }
+func (c *countSurface) ChannelSend([]byte)          {}
+
+// BenchmarkFeedRender measures the feed+render path and asserts exactly one host
+// crossing (SubmitCells) per frame — the batched-ABI guarantee.
+func BenchmarkFeedRender(b *testing.B) {
+	surf := &countSurface{}
+	inst, err := New(context.Background(), guestWasm(b), surf)
+	if err != nil {
+		b.Fatalf("new: %v", err)
+	}
+	defer inst.Close()
+	if err := inst.Configure(80, 24); err != nil {
+		b.Fatal(err)
+	}
+	chunk := proto.Encode(proto.Raw, []byte("a line of terminal output\r\n"), nil)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = inst.Feed(chunk)
+		_ = inst.Render()
+	}
+	b.StopTimer()
+
+	if surf.submits != b.N {
+		b.Fatalf("submits=%d, want %d (one host crossing per frame)", surf.submits, b.N)
+	}
 }
 
 // TestGuestRendersFedText is the S1 validator: it instantiates the real terminal
