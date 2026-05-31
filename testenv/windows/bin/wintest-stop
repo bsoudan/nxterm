@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+
+if ! is_running; then
+  log "VM not running."
+  rm -f "$QEMU_PID_FILE"
+  exit 0
+fi
+
+QPID=$(cat "$QEMU_PID_FILE")
+
+if ssh_ready; then
+  log "Sending graceful shutdown via SSH..."
+  wintest_ssh 'shutdown /s /t 0' || true
+else
+  log "SSH unreachable; will rely on QEMU signals."
+fi
+
+# Wait up to 60s for clean shutdown.
+for _ in $(seq 1 60); do
+  kill -0 "$QPID" 2>/dev/null || break
+  sleep 1
+done
+
+if kill -0 "$QPID" 2>/dev/null; then
+  log "Still running; sending SIGTERM..."
+  kill "$QPID" || true
+  sleep 5
+fi
+
+if kill -0 "$QPID" 2>/dev/null; then
+  log "Still running; sending SIGKILL..."
+  kill -9 "$QPID" || true
+fi
+
+if [[ -f "$SWTPM_PID_FILE" ]]; then
+  kill "$(cat "$SWTPM_PID_FILE")" 2>/dev/null || true
+fi
+
+rm -f "$QEMU_PID_FILE" "$SWTPM_PID_FILE" "$QMP_SOCK" "$TPM_SOCK"
+log "Stopped."

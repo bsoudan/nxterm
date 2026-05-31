@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Fetch a file or directory from the guest to the host (the reverse of
+# wintest-deploy). The guest path is relative to the SFTP default (the user's
+# home dir, %USERPROFILE%).
+#
+# usage:
+#   wintest-fetch <guest-path> [local-dest=.]
+#
+# A directory is fetched recursively; sftp creates <local-dest>/<basename>.
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+
+(( $# >= 1 )) || die "usage: wintest-fetch <guest-path> [local-dest=.]"
+
+REMOTE="$1"
+DEST="${2:-.}"
+
+ssh_ready || die "VM SSH not reachable. Is wintest-start running?"
+mkdir -p "$DEST"
+
+log "Fetching %USERPROFILE%\\$REMOTE -> $DEST"
+
+sshpass -p "$SSH_PASS" sftp -r "${SSH_OPTS[@]}" "$SSH_USER@127.0.0.1" <<EOF
+get -r $REMOTE $DEST
+EOF

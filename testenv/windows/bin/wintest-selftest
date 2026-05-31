@@ -1,0 +1,241 @@
+#!/usr/bin/env bash
+# Automated self-test for the wintest-* feature set. Exercises each feature
+# against a running VM and verifies the result deterministically — no LLM, no
+# screen reading by eye. Prints a PASS/FAIL line per check and exits non-zero
+# if anything failed, so it's usable as a regression gate.
+#
+# How each GUI input feature is verified without looking at pixels:
+#   - type/key: type a unique marker into the Run dialog, select-all + copy via
+#     key chords, then read it back over SSH with Get-Clipboard and compare.
+#   - click:    move the absolute pointer to a known pixel, then read the guest
+#     cursor position back (DPI-aware GetCursorPos) and compare within tolerance.
+#
+# usage:
+#   wintest-selftest            # requires a running VM (wintest-start first)
+#   wintest-selftest --start    # boot the VM first if it isn't running
+#   wintest-selftest --stop     # shut the VM down after the run
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+
+# We drive control flow ourselves: a failed check must not abort the whole run.
+# (_common.sh set -euo pipefail; relax errexit, keep nounset + pipefail.)
+set +e
+
+BINDIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+DO_START=false
+DO_STOP=false
+for a in "$@"; do
+  case "$a" in
+    --start) DO_START=true ;;
+    --stop)  DO_STOP=true ;;
+    -h|--help) sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) die "unknown argument: $a (see --help)" ;;
+  esac
+done
+
+TOL=8                      # cursor round-trip tolerance, pixels
+RUN_MARKER="selftest$RANDOM$RANDOM"
+DEPLOY_MARKER="deploy-$RANDOM-$RANDOM"
+TMPDIR_HOST="$(mktemp -d)"
+trap 'rm -rf "$TMPDIR_HOST"' EXIT
+
+PASS=0; FAIL=0
+if [[ -t 1 ]]; then C_OK=$'\033[32m'; C_NO=$'\033[31m'; C_Z=$'\033[0m'; else C_OK=; C_NO=; C_Z=; fi
+ok() { printf '[selftest] %sPASS%s  %s\n' "$C_OK" "$C_Z" "$1"; PASS=$((PASS+1)); }
+no() { printf '[selftest] %sFAIL%s  %s\n' "$C_NO" "$C_Z" "$1"; FAIL=$((FAIL+1)); }
+
+# run_check NAME FUNC...: run a check function, capturing its stdout/stderr as
+# failure detail. The function returns 0 on pass; any non-zero is a fail and
+# whatever it printed becomes the explanation.
+run_check() {
+  local name="$1"; shift
+  local detail
+  if detail=$("$@" 2>&1); then
+    ok "$name"
+  else
+    no "${name}${detail:+ — ${detail}}"
+  fi
+}
+
+# guest_file_exists CMD_PATH: true if a path exists in the guest. The argument
+# is a cmd.exe path (env vars like %USERPROFILE% allowed); cmd expands it.
+#
+# Why we read GUI results back through the filesystem at all: the OpenSSH server
+# runs in a different Windows session (services, session 0) than the autologon
+# interactive desktop (session 1) that QMP key/click events reach. Clipboard and
+# cursor state are per-session, so reading them directly over SSH sees the wrong
+# desktop. The shared NTFS volume is the one channel both sessions can touch, so
+# the GUI checks have the *interactive* session write an artifact we then read.
+guest_file_exists() {
+  local r; r=$(wintest_ssh "if exist \"$1\" (echo YES) else (echo NO)" 2>/dev/null)
+  [[ "${r//[$'\r\n ']/}" == YES ]]
+}
+
+# ---------------------------------------------------------------------------
+# Preconditions
+# ---------------------------------------------------------------------------
+if ! is_running; then
+  if $DO_START; then
+    log "VM not running; starting it (--start)..."
+    "$BINDIR/wintest-start" || die "wintest-start failed"
+  else
+    die "VM not running. Start it first (wintest-start) or pass --start."
+  fi
+fi
+ssh_ready || die "VM is up but SSH is unreachable; cannot run feature checks."
+
+log "Running feature checks (marker: $RUN_MARKER)..."
+
+# ---------------------------------------------------------------------------
+# Checks
+# ---------------------------------------------------------------------------
+
+check_status() {
+  local out; out=$("$BINDIR/wintest-status" 2>&1) || { echo "wintest-status exited non-zero"; return 1; }
+  [[ "$out" == *"running"* ]] || { echo "status did not report 'running': $out"; return 1; }
+  [[ "$out" == *"ready"*   ]] || { echo "status did not report SSH 'ready': $out"; return 1; }
+}
+
+check_run_stdout() {
+  local out; out=$("$BINDIR/wintest-run" "echo $RUN_MARKER" 2>/dev/null) \
+    || { echo "wintest-run exited non-zero"; return 1; }
+  [[ "$out" == *"$RUN_MARKER"* ]] || { echo "expected '$RUN_MARKER', got: ${out:-<empty>}"; return 1; }
+}
+
+check_run_exitcode() {
+  "$BINDIR/wintest-run" "cmd /c exit 7" >/dev/null 2>&1
+  local rc=$?
+  (( rc == 7 )) || { echo "expected exit 7 to propagate, got $rc"; return 1; }
+}
+
+check_deploy() {
+  local lf="$TMPDIR_HOST/wintest_selftest_deploy.txt"
+  printf '%s' "$DEPLOY_MARKER" > "$lf"
+  "$BINDIR/wintest-deploy" "$lf" >/dev/null 2>&1 || { echo "wintest-deploy exited non-zero"; return 1; }
+  local got
+  got=$(wintest_ssh 'type "%USERPROFILE%\testbin\wintest_selftest_deploy.txt"' 2>/dev/null)
+  got="${got//[$'\r\n']/}"
+  [[ "$got" == "$DEPLOY_MARKER" ]] || { echo "guest file content '$got' != deployed '$DEPLOY_MARKER'"; return 1; }
+  wintest_ssh 'del /q "%USERPROFILE%\testbin\wintest_selftest_deploy.txt"' >/dev/null 2>&1
+}
+
+check_screenshot() {
+  local png="$TMPDIR_HOST/shot.png"
+  "$BINDIR/wintest-screenshot" "$png" >/dev/null 2>&1 || { echo "wintest-screenshot exited non-zero"; return 1; }
+  [[ -f "$png" ]] || { echo "no PNG produced"; return 1; }
+  local sig; sig=$(od -An -tx1 -N8 "$png" | tr -d ' \n')
+  [[ "$sig" == "89504e470d0a1a0a" ]] || { echo "not a PNG (sig $sig)"; return 1; }
+  local W H; read -r W H < <(png_dims "$png")
+  (( W >= 320 && H >= 240 )) || { echo "implausible dimensions ${W}x${H}"; return 1; }
+}
+
+# type + key: open the Run dialog with Win+R, type a command whose argument is a
+# unique filename, then press Enter so the *interactive* session runs it and
+# creates that file. Seeing the exact filename appear over SSH proves the whole
+# input path worked — Win+R (key chord), the typed characters (type), and Enter
+# (key) — without ever reading session-bound clipboard/cursor state. Retries
+# because the dialog needs a moment to take keyboard focus after Win+R.
+check_input_type_key() {
+  local flag='%USERPROFILE%\testbin\'"${RUN_MARKER}.flag"
+  wintest_ssh "del /q \"$flag\"" >/dev/null 2>&1   # clear any stale flag
+  local attempt i
+  for attempt in 1 2 3; do
+    "$BINDIR/wintest-key" esc >/dev/null 2>&1                 # close any stray dialog
+    "$BINDIR/wintest-key" meta_l r >/dev/null 2>&1            # open Run
+    sleep 0.7                                                 # dialog must take focus first
+    "$BINDIR/wintest-key" ctrl a >/dev/null 2>&1              # select any prefilled text
+    "$BINDIR/wintest-type" "cmd /c copy /y nul %USERPROFILE%\\testbin\\${RUN_MARKER}.flag" >/dev/null 2>&1
+    "$BINDIR/wintest-key" ret >/dev/null 2>&1                 # run it in the interactive session
+    for i in $(seq 1 12); do
+      guest_file_exists "$flag" && break 2
+      sleep 0.5
+    done
+  done
+  if guest_file_exists "$flag"; then
+    wintest_ssh "del /q \"$flag\"" >/dev/null 2>&1
+    return 0
+  fi
+  echo "Run-dialog command never produced ${RUN_MARKER}.flag (type/key not reaching the desktop?)"
+  return 1
+}
+
+# click: move the absolute pointer to a known pixel, then have the interactive
+# session sample its own cursor (DPI-aware GetCursorPos → physical pixels,
+# matching the screendump space wintest-click scales against) and write it to a
+# file we read over SSH. The helper is triggered via the Run dialog (keyboard
+# only — typing never moves the mouse, so the cursor stays put). Reusing the
+# Run-dialog path means this check assumes type/key already work.
+check_input_click() {
+  local ps="$TMPDIR_HOST/cursorpos.ps1"
+  cat > "$ps" <<'PS1'
+$src = @"
+using System;
+using System.Runtime.InteropServices;
+public class WT {
+  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+  [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }
+  [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
+}
+"@
+Add-Type -TypeDefinition $src
+[void][WT]::SetProcessDPIAware()
+$p = New-Object WT+POINT
+[void][WT]::GetCursorPos([ref]$p)
+Set-Content -Path "$env:USERPROFILE\testbin\cursor.txt" -Value ("{0},{1}" -f $p.X, $p.Y)
+PS1
+  "$BINDIR/wintest-deploy" "$ps" >/dev/null 2>&1 || { echo "could not deploy cursor helper"; return 1; }
+
+  local png="$TMPDIR_HOST/click.png"
+  "$BINDIR/wintest-screenshot" "$png" >/dev/null 2>&1 || { echo "screenshot for resolution probe failed"; return 1; }
+  local W H; read -r W H < <(png_dims "$png")
+  local tx=$(( W / 2 )) ty=$(( H / 2 ))
+
+  wintest_ssh 'del /q "%USERPROFILE%\testbin\cursor.txt"' >/dev/null 2>&1
+  "$BINDIR/wintest-click" --move "$tx" "$ty" >/dev/null 2>&1 || { echo "wintest-click --move exited non-zero"; return 1; }
+
+  "$BINDIR/wintest-key" esc >/dev/null 2>&1
+  "$BINDIR/wintest-key" meta_l r >/dev/null 2>&1
+  sleep 0.7
+  "$BINDIR/wintest-key" ctrl a >/dev/null 2>&1
+  "$BINDIR/wintest-type" "powershell -ExecutionPolicy Bypass -WindowStyle Hidden -File %USERPROFILE%\\testbin\\cursorpos.ps1" >/dev/null 2>&1
+  "$BINDIR/wintest-key" ret >/dev/null 2>&1
+
+  local i pos=""
+  for i in $(seq 1 20); do
+    if guest_file_exists '%USERPROFILE%\testbin\cursor.txt'; then
+      pos=$(wintest_ssh 'type "%USERPROFILE%\testbin\cursor.txt"' 2>/dev/null)
+      pos="${pos//[$'\r\n ']/}"
+      [[ "$pos" == *,* ]] && break
+    fi
+    sleep 0.5
+  done
+  wintest_ssh 'del /q "%USERPROFILE%\testbin\cursor.txt"' >/dev/null 2>&1
+  [[ "$pos" == *,* ]] || { echo "cursor helper produced no position (interactive trigger failed?)"; return 1; }
+
+  local gx="${pos%,*}" gy="${pos#*,}"
+  [[ "$gx" =~ ^-?[0-9]+$ && "$gy" =~ ^-?[0-9]+$ ]] || { echo "unparseable cursor position '$pos'"; return 1; }
+  local dx=$(( gx >= tx ? gx - tx : tx - gx ))
+  local dy=$(( gy >= ty ? gy - ty : ty - gy ))
+  (( dx <= TOL && dy <= TOL )) || { echo "cursor at ${gx},${gy}, asked ${tx},${ty} (dx=$dx dy=$dy > $TOL; screen ${W}x${H})"; return 1; }
+
+  # Exercise an actual button press at the same harmless empty point.
+  "$BINDIR/wintest-click" "$tx" "$ty" >/dev/null 2>&1 || { echo "wintest-click (button press) exited non-zero"; return 1; }
+}
+
+run_check "status: reports running + SSH ready" check_status
+run_check "run: stdout round-trip"              check_run_stdout
+run_check "run: exit code propagates"           check_run_exitcode
+run_check "deploy: file content round-trip"     check_deploy
+run_check "screenshot: valid PNG"               check_screenshot
+run_check "type+key: Run-dialog file round-trip" check_input_type_key
+run_check "click: cursor position round-trip"    check_input_click
+
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
+if $DO_STOP; then
+  log "Stopping VM (--stop)..."
+  "$BINDIR/wintest-stop" || log "warning: wintest-stop failed"
+fi
+
+printf '[selftest] %d passed, %d failed\n' "$PASS" "$FAIL"
+(( FAIL == 0 ))

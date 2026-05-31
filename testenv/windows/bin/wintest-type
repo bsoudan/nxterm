@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Type a literal string into the guest via QMP, one character at a time, by
+# mapping each ASCII character to its QKeyCode (with shift where needed).
+# For Enter/Tab/control keys use wintest-key instead.
+#
+# usage: wintest-type <text...>
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+
+# See wintest-key for why this uses the socket rather than is_running (bwrap).
+[[ -S "$QMP_SOCK" ]] || die "VM not running (no QMP socket) — start it with wintest-start"
+(( $# >= 1 )) || die "usage: wintest-type <text...>"
+text="$*"
+
+# Unshifted punctuation/whitespace -> QKeyCode.
+declare -A SYM=(
+  ['-']=minus  ['=']=equal  ['[']=bracket_left  [']']=bracket_right
+  ['\']=backslash  [';']=semicolon  ["'"]=apostrophe  [',']=comma
+  ['.']=dot  ['/']=slash  ['`']=grave_accent  [' ']=spc
+)
+# Shifted characters -> the QKeyCode pressed together with shift.
+declare -A SHIFTED=(
+  ['!']=1  ['@']=2  ['#']=3  ['$']=4  ['%']=5  ['^']=6  ['&']=7  ['*']=8
+  ['(']=9  [')']=0  ['_']=minus  ['+']=equal  ['{']=bracket_left  ['}']=bracket_right
+  ['|']=backslash  [':']=semicolon  ['"']=apostrophe  ['<']=comma  ['>']=dot
+  ['?']=slash  ['~']=grave_accent
+)
+
+send_chord() {
+  local keys
+  keys=$(printf '%s\n' "$@" | jq -R . | jq -sc 'map({type:"qcode",data:.})')
+  wintest_qmp "$(jq -nc --argjson k "$keys" \
+    '{execute:"send-key",arguments:{keys:$k}}')" >/dev/null
+}
+
+for (( i=0; i<${#text}; i++ )); do
+  c="${text:$i:1}"
+  if   [[ "$c" =~ [a-z0-9] ]]; then send_chord "$c"
+  elif [[ "$c" =~ [A-Z]    ]]; then send_chord shift "$(printf '%s' "$c" | tr 'A-Z' 'a-z')"
+  elif [[ -n "${SHIFTED[$c]:-}" ]]; then send_chord shift "${SHIFTED[$c]}"
+  elif [[ -n "${SYM[$c]:-}"     ]]; then send_chord "${SYM[$c]}"
+  else die "unsupported character: '$c' (use wintest-key for control keys)"
+  fi
+done
+log "typed ${#text} chars"

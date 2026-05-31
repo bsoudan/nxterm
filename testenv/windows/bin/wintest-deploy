@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+
+(( $# >= 1 )) || die "usage: wintest-deploy <local-path> [guest-dest=testbin]"
+
+LOCAL="$1"
+DEST="${2:-testbin}"
+
+[[ -e "$LOCAL" ]] || die "local path not found: $LOCAL"
+ssh_ready || die "VM SSH not reachable. Is wintest-start running?"
+
+log "Deploying $LOCAL -> %USERPROFILE%\\$DEST"
+
+# Guest dest is relative to the SFTP default (home dir). Make sure it exists.
+wintest_ssh "if not exist \"$DEST\" mkdir \"$DEST\"" || true
+
+sshpass -p "$SSH_PASS" sftp -r "${SSH_OPTS[@]}" "$SSH_USER@127.0.0.1" <<EOF
+cd $DEST
+put $LOCAL
+EOF

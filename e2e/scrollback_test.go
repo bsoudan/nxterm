@@ -425,7 +425,7 @@ func TestScrollbackStrictAgreement(t *testing.T) {
 	// `synced` flips). Jump to top and confirm SEQ0001 is visible
 	// there.
 	nxterm.Write([]byte("g")).Sync("jump to top")
-	if _, err := nxterm.PtyIO.WaitForScreen(func(lines []string) bool {
+	if _, err := nxterm.Screen.WaitForScreen(func(lines []string) bool {
 		for _, line := range lines {
 			if parseSEQ(line) == 1 {
 				return true

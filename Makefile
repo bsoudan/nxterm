@@ -1,4 +1,4 @@
-.PHONY: all build-server changelog build-tui build-termctl build-nxtest build-mousehelper build-nativeapp build-nx2-guest build-nx2-echo build-nx2d build-nx2-term build-nx2-host build-nx2-files-guest build-nx2-files check-wasm test-nx2 build-upgrade-test-binaries check-windows test test-e2e test-race test-upgrade test-stress test-stress-long rpm version clean
+.PHONY: all build-server changelog build-tui build-termctl build-nxtest build-mousehelper build-nativeapp build-upgrade-test-binaries build-nx2-guest build-nx2-files-guest build-nx2-echo build-nx2-files build-nx2d build-nx2-term build-nx2-host test-nx2 check-wasm check-windows test test-e2e test-race test-upgrade test-stress test-stress-long test-winapp build-winui test-winui rpm version clean
 
 # Binary names
 SERVER_BIN   := nxtermd
@@ -54,44 +54,6 @@ build-mousehelper:
 build-nativeapp:
 	cd e2e/testdata/nativeapp && go build -o ../../../.local/bin/nativeapp .
 
-# nx2 (terminal-native application platform spike). The terminal "app" is a
-# client-side WASM module built from pkg/te; the host loads it via wazero.
-build-nx2-guest:
-	@mkdir -p .local/share/nx2/apps
-	GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared $(GCFLAGS) -o .local/share/nx2/apps/terminal-guest.wasm ./nx2/apps/terminal/guest
-
-build-nx2-echo:
-	go build $(GCFLAGS) -o .local/bin/nx2-echo ./nx2/apps/echo/companion
-
-build-nx2d:
-	go build $(GCFLAGS) -o .local/bin/nx2d ./nx2/cmd/nx2d
-
-build-nx2-term:
-	go build $(GCFLAGS) -o .local/bin/nx2-term ./nx2/apps/terminal/companion
-
-build-nx2-host:
-	go build $(GCFLAGS) -o .local/bin/nx2-host-tui ./nx2/cmd/nx2-host-tui
-
-build-nx2-files-guest:
-	@mkdir -p .local/share/nx2/apps
-	GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared $(GCFLAGS) -o .local/share/nx2/apps/files-guest.wasm ./nx2/apps/files/guest
-
-build-nx2-files:
-	go build $(GCFLAGS) -o .local/bin/nx2-files ./nx2/apps/files/companion
-
-# Build the guest + companions + binaries, then run the nx2 tests (which load the
-# .wasm and spawn the echo/terminal companions).
-test-nx2: build-nx2-guest build-nx2-echo build-nx2d build-nx2-term build-nx2-host build-nx2-files-guest build-nx2-files
-	go test ./nx2/...
-
-# Cross-compile gate (mirrors check-windows): fail fast if a WASM-hostile
-# dependency creeps into pkg/te or any nx2 guest. Run in CI.
-check-wasm:
-	GOOS=wasip1 GOARCH=wasm go build -o /dev/null ./pkg/te
-	GOOS=wasip1 GOARCH=wasm go build -o /dev/null ./nx2/apps/terminal/guest
-	GOOS=wasip1 GOARCH=wasm go build -o /dev/null ./nx2/apps/files/guest
-	GOOS=js GOARCH=wasm go build -o /dev/null ./pkg/te
-
 build-termctl:
 	go build $(RACEFLAG) $(GCFLAGS) -ldflags "$(LDFLAGS)" -o .local/bin/$(CTL_BIN) ./cmd/nxtermctl
 
@@ -109,6 +71,31 @@ build-upgrade-test-binaries: changelog
 check-windows:
 	GOOS=windows GOARCH=amd64 go build -o /dev/null ./cmd/nxterm
 	GOOS=windows GOARCH=amd64 go build -o /dev/null ./internal/transport
+
+# Build and GUI-test the WinUI 3 HelloApp inside the Windows VM. Drives the
+# wfvm environment in testenv/windows (deploy -> provision -> build -> run the
+# WinAppDriver UI test). Run from the dev shell (`nix develop`) so the
+# wintest-* scripts are on PATH; the VM is started automatically if needed.
+test-winapp:
+	testenv/windows/helloapp/run-test.sh
+
+# Build the WinUI 3 nxterm GUI client inside the Windows VM (deploy -> provision
+# -> publish). Running it is a separate visual step; see clients/winui/README.md.
+# Run from the dev shell (`nix develop`).
+build-winui:
+	clients/winui/build.sh
+
+# WinAppDriver UI test for the GUI client (tabs + status bar). Starts an
+# nxtermd on the host, builds the app + test in the VM, and runs the test
+# against it. Run from the dev shell (`nix develop`).
+test-winui: build-server
+	clients/winui/run-uitest.sh
+
+# Host-driven Go e2e tests for the GUI client (go test -tags gui). Boots the VM,
+# builds the app, then runs the GUI test variants which read the client's
+# rendered grid back over the NXTERM_TEST_HOOK hostfwd. Run from the dev shell.
+test-winui-e2e: build-server
+	clients/winui/run-e2e.sh
 
 test: test-e2e
 
@@ -149,3 +136,43 @@ version:
 clean:
 	rm -rf .local/bin .local/share/nxtermd dist/.version
 	go clean ./...
+
+# --- nx2: terminal-native application platform (branch nx2) ---
+# The "app" is a client-side WASM module loaded by the host via wazero; a
+# server-side companion brokers OS resources. See nx2/README.md, nx2/doc/.
+
+build-nx2-guest:
+	@mkdir -p .local/share/nx2/apps
+	GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared $(GCFLAGS) -o .local/share/nx2/apps/terminal-guest.wasm ./nx2/apps/terminal/guest
+
+build-nx2-files-guest:
+	@mkdir -p .local/share/nx2/apps
+	GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared $(GCFLAGS) -o .local/share/nx2/apps/files-guest.wasm ./nx2/apps/files/guest
+
+build-nx2-echo:
+	go build $(GCFLAGS) -o .local/bin/nx2-echo ./nx2/apps/echo/companion
+
+build-nx2-files:
+	go build $(GCFLAGS) -o .local/bin/nx2-files ./nx2/apps/files/companion
+
+build-nx2d:
+	go build $(GCFLAGS) -o .local/bin/nx2d ./nx2/cmd/nx2d
+
+build-nx2-term:
+	go build $(GCFLAGS) -o .local/bin/nx2-term ./nx2/apps/terminal/companion
+
+build-nx2-host:
+	go build $(GCFLAGS) -o .local/bin/nx2-host-tui ./nx2/cmd/nx2-host-tui
+
+# Build the guest(s) + companions + host, then run all nx2 tests (they load the
+# .wasm and spawn the companions).
+test-nx2: build-nx2-guest build-nx2-files-guest build-nx2-echo build-nx2-files build-nx2d build-nx2-term build-nx2-host
+	go test ./nx2/...
+
+# Cross-compile gate (mirrors check-windows): fail fast if a WASM-hostile
+# dependency creeps into pkg/te or any nx2 guest.
+check-wasm:
+	GOOS=wasip1 GOARCH=wasm go build -o /dev/null ./pkg/te
+	GOOS=wasip1 GOARCH=wasm go build -o /dev/null ./nx2/apps/terminal/guest
+	GOOS=wasip1 GOARCH=wasm go build -o /dev/null ./nx2/apps/files/guest
+	GOOS=js GOARCH=wasm go build -o /dev/null ./pkg/te

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Observer viewer. SPICE allows multiple simultaneous clients on the same
+# socket; this command opens another one alongside `wintest-view`. There
+# is no enforced read-only mode in remote-viewer for SPICE — observers
+# share input with the driver. By convention, don't touch this window.
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+
+is_running || die "VM not running — start it with wintest-start"
+exec remote-viewer --title "wintest (observer)" "spice://$SPICE_ADDR:$SPICE_PORT" "$@"

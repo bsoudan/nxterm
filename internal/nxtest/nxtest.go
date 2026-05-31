@@ -40,8 +40,8 @@ type WriteHandle struct {
 func (w *WriteHandle) Sync(desc string) {
 	w.t.Helper()
 	id := nextSyncID()
-	w.t.PtyIO.WriteSync(id)
-	if err := w.t.PtyIO.WaitSync(id, 10*time.Second); err != nil {
+	w.t.Screen.WriteSync(id)
+	if err := w.t.Screen.WaitSync(id, 10*time.Second); err != nil {
 		w.t.Fatalf("sync %q: %v%s%s",
 			desc, err, w.t.canarySync(), w.t.dumpFrontendStack())
 	}
@@ -54,8 +54,8 @@ func (w *WriteHandle) Sync(desc string) {
 // stuck.
 func (t *T) canarySync() string {
 	id := nextSyncID()
-	t.PtyIO.WriteSync(id)
-	if err := t.PtyIO.WaitSync(id, 2*time.Second); err != nil {
+	t.Screen.WriteSync(id)
+	if err := t.Screen.WaitSync(id, 2*time.Second); err != nil {
 		return fmt.Sprintf("\n  canary sync %s: ALSO timed out — TUI appears stuck", id)
 	}
 	return fmt.Sprintf("\n  canary sync %s: succeeded — original marker was lost before ack", id)
@@ -89,34 +89,54 @@ func (t *T) dumpFrontendStack() string {
 	return fmt.Sprintf("\n  stack dump: %s not written after SIGUSR1", path)
 }
 
-// T wraps a testing.T and a PtyIO (and optionally a Frontend) so that
+// T wraps a testing.T and a Screen (and optionally a Frontend) so that
 // test code can use a single object for all interactions:
 //
 //	nxt.WaitFor("prompt$", 10*time.Second)
 //	nxt.Write([]byte("echo hello\r"))
 //	nxt.WaitForSilence(200 * time.Millisecond)
 //	lines := nxt.ScreenLines()
+//
+// The embedded Screen is the polymorphic client backend: a *PtyIO for the
+// TUI, or a GUI-client screen reader. Frontend is set only for the PTY path
+// (it carries the nxterm process for diagnostics, Kill, and Wait).
 type T struct {
 	*testing.T
-	*PtyIO
-	Frontend *Frontend // nil when wrapping a bare PtyIO
+	Screen
+	Frontend *Frontend // nil when wrapping a bare PtyIO or a non-PTY backend
+	life     lifecycle // process lifecycle (Kill/Wait); nil for bare PtyIO
+}
+
+// lifecycle is the process control a T's backend exposes. *Frontend (PTY) and
+// *GuiFrontend (WinUI client in the VM) both implement it, so a test body can
+// call nxt.Kill()/nxt.Wait() regardless of backend.
+type lifecycle interface {
+	Kill()
+	Wait(timeout time.Duration) error
 }
 
 // New wraps a bare PtyIO (no frontend process).
 func New(t *testing.T, pio *PtyIO) *T {
-	return &T{T: t, PtyIO: pio}
+	return &T{T: t, Screen: pio}
 }
 
 // NewFromFrontend wraps a Frontend (which embeds a PtyIO).
 func NewFromFrontend(t *testing.T, fe *Frontend) *T {
-	return &T{T: t, PtyIO: fe.PtyIO, Frontend: fe}
+	return &T{T: t, Screen: fe.PtyIO, Frontend: fe, life: fe}
+}
+
+// NewFromScreen wraps an arbitrary Screen backend with its lifecycle. Used by
+// the GUI backend, where the Screen reads a remote client over a test hook and
+// the lifecycle launches/kills that client.
+func NewFromScreen(t *testing.T, s Screen, life lifecycle) *T {
+	return &T{T: t, Screen: s, life: life}
 }
 
 // WaitFor waits for needle to appear on the virtual screen.
 // Calls t.Fatal on timeout or PTY close.
 func (t *T) WaitFor(needle string, timeout time.Duration) []string {
 	t.Helper()
-	lines, err := t.PtyIO.WaitFor(needle, timeout)
+	lines, err := t.Screen.WaitFor(needle, timeout)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +147,7 @@ func (t *T) WaitFor(needle string, timeout time.Duration) []string {
 // Calls t.Fatal on timeout or PTY close.
 func (t *T) WaitForScreen(check func([]string) bool, desc string, timeout time.Duration) []string {
 	t.Helper()
-	lines, err := t.PtyIO.WaitForScreen(check, desc, timeout)
+	lines, err := t.Screen.WaitForScreen(check, desc, timeout)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +184,7 @@ func (t *T) FindOnScreen(needle string) (row, col int) {
 // test code that discards the return value works unchanged.
 func (t *T) Write(data []byte) *WriteHandle {
 	t.Helper()
-	t.PtyIO.Write(data)
+	t.Screen.Write(data)
 	return &WriteHandle{t: t}
 }
 
@@ -182,14 +202,14 @@ func (t *T) Sync(desc string) {
 // FIFO-ordered with any other keystrokes sent before it.
 func (t *T) WriteSync(id string) {
 	t.Helper()
-	t.PtyIO.WriteSync(id)
+	t.Screen.WriteSync(id)
 }
 
 // WaitSync blocks until the TUI emits the matching OSC 2459;nx;ack;<id>
 // on stdout. Calls t.Fatal on timeout. Default timeout is 10s.
 func (t *T) WaitSync(id string) {
 	t.Helper()
-	if err := t.PtyIO.WaitSync(id, 10*time.Second); err != nil {
+	if err := t.Screen.WaitSync(id, 10*time.Second); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -198,7 +218,7 @@ func (t *T) WaitSync(id string) {
 // expires. Calls t.Fatal on timeout.
 func (t *T) WaitSyncWithTimeout(id string, timeout time.Duration) {
 	t.Helper()
-	if err := t.PtyIO.WaitSync(id, timeout); err != nil {
+	if err := t.Screen.WaitSync(id, timeout); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -230,11 +250,11 @@ func (t *T) RequireTabBarDoesNotContain(unwanted string) {
 // Kill forcibly terminates the frontend process.
 // Panics if T was created with New (no frontend).
 func (t *T) Kill() {
-	t.Frontend.Kill()
+	t.life.Kill()
 }
 
 // Wait waits for the frontend process to exit.
 // Panics if T was created with New (no frontend).
 func (t *T) Wait(timeout time.Duration) error {
-	return t.Frontend.Wait(timeout)
+	return t.life.Wait(timeout)
 }

@@ -1,0 +1,904 @@
+using System.Collections.ObjectModel;
+using System.Linq;
+using System.Text.Json;
+using Microsoft.Graphics.Canvas;
+using Microsoft.Graphics.Canvas.Text;
+using Microsoft.Graphics.Canvas.UI.Xaml;
+using Microsoft.UI.Input;
+using Microsoft.UI.Xaml;
+using NxtermGui.Input;
+using NxtermGui.Protocol;
+using NxtermGui.Terminal;
+using NxtermGui.Ui;
+using Windows.ApplicationModel.DataTransfer;
+using Windows.System;
+using Windows.UI;
+using Windows.UI.Core;
+
+namespace NxtermGui;
+
+public sealed partial class MainWindow : Window
+{
+    private readonly NxtermClient _client = new();
+    private readonly object _gridLock = new();
+    private readonly ObservableCollection<TabItem> _tabs = new();
+    private readonly ObservableCollection<string> _sessionNames = new();
+    private TerminalGrid _grid = new(80, 24);
+
+    private CanvasTextFormat _font = null!, _fontBold = null!, _fontItalic = null!, _fontBoldItalic = null!;
+    private double _cellW = 8, _cellH = 16;
+    private bool _ready;
+    private bool _everConnected;
+    private int _lastCols = 80, _lastRows = 24;
+    private string _status = "starting…";
+    private string _title = "";
+    private string _endpoint = "";
+    private string _session = "";
+    // Name of the open overlay ("" = none); surfaced over the test hook.
+    private string _overlay = "";
+
+    // Server-scrollback fetch state: _scrollbackRequested gates a once-per-region
+    // GetScrollbackRequest; _syncBuf accumulates the (newest-first) response
+    // chunks oldest-first until Done, then reconciles into the grid by seq.
+    private volatile bool _scrollbackRequested;
+    private List<TermCell[]> _syncBuf = new();
+    // Count of completed scrollback reconciles, surfaced over the hook so a test
+    // can wait for a fetch to land (a reconcile that prepends nothing leaves
+    // ScrollTotal unchanged, so the count is the reliable "synced" signal).
+    private int _scrollbackSyncs;
+
+    private (int row, int col) _selAnchor, _selCaret;
+    private bool _selecting, _hasSelection;
+    private bool _mouseDown;
+    private (int row, int col) _lastMouseCell = (-1, -1);
+
+    // Tracked Ctrl/Shift state for chord detection (Ctrl+Shift+C/V/O/P). Driven by
+    // the modifier key events rather than GetKeyStateForCurrentThread, which is a
+    // per-thread snapshot that does not reflect synthetic modifier input from UI
+    // automation. Real human keystrokes still work with either approach.
+    private bool _ctrlDown, _shiftDown;
+
+    // Last text copied to the clipboard, surfaced over the test hook so the e2e
+    // harness can assert a copy round-trip without reading the system clipboard
+    // (which a synthetic key event can't reliably populate cross-session).
+    private string _lastClipboard = "";
+
+    // Test introspection (NXTERM_TEST_HOOK). _syncSeen records sync-marker ids
+    // the grid has processed, so the e2e harness can wait deterministically.
+    private TestHook? _testHook;
+    private readonly object _syncLock = new();
+    private readonly HashSet<string> _syncSeen = new();
+
+    public MainWindow()
+    {
+        this.InitializeComponent();
+        TabStrip.ItemsSource = _tabs;
+        SessionList.ItemsSource = _sessionNames;
+
+        // Windows-Terminal-style: draw the tab strip into the caption area and
+        // make the strip the draggable title bar. Interactive children (tabs,
+        // + button) automatically pass input through.
+        ExtendsContentIntoTitleBar = true;
+        SetTitleBar(AppTitleBar);
+        var tb = AppWindow.TitleBar;
+        tb.ButtonBackgroundColor = Microsoft.UI.Colors.Transparent;
+        tb.ButtonInactiveBackgroundColor = Microsoft.UI.Colors.Transparent;
+        tb.ButtonForegroundColor = Color.FromArgb(255, 0xC8, 0xC8, 0xC8);
+        tb.ButtonInactiveForegroundColor = Color.FromArgb(255, 0x8A, 0x8A, 0x8A);
+        tb.ButtonHoverBackgroundColor = Color.FromArgb(255, 0x3A, 0x3A, 0x3A);
+        tb.ButtonHoverForegroundColor = Microsoft.UI.Colors.White;
+        tb.ButtonPressedBackgroundColor = Color.FromArgb(255, 0x2A, 0x2A, 0x2A);
+        tb.ButtonPressedForegroundColor = Microsoft.UI.Colors.White;
+
+        _client.SessionReady += OnSessionReady;
+        _client.RegionAdded += OnRegionAdded;
+        _client.RegionRemoved += OnRegionRemoved;
+        _client.RegionSpawned += OnRegionSpawned;
+        _client.ScreenUpdated += OnScreenUpdated;
+        _client.EventsReceived += OnEventsReceived;
+        _client.ScrollbackReceived += OnScrollbackReceived;
+        _client.StatusChanged += OnStatusChanged;
+        _client.SessionsChanged += () => OnUi(RefreshSessions);
+    }
+
+    private async void TerminalCanvas_Loaded(object sender, RoutedEventArgs e)
+    {
+        MeasureFont();
+        _ready = true;
+
+        TerminalCanvas.AddHandler(UIElement.KeyDownEvent,
+            new Microsoft.UI.Xaml.Input.KeyEventHandler(TerminalCanvas_KeyDown), handledEventsToo: true);
+        // KeyUp resets the tracked Ctrl/Shift state used by the chord detector.
+        TerminalCanvas.AddHandler(UIElement.KeyUpEvent,
+            new Microsoft.UI.Xaml.Input.KeyEventHandler(TerminalCanvas_KeyUp), handledEventsToo: true);
+        TerminalCanvas.LostFocus += (_, _) => { _ctrlDown = _shiftDown = false; };
+
+        (_lastCols, _lastRows) = SizeToGrid(TerminalCanvas.ActualWidth, TerminalCanvas.ActualHeight);
+        lock (_gridLock) _grid = new TerminalGrid(_lastCols, _lastRows);
+
+        TerminalCanvas.Focus(FocusState.Programmatic);
+        SetForegroundWindow(WinRT.Interop.WindowNative.GetWindowHandle(this));
+
+        // endpoint and (optional) session come from the command line, falling
+        // back to env vars: NxtermGui.exe <host:port> [session]. With no endpoint
+        // given, show the connect dialog instead of auto-connecting.
+        var argv = Environment.GetCommandLineArgs();
+        string? endpointArg = argv.Length > 1 && argv[1].Length > 0
+            ? argv[1]
+            : Environment.GetEnvironmentVariable("NXTERM_ENDPOINT");
+        _session = argv.Length > 2 ? argv[2] : (Environment.GetEnvironmentVariable("NXTERM_SESSION") ?? "");
+        _testHook = TestHook.FromEnv(HandleTestRequest);
+        _testHook?.Start();
+
+        if (string.IsNullOrWhiteSpace(endpointArg)) { ShowConnectDialog(); return; }
+        _endpoint = endpointArg;
+        await ConnectToEndpointAsync(_endpoint, _session);
+    }
+
+    private async Task ConnectToEndpointAsync(string endpoint, string session)
+    {
+        var (host, port) = ParseEndpoint(endpoint);
+        try { await _client.ConnectAsync(host, port, _lastCols, _lastRows, session); }
+        catch (Exception ex) { OnStatusChanged("connect failed: " + ex.Message); }
+    }
+
+    private void ShowConnectDialog()
+    {
+        _overlay = "connect";
+        ConnectError.Text = "";
+        ConnectDialog.Visibility = Visibility.Visible;
+        EndpointBox.Focus(FocusState.Programmatic);
+        UiRefresh();
+    }
+
+    private async void ConnectButton_Click(object sender, RoutedEventArgs e)
+    {
+        var ep = EndpointBox.Text.Trim();
+        if (ep.Length == 0) { ConnectError.Text = "enter host:port"; return; }
+        _endpoint = ep;
+        _overlay = "";
+        ConnectDialog.Visibility = Visibility.Collapsed;
+        FocusTerminal();
+        await ConnectToEndpointAsync(ep, _session);
+    }
+
+    // --- overlays: command palette + help ----------------------------------
+
+    private void MenuButton_Click(object sender, RoutedEventArgs e) => ShowCommandPalette();
+
+    private void ShowCommandPalette()
+    {
+        _overlay = "palette";
+        HelpOverlay.Visibility = Visibility.Collapsed;
+        CommandPalette.Visibility = Visibility.Visible;
+        UiRefresh();
+    }
+
+    private void ShowHelp()
+    {
+        _overlay = "help";
+        CommandPalette.Visibility = Visibility.Collapsed;
+        HelpOverlay.Visibility = Visibility.Visible;
+        UiRefresh();
+    }
+
+    // CloseOverlays hides the palette/help/session-picker (not the connect
+    // dialog, which has its own dismiss path) and returns focus to the terminal.
+    private void CloseOverlays()
+    {
+        _overlay = "";
+        CommandPalette.Visibility = Visibility.Collapsed;
+        HelpOverlay.Visibility = Visibility.Collapsed;
+        SessionPicker.Visibility = Visibility.Collapsed;
+        UiRefresh();
+        FocusTerminal();
+    }
+
+    private void ShowSessionPicker()
+    {
+        RefreshSessions();
+        _overlay = "sessions";
+        CommandPalette.Visibility = Visibility.Collapsed;
+        HelpOverlay.Visibility = Visibility.Collapsed;
+        SessionPicker.Visibility = Visibility.Visible;
+        UiRefresh();
+    }
+
+    // RefreshSessions reconciles the picker's list with the client's known
+    // sessions in place (so the SessionPicker updates live if a session appears
+    // while it is open).
+    private void RefreshSessions()
+    {
+        var want = _client.Sessions;
+        for (int i = _sessionNames.Count - 1; i >= 0; i--)
+            if (!want.Contains(_sessionNames[i])) _sessionNames.RemoveAt(i);
+        foreach (var s in want)
+            if (!_sessionNames.Contains(s)) _sessionNames.Add(s);
+    }
+
+    private void Session_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.Tag is not string name) return;
+        SessionPicker.Visibility = Visibility.Collapsed;
+        _overlay = "";
+        _client.SwitchSession(name);
+        UiRefresh();
+    }
+
+    private void Command_Click(object sender, RoutedEventArgs e)
+    {
+        var tag = (sender as FrameworkElement)?.Tag as string;
+        CommandPalette.Visibility = Visibility.Collapsed;
+        _overlay = "";
+        switch (tag)
+        {
+            case "new-tab": _client.Spawn(); break;
+            case "close-tab": if (_client.ActiveRegion != null) _client.Kill(_client.ActiveRegion); break;
+            case "sessions": ShowSessionPicker(); break; // sets _overlay = "sessions"
+            case "connect": ShowConnectDialog(); break;  // sets _overlay = "connect"
+            case "help": ShowHelp(); break;              // sets _overlay = "help"
+        }
+        UiRefresh();
+    }
+
+    private void HelpClose_Click(object sender, RoutedEventArgs e) => CloseOverlays();
+
+    private void MeasureFont()
+    {
+        _font = MakeFont(false, false);
+        _fontBold = MakeFont(true, false);
+        _fontItalic = MakeFont(false, true);
+        _fontBoldItalic = MakeFont(true, true);
+        var dev = CanvasDevice.GetSharedDevice();
+        using var probe = new CanvasTextLayout(dev, new string('M', 10), _font, 10000, 1000);
+        _cellW = probe.LayoutBounds.Width / 10.0;
+        _cellH = probe.LayoutBounds.Height;
+    }
+
+    private static CanvasTextFormat MakeFont(bool bold, bool italic) => new()
+    {
+        FontFamily = "Consolas",
+        FontSize = 16,
+        FontWeight = new Windows.UI.Text.FontWeight { Weight = (ushort)(bold ? 700 : 400) },
+        FontStyle = italic ? Windows.UI.Text.FontStyle.Italic : Windows.UI.Text.FontStyle.Normal,
+        WordWrapping = CanvasWordWrapping.NoWrap,
+    };
+
+    private CanvasTextFormat Font(CellAttr a)
+    {
+        bool b = (a & CellAttr.Bold) != 0, i = (a & CellAttr.Italic) != 0;
+        return b ? (i ? _fontBoldItalic : _fontBold) : (i ? _fontItalic : _font);
+    }
+
+    private (int cols, int rows) SizeToGrid(double w, double h) =>
+        (w > 0 ? Math.Max(1, (int)(w / _cellW)) : 80, h > 0 ? Math.Max(1, (int)(h / _cellH)) : 24);
+
+    private static (string host, int port) ParseEndpoint(string spec)
+    {
+        int i = spec.LastIndexOf(':');
+        if (i <= 0) return (spec, 7654);
+        return (spec[..i], int.TryParse(spec[(i + 1)..], out var p) ? p : 7654);
+    }
+
+    // --- tab / region management (marshalled to the UI thread) --------------
+
+    private void OnSessionReady(string session, List<(string Id, string Name)> regions) => OnUi(() =>
+    {
+        // On a reconnect the session is already established; preserve the
+        // previously-active region and force a fresh subscribe (the socket
+        // changed but ActiveRegion did not), so the server resends its snapshot.
+        var prevActive = _tabs.FirstOrDefault(t => t.IsActive)?.RegionId;
+        bool reconnect = _everConnected;
+
+        _tabs.Clear();
+        foreach (var (id, name) in regions) _tabs.Add(new TabItem(id, name));
+
+        string? target = (prevActive != null && regions.Any(r => r.Id == prevActive))
+            ? prevActive
+            : (_tabs.Count > 0 ? _tabs[0].RegionId : null);
+        if (target != null) ActivateRegion(target, force: reconnect);
+
+        _everConnected = true;
+        UiRefresh();
+    });
+
+    private void OnRegionAdded(string id, string name) => OnUi(() =>
+    {
+        if (_tabs.All(t => t.RegionId != id)) _tabs.Add(new TabItem(id, name));
+    });
+
+    private void OnRegionRemoved(string id) => OnUi(() =>
+    {
+        var tab = _tabs.FirstOrDefault(t => t.RegionId == id);
+        if (tab == null) return;
+        bool wasActive = id == _client.ActiveRegion;
+        int idx = _tabs.IndexOf(tab);
+        _tabs.Remove(tab);
+        if (wasActive && _tabs.Count > 0)
+            ActivateRegion(_tabs[Math.Min(idx, _tabs.Count - 1)].RegionId);
+        UiRefresh();
+    });
+
+    private void OnRegionSpawned(string id, string name, bool error, string message) => OnUi(() =>
+    {
+        if (error) { _status = "spawn failed: " + message; UiRefresh(); return; }
+        if (_tabs.All(t => t.RegionId != id)) _tabs.Add(new TabItem(id, name));
+        ActivateRegion(id);
+    });
+
+    private void ActivateRegion(string id, bool force = false)
+    {
+        _client.Activate(id, force);
+        lock (_gridLock) _grid = new TerminalGrid(_lastCols, _lastRows);
+        // New region (or re-subscribe): its scrollback must be fetched afresh.
+        _scrollbackRequested = false;
+        _syncBuf = new List<TermCell[]>();
+        _client.SendResize(_lastCols, _lastRows);
+        foreach (var t in _tabs) t.IsActive = t.RegionId == id;
+        _title = "";
+        UiRefresh();
+        FocusTerminal();
+    }
+
+    // FocusTerminal gives the terminal canvas keyboard focus, deferred to the
+    // next UI tick — focusing synchronously right after a chrome interaction
+    // (tab click, dismissing the connect dialog) is unreliable in WinUI. The
+    // overlay guard avoids stealing focus from an open overlay.
+    private void FocusTerminal()
+    {
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (_overlay == "") TerminalCanvas.Focus(FocusState.Programmatic);
+        });
+    }
+
+    private void Tab_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is TabItem t) ActivateRegion(t.RegionId);
+    }
+
+    private void TabClose_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is TabItem t) _client.Kill(t.RegionId);
+    }
+
+    private void NewTab_Click(object sender, RoutedEventArgs e) => _client.Spawn();
+
+    // --- server callbacks (receive thread) ---------------------------------
+
+    private void OnScreenUpdated(ScreenSnapshot s)
+    {
+        if (s.Title is { Length: > 0 }) _title = s.Title.Trim();
+        lock (_gridLock)
+        {
+            // Rows that scrolled into history during a mode-2026 batch arrive in
+            // the delta (the per-event replay missed them); append before the
+            // new screen cells replace the live buffer.
+            if (s.ScrollbackDelta is { Length: > 0 })
+                _grid.AppendHistoryRows(s.ScrollbackDelta);
+            _grid.ApplySnapshot(s.Cells, s.CursorRow, s.CursorCol, s.Title);
+            // Initial subscribe to a region that already has scrollback: adopt the
+            // server's count (local history is empty) so a later fetch reconciles
+            // by seq.
+            if (s.ScrollbackTotal > _grid.ScrollbackTotal && _grid.ScrollTotal == 0)
+                _grid.SetTotalAdded(s.ScrollbackTotal);
+        }
+        if (s.ScrollbackDesync) _scrollbackRequested = false; // local scrollback stale → re-fetch
+        OnUi(UiRefresh);
+    }
+
+    // OnScrollbackReceived accumulates get_scrollback chunks (which arrive
+    // newest-first) into _syncBuf oldest-first, then reconciles by seq on the
+    // final chunk.
+    private void OnScrollbackReceived(ScrollbackChunk c)
+    {
+        var combined = new List<TermCell[]>(c.Lines.Length + _syncBuf.Count);
+        combined.AddRange(c.Lines);
+        combined.AddRange(_syncBuf);
+        _syncBuf = combined;
+        if (!c.Done) return;
+        lock (_gridLock) _grid.ReconcileScrollback(_syncBuf, c.ScrollbackTotal);
+        _syncBuf = new List<TermCell[]>();
+        _scrollbackSyncs++;
+        OnUi(UiRefresh);
+    }
+
+    // RequestScrollbackOnce fetches the server's authoritative scrollback the
+    // first time the user scrolls back into a region (reset on re-subscribe and
+    // on a desync), so local scrollback is reconciled with rows the client never
+    // received as live events.
+    private void RequestScrollbackOnce()
+    {
+        if (_scrollbackRequested) return;
+        _scrollbackRequested = true;
+        _client.RequestScrollback();
+    }
+
+    private void OnEventsReceived(List<TermEvent> events)
+    {
+        lock (_gridLock)
+        {
+            _grid.Apply(events);
+            if (_grid.Title.Length > 0) _title = _grid.Title.Trim();
+        }
+        // Record sync markers only after the grid has fully applied the batch,
+        // so "sync id seen" implies the grid reflects everything before it —
+        // the same render-complete guarantee PtyIO gives via OSC acks.
+        foreach (var ev in events)
+            if (ev.Op == "sync" && !string.IsNullOrEmpty(ev.Data))
+                lock (_syncLock) _syncSeen.Add(ev.Data!);
+        OnUi(UiRefresh);
+    }
+
+    private void OnStatusChanged(string status)
+    {
+        _status = status;
+        OnUi(UiRefresh);
+    }
+
+    private void OnUi(Action a) => DispatcherQueue.TryEnqueue(() => a());
+
+    private void UiRefresh()
+    {
+        this.Title = _title.Length > 0 ? $"nxterm — {_title}" : $"nxterm ({_status})";
+        var active = _tabs.FirstOrDefault(t => t.RegionId == _client.ActiveRegion);
+        if (active != null && _title.Length > 0) active.Title = _title;
+        StatusLeft.Text = string.IsNullOrEmpty(_client.Session) ? _endpoint : $"{_client.Session}@{_endpoint}";
+        ActiveRegionId.Text = _client.ActiveRegion ?? "";
+        StatusRight.Text = $"{_lastCols}×{_lastRows}   {_status}";
+        TerminalCanvas.Invalidate();
+    }
+
+    // --- rendering ----------------------------------------------------------
+
+    private void TerminalCanvas_Draw(CanvasControl sender, CanvasDrawEventArgs args)
+    {
+        var ds = args.DrawingSession;
+        float cw = (float)_cellW, ch = (float)_cellH;
+        lock (_gridLock)
+        {
+            var g = _grid;
+            int style = g.CursorStyle;            // 0/1/2 block, 3/4 underline, 5/6 bar
+            bool blockShape = style <= 2;
+            bool hasSel = _hasSelection;
+            (int r, int c) selS = _selAnchor, selE = _selCaret;
+            if (hasSel && !LessEq(selS, selE)) (selS, selE) = (selE, selS);
+            bool scrolled = g.ScrollOffset > 0;
+            for (int r = 0; r < g.Rows; r++)
+            {
+                var vrow = g.ViewportRow(r);
+                for (int c = 0; c < g.Cols; c++)
+                {
+                    var cell = c < vrow.Length ? vrow[c] : TermCell.Blank(TermColor.Default);
+                    var attrs = cell.Attrs;
+                    uint fg = Palette.Resolve(cell.Fg, Palette.DefaultForeground);
+                    uint bg = Palette.Resolve(cell.Bg, Palette.DefaultBackground);
+                    if ((attrs & CellAttr.Reverse) != 0) (fg, bg) = (bg, fg);
+                    if ((attrs & CellAttr.Faint) != 0) fg = Dim(fg);
+
+                    // The cursor is hidden while viewing scrollback.
+                    bool isCursor = !scrolled && g.CursorVisible && r == g.CursorRow && c == g.CursorCol;
+                    bool blockCursor = isCursor && blockShape;
+                    if (blockCursor) (fg, bg) = (bg, fg);
+                    if (hasSel && !blockCursor && r >= selS.r && r <= selE.r
+                        && (r > selS.r || c >= selS.c) && (r < selE.r || c <= selE.c))
+                        bg = 0x264F78;   // selection highlight
+
+                    float x = c * cw, y = r * ch;
+                    if (bg != Palette.DefaultBackground || blockCursor)
+                        ds.FillRectangle(x, y, cw + 1, ch, Rgb(bg));
+
+                    var fgc = Rgb(fg);
+                    if ((attrs & CellAttr.Conceal) == 0 && !string.IsNullOrWhiteSpace(cell.Text))
+                        ds.DrawText(cell.Text, x, y, fgc, Font(attrs));
+                    if ((attrs & CellAttr.Underline) != 0)
+                        ds.DrawLine(x, y + ch - 1.5f, x + cw, y + ch - 1.5f, fgc, 1.2f);
+                    if ((attrs & CellAttr.Strikethrough) != 0)
+                        ds.DrawLine(x, y + ch / 2, x + cw, y + ch / 2, fgc, 1.2f);
+
+                    // underline / bar cursor shapes (block handled by the fill above)
+                    if (isCursor && !blockShape)
+                    {
+                        var cursorColor = Rgb(Palette.DefaultForeground);
+                        if (style is 3 or 4) ds.FillRectangle(x, y + ch - 2.5f, cw, 2.5f, cursorColor);
+                        else ds.FillRectangle(x, y, 2.5f, ch, cursorColor);
+                    }
+                }
+            }
+        }
+    }
+
+    private static Color Rgb(uint v) => Color.FromArgb(255, (byte)(v >> 16), (byte)(v >> 8), (byte)v);
+    private static uint Dim(uint v)
+    {
+        byte r = (byte)((byte)(v >> 16) * 2 / 3), g = (byte)((byte)(v >> 8) * 2 / 3), b = (byte)((byte)v * 2 / 3);
+        return (uint)((r << 16) | (g << 8) | b);
+    }
+
+    // --- input --------------------------------------------------------------
+
+    private void TerminalCanvas_KeyUp(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs e)
+    {
+        if (e.Key is VirtualKey.Control or VirtualKey.LeftControl or VirtualKey.RightControl) _ctrlDown = false;
+        else if (e.Key is VirtualKey.Shift or VirtualKey.LeftShift or VirtualKey.RightShift) _shiftDown = false;
+    }
+
+    private void TerminalCanvas_KeyDown(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs e)
+    {
+        // Track Ctrl/Shift from their own key events. WinAppDriver's synthetic
+        // input raises real KeyDown/KeyUp for the modifiers, but does not update
+        // the per-thread key state that GetKeyStateForCurrentThread (IsDown)
+        // reads — so the chords below must rely on the tracked flags (OR'd with
+        // IsDown for the rare case a modifier was already down before focus).
+        if (e.Key is VirtualKey.Control or VirtualKey.LeftControl or VirtualKey.RightControl) _ctrlDown = true;
+        else if (e.Key is VirtualKey.Shift or VirtualKey.LeftShift or VirtualKey.RightShift) _shiftDown = true;
+        bool ctrl = _ctrlDown || IsDown(VirtualKey.Control);
+        bool shift = _shiftDown || IsDown(VirtualKey.Shift);
+        bool alt = IsDown(VirtualKey.Menu);
+
+        // Chords are intercepted before the encoder so no control byte leaks to
+        // the PTY (and the encoder's selection-clear does not run).
+        if (ctrl && shift && e.Key == VirtualKey.C) { CopySelection(); e.Handled = true; return; }
+        if (ctrl && shift && e.Key == VirtualKey.V) { _ = PasteAsync(); e.Handled = true; return; }
+        if (ctrl && shift && e.Key == VirtualKey.O) { ShowConnectDialog(); e.Handled = true; return; }
+        if (ctrl && shift && e.Key == VirtualKey.P) { ShowCommandPalette(); e.Handled = true; return; }
+        if (e.Key == VirtualKey.Escape && _overlay is "palette" or "help") { CloseOverlays(); e.Handled = true; return; }
+
+        // Scrollback: PageUp enters/scrolls history; PageDown scrolls back toward
+        // live. In alt-screen they belong to the app; PageDown at the live bottom
+        // also falls through to the app.
+        if (!_grid.AltActive && (e.Key == VirtualKey.PageUp || e.Key == VirtualKey.PageDown))
+        {
+            bool up = e.Key == VirtualKey.PageUp;
+            if (up || _grid.ScrollOffset > 0)
+            {
+                if (up) RequestScrollbackOnce();
+                lock (_gridLock) { if (up) _grid.ScrollUp(_lastRows - 1); else _grid.ScrollDown(_lastRows - 1); }
+                TerminalCanvas.Invalidate();
+                UiRefresh();
+                e.Handled = true;
+                return;
+            }
+        }
+
+        var bytes = KeyEncoder.Encode(e.Key, ctrl, shift, alt);
+        if (bytes != null)
+        {
+            // Any text input returns to the live view.
+            if (_grid.ScrollOffset > 0) { lock (_gridLock) _grid.ScrollToLive(); UiRefresh(); }
+            if (_hasSelection) _hasSelection = false;
+            TerminalCanvas.Invalidate();
+            _client.SendInput(bytes);
+            e.Handled = true;
+        }
+    }
+
+    private static bool IsDown(VirtualKey k) =>
+        (InputKeyboardSource.GetKeyStateForCurrentThread(k) & CoreVirtualKeyStates.Down) == CoreVirtualKeyStates.Down;
+
+    private void TerminalCanvas_PointerPressed(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
+    {
+        TerminalCanvas.Focus(FocusState.Pointer);
+        SetForegroundWindow(WinRT.Interop.WindowNative.GetWindowHandle(this));
+        var (row, col) = CellAt(e.GetCurrentPoint(TerminalCanvas).Position);
+        TerminalCanvas.CapturePointer(e.Pointer);
+
+        if (_grid.MouseReportsPress)        // forward to the app instead of selecting
+        {
+            _mouseDown = true;
+            _lastMouseCell = (row, col);
+            SendMouse(0, col, row, press: true);
+            return;
+        }
+        _selAnchor = _selCaret = (row, col);
+        _selecting = true;
+        _hasSelection = false;
+        TerminalCanvas.Invalidate();
+    }
+
+    private void TerminalCanvas_PointerMoved(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
+    {
+        var (row, col) = CellAt(e.GetCurrentPoint(TerminalCanvas).Position);
+        if (_grid.MouseReportsPress)
+        {
+            bool report = _grid.MouseReportsAny || (_grid.MouseReportsDrag && _mouseDown);
+            if (report && (row, col) != _lastMouseCell)
+            {
+                _lastMouseCell = (row, col);
+                SendMouse((_mouseDown ? 0 : 3) + 32, col, row, press: true);  // +32 = motion
+            }
+            return;
+        }
+        if (!_selecting) return;
+        _selCaret = (row, col);
+        _hasSelection = _selCaret != _selAnchor;
+        TerminalCanvas.Invalidate();
+    }
+
+    private void TerminalCanvas_PointerReleased(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
+    {
+        var (row, col) = CellAt(e.GetCurrentPoint(TerminalCanvas).Position);
+        if (_grid.MouseReportsPress)
+        {
+            if (_mouseDown) SendMouse(0, col, row, press: false);
+            _mouseDown = false;
+            TerminalCanvas.ReleasePointerCapture(e.Pointer);
+            return;
+        }
+        if (_selecting)
+        {
+            // Finalize from the release point too, in case PointerMoved didn't
+            // fire (e.g. a synthetic pointer during automated testing).
+            _selCaret = (row, col);
+            _hasSelection = _selCaret != _selAnchor;
+            TerminalCanvas.Invalidate();
+        }
+        _selecting = false;
+        TerminalCanvas.ReleasePointerCapture(e.Pointer);
+    }
+
+    private void TerminalCanvas_PointerWheelChanged(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
+    {
+        var pp = e.GetCurrentPoint(TerminalCanvas);
+        if (_grid.MouseReportsPress) // app requested mouse tracking → forward the wheel
+        {
+            var (row, col) = CellAt(pp.Position);
+            SendMouse(pp.Properties.MouseWheelDelta > 0 ? 64 : 65, col, row, press: true);
+            e.Handled = true;
+            return;
+        }
+        // Otherwise the wheel drives scrollback (fetch the server's history on
+        // the first scroll-up).
+        if (pp.Properties.MouseWheelDelta > 0) RequestScrollbackOnce();
+        lock (_gridLock)
+        {
+            if (pp.Properties.MouseWheelDelta > 0) _grid.ScrollUp(3);
+            else _grid.ScrollDown(3);
+        }
+        TerminalCanvas.Invalidate();
+        UiRefresh();
+        e.Handled = true;
+    }
+
+    // Encode an xterm mouse event (SGR 1006 if enabled, else legacy X10) and send it.
+    private void SendMouse(int button, int col, int row, bool press)
+    {
+        int cb = button;
+        if (IsDown(VirtualKey.Shift)) cb += 4;
+        if (IsDown(VirtualKey.Menu)) cb += 8;
+        if (IsDown(VirtualKey.Control)) cb += 16;
+        int x = col + 1, y = row + 1;
+
+        byte[] seq;
+        if (_grid.MouseSgr)
+            seq = System.Text.Encoding.ASCII.GetBytes($"\x1b[<{cb};{x};{y}{(press ? 'M' : 'm')}");
+        else
+        {
+            int b = press ? cb : 3;   // legacy release reports button 3
+            seq = new byte[] { 0x1b, (byte)'[', (byte)'M', (byte)(b + 32), (byte)(x + 32), (byte)(y + 32) };
+        }
+        if (LastInput != null) LastInput.Text = Escape(seq);
+        _client.SendInput(seq);
+    }
+
+    private static string Escape(byte[] b)
+    {
+        var sb = new System.Text.StringBuilder();
+        foreach (var x in b) sb.Append(x == 0x1b ? "\\e" : ((char)x).ToString());
+        return sb.ToString();
+    }
+
+    private (int row, int col) CellAt(Windows.Foundation.Point p) =>
+        (Math.Clamp((int)(p.Y / _cellH), 0, Math.Max(0, _lastRows - 1)),
+         Math.Clamp((int)(p.X / _cellW), 0, Math.Max(0, _lastCols - 1)));
+
+    private static bool LessEq((int r, int c) a, (int r, int c) b) => a.r < b.r || (a.r == b.r && a.c <= b.c);
+
+    private void CopySelection()
+    {
+        string text;
+        lock (_gridLock)
+        {
+            if (!_hasSelection) return;
+            var g = _grid;
+            (int r, int c) s = _selAnchor, e = _selCaret;
+            if (!LessEq(s, e)) (s, e) = (e, s);
+            var sb = new System.Text.StringBuilder();
+            for (int r = s.r; r <= e.r && r < g.Rows; r++)
+            {
+                int c0 = r == s.r ? s.c : 0;
+                int c1 = r == e.r ? e.c : g.Cols - 1;
+                var line = new System.Text.StringBuilder();
+                for (int c = c0; c <= c1 && c < g.Cols; c++)
+                {
+                    var t = g[r, c].Text;
+                    line.Append(string.IsNullOrEmpty(t) ? " " : t);
+                }
+                sb.Append(line.ToString().TrimEnd());
+                if (r < e.r) sb.Append('\n');
+            }
+            text = sb.ToString();
+        }
+        if (text.Length == 0) return;
+        _lastClipboard = text;
+        var dp = new DataPackage();
+        dp.SetText(text);
+        Clipboard.SetContent(dp);
+    }
+
+    private async System.Threading.Tasks.Task PasteAsync()
+    {
+        var content = Clipboard.GetContent();
+        if (!content.Contains(StandardDataFormats.Text)) return;
+        string text;
+        try { text = await content.GetTextAsync(); } catch { return; }
+        if (string.IsNullOrEmpty(text)) return;
+
+        var body = System.Text.Encoding.UTF8.GetBytes(text);
+        if (_grid.BracketedPaste)
+        {
+            var pre = System.Text.Encoding.ASCII.GetBytes("\x1b[200~");
+            var post = System.Text.Encoding.ASCII.GetBytes("\x1b[201~");
+            var wrapped = new byte[pre.Length + body.Length + post.Length];
+            Buffer.BlockCopy(pre, 0, wrapped, 0, pre.Length);
+            Buffer.BlockCopy(body, 0, wrapped, pre.Length, body.Length);
+            Buffer.BlockCopy(post, 0, wrapped, pre.Length + body.Length, post.Length);
+            body = wrapped;
+        }
+        _client.SendInput(body);
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    // --- resize -------------------------------------------------------------
+
+    private void TerminalCanvas_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (!_ready) return;
+        var (cols, rows) = SizeToGrid(e.NewSize.Width, e.NewSize.Height);
+        ResizeGrid(cols, rows);
+    }
+
+    // ResizeGrid reflows the local grid to cols×rows and tells the server, the
+    // common path for a real canvas resize and for the test hook's "resize" op
+    // (which drives reflow deterministically without depending on pixel
+    // geometry). Must run on the UI thread.
+    private void ResizeGrid(int cols, int rows)
+    {
+        cols = Math.Max(1, cols);
+        rows = Math.Max(1, rows);
+        if (cols == _lastCols && rows == _lastRows) return;
+        _lastCols = cols; _lastRows = rows;
+        lock (_gridLock) _grid.Resize(cols, rows);
+        _client.SendResize(cols, rows);
+        UiRefresh();
+    }
+
+    // ScrollHistory scrolls local scrollback by lines (positive = up into
+    // history, negative = toward live). Drives the test hook's scroll op.
+    private void ScrollHistory(int lines)
+    {
+        if (lines >= 0) RequestScrollbackOnce();
+        lock (_gridLock)
+        {
+            if (lines >= 0) _grid.ScrollUp(lines);
+            else _grid.ScrollDown(-lines);
+        }
+        TerminalCanvas.Invalidate();
+        UiRefresh();
+    }
+
+    // --- test introspection (NXTERM_TEST_HOOK) ------------------------------
+
+    private string HandleTestRequest(string line)
+    {
+        using var doc = JsonDocument.Parse(line);
+        var op = doc.RootElement.TryGetProperty("op", out var o) ? o.GetString() : null;
+        switch (op)
+        {
+            case "state":
+                return OnUiSync(BuildStateJson);
+            case "sync_seen":
+                var id = doc.RootElement.TryGetProperty("id", out var idEl) ? idEl.GetString() : null;
+                bool seen;
+                lock (_syncLock) seen = id != null && _syncSeen.Contains(id);
+                return "{\"seen\":" + (seen ? "true" : "false") + "}";
+            case "resize":
+                int rc = doc.RootElement.TryGetProperty("cols", out var rcEl) ? rcEl.GetInt32() : _lastCols;
+                int rr = doc.RootElement.TryGetProperty("rows", out var rrEl) ? rrEl.GetInt32() : _lastRows;
+                OnUiSync(() => { ResizeGrid(rc, rr); return 0; });
+                return "{\"ok\":true}";
+            case "scroll":
+                int sl = doc.RootElement.TryGetProperty("lines", out var slEl) ? slEl.GetInt32() : 0;
+                OnUiSync(() => { ScrollHistory(sl); return 0; });
+                return "{\"ok\":true}";
+            case "scroll_to_top":
+                OnUiSync(() => { RequestScrollbackOnce(); lock (_gridLock) _grid.ScrollToTop(); TerminalCanvas.Invalidate(); UiRefresh(); return 0; });
+                return "{\"ok\":true}";
+            case "scroll_to_live":
+                OnUiSync(() => { lock (_gridLock) _grid.ScrollToLive(); TerminalCanvas.Invalidate(); UiRefresh(); return 0; });
+                return "{\"ok\":true}";
+            case "copy":
+                // Direct invocation of the same UI-thread copy path the Ctrl+Shift+C
+                // chord runs. Lets the e2e harness validate selection → clipboard
+                // without depending on synthetic key delivery to the Win2D canvas
+                // (WinAppDriver's /keys don't reach it; see E2E_TESTING_PLAN.md).
+                OnUiSync(() => { CopySelection(); return 0; });
+                return "{\"ok\":true}";
+            default:
+                return "{\"error\":\"unknown op\"}";
+        }
+    }
+
+    // Build a full state snapshot. Runs on the UI thread (via OnUiSync) so tab /
+    // status reads are race-free; the grid read takes _gridLock as usual.
+    private string BuildStateJson()
+    {
+        object dto;
+        lock (_gridLock)
+        {
+            var g = _grid;
+            // Serialize the viewport (live buffer, or the scrollback view when
+            // scrolled) so the harness sees what is actually displayed.
+            var rows = new object[g.Rows];
+            for (int r = 0; r < g.Rows; r++)
+            {
+                var vrow = g.ViewportRow(r);
+                var cells = new object[g.Cols];
+                for (int c = 0; c < g.Cols; c++)
+                    cells[c] = CellDto(c < vrow.Length ? vrow[c] : TermCell.Blank(TermColor.Default));
+                rows[r] = cells;
+            }
+            dto = new
+            {
+                cols = g.Cols,
+                rows_count = g.Rows,
+                cursor_row = g.CursorRow,
+                cursor_col = g.CursorCol,
+                cursor_visible = g.CursorVisible,
+                cursor_style = g.CursorStyle,
+                title = g.Title,
+                has_selection = _hasSelection,
+                clipboard = _lastClipboard,
+                scroll_offset = g.ScrollOffset,
+                scroll_total = g.ScrollTotal,
+                scrollback_syncs = _scrollbackSyncs,
+                overlay = _overlay,
+                rows,
+                session = _client.Session,
+                active_region = _client.ActiveRegion ?? "",
+                endpoint = _endpoint,
+                status = _status,
+                reconnects = _client.Reconnects,
+                tabs = _tabs.Select(t => new { id = t.RegionId, title = t.Title, active = t.IsActive }).ToArray(),
+            };
+        }
+        return JsonSerializer.Serialize(dto);
+    }
+
+    private static object CellDto(TermCell cell) =>
+        new { c = cell.Text, fg = ColorSpec(cell.Fg), bg = ColorSpec(cell.Bg), a = (int)cell.Attrs };
+
+    // Reverse of TermColor.Parse: emit the server's wire spec. Indexed colors
+    // are always "5;N"; the Go side decides ANSI16 vs ANSI256 by N < 16.
+    private static string ColorSpec(TermColor c) => c.Kind switch
+    {
+        ColorKind.Indexed => "5;" + c.Index,
+        ColorKind.Rgb => "2;" + c.Rgb.ToString("x6"),
+        _ => "",
+    };
+
+    private T OnUiSync<T>(Func<T> f)
+    {
+        if (DispatcherQueue.HasThreadAccess) return f();
+        var tcs = new TaskCompletionSource<T>();
+        if (!DispatcherQueue.TryEnqueue(() =>
+            {
+                try { tcs.SetResult(f()); }
+                catch (Exception e) { tcs.SetException(e); }
+            }))
+            throw new InvalidOperationException("UI dispatcher unavailable");
+        return tcs.Task.GetAwaiter().GetResult();
+    }
+}

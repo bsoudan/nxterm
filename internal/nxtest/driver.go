@@ -174,7 +174,7 @@ func (h *RegionWriteHandle) Sync(nxt *T, desc string) {
 	nxt.Helper()
 	id := nextSyncID()
 	h.region.WriteSync(id)
-	if err := nxt.PtyIO.WaitSync(id, 10*time.Second); err != nil {
+	if err := nxt.Screen.WaitSync(id, 10*time.Second); err != nil {
 		nxt.Fatalf("region sync %q: %v%s", desc, err, nxt.dumpFrontendStack())
 	}
 }
@@ -186,7 +186,7 @@ func (r *NativeRegion) Sync(nxt *T, desc string) {
 	nxt.Helper()
 	id := nextSyncID()
 	r.WriteSync(id)
-	if err := nxt.PtyIO.WaitSync(id, 10*time.Second); err != nil {
+	if err := nxt.Screen.WaitSync(id, 10*time.Second); err != nil {
 		nxt.Fatalf("region sync %q: %v%s", desc, err, nxt.dumpFrontendStack())
 	}
 }

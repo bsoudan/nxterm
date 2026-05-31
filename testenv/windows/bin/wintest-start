@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+
+if is_running; then
+  log "VM already running (pid $(cat "$QEMU_PID_FILE"))"
+  exit 0
+fi
+
+[[ -w /dev/kvm ]] || die "/dev/kvm not accessible. KVM required."
+
+log "Locating base image (will build if missing)..."
+# The image is the root nxterm flake's `.#image` output (testenv/windows was
+# folded into it). WINTEST_ROOT is .../testenv/windows, so the repo root —
+# where the flake lives — is two levels up.
+REPO_ROOT=$(cd -- "$WINTEST_ROOT/../.." && pwd)
+IMAGE=$(nix build --no-link --print-out-paths "$REPO_ROOT#image") \
+  || die "failed to build .#image. If this is the first run, you must add the Windows ISO to the nix store first: nix-store --add-fixed sha256 Win11_25H2_English_x64_v2.iso. See README.md."
+
+mkdir -p "$STATE_DIR" "$TPM_DIR"
+
+if [[ ! -f "$OVERLAY" ]]; then
+  log "Creating qcow2 overlay over base image..."
+  qemu-img create -F qcow2 -f qcow2 -b "$IMAGE" "$OVERLAY" >/dev/null
+fi
+
+# Stale sockets from a previous unclean shutdown will refuse new binds.
+rm -f "$QMP_SOCK" "$TPM_SOCK"
+
+log "Starting swtpm..."
+# NOTE: no --tpm2 — wfvm builds the image with TPM 1.2 (and uses Win11
+# autounattend BypassTPMCheck to install). Running swtpm in TPM 2.0 mode
+# here mismatches the firmware state and kills boot with
+# "TPM result for CMD_INIT: 0x9 operation failed".
+swtpm socket \
+  --tpmstate "dir=$TPM_DIR" \
+  --ctrl "type=unixio,path=$TPM_SOCK" \
+  --daemon \
+  --pid "file=$SWTPM_PID_FILE"
+
+log "Starting QEMU (log: $STATE_DIR/qemu.log)..."
+# Run QEMU in the background instead of -daemonize so stderr can be
+# captured to a log file. -boot order=c forces disk-first boot, avoiding
+# OVMF's 30-60s iPXE network-boot timeout.
+qemu-system-x86_64 \
+  -enable-kvm \
+  -cpu host,hv_relaxed,hv_vapic,hv_spinlocks=0x1fff,hv_time,hv_synic,hv_stimer,hv_vpindex,hv_runtime,hv_tlbflush,hv_ipi \
+  -smp 4 -m 4G \
+  -M q35,smm=on \
+  -bios "$WINTEST_OVMF_FD" \
+  -boot order=c \
+  -chardev "socket,id=chrtpm,path=$TPM_SOCK" \
+  -tpmdev emulator,id=tpm0,chardev=chrtpm \
+  -device tpm-tis,tpmdev=tpm0 \
+  -device qemu-xhci \
+  -device usb-tablet \
+  -netdev "user,id=n1,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22,hostfwd=tcp:127.0.0.1:$HOOK_PORT-:$HOOK_PORT,hostfwd=tcp:127.0.0.1:$WINAPPDRIVER_PORT-:$WINAPPDRIVER_PORT" \
+  -device virtio-net-pci,netdev=n1 \
+  -drive "file=$OVERLAY,index=0,media=disk,if=virtio,cache=writeback" \
+  -rtc base=localtime,clock=host \
+  -vga qxl \
+  -spice "port=$SPICE_PORT,addr=$SPICE_ADDR,disable-ticketing=on" \
+  -device virtio-serial-pci \
+  -chardev "spicevmc,id=spicechannel0,name=vdagent" \
+  -device "virtserialport,chardev=spicechannel0,name=com.redhat.spice.0" \
+  -vnc "$SPICE_ADDR:0" \
+  -display none \
+  -qmp "unix:$QMP_SOCK,server=on,wait=off" \
+  >/dev/null 2> "$STATE_DIR/qemu.log" &
+echo $! > "$QEMU_PID_FILE"
+disown
+
+log "QEMU started (pid $(cat "$QEMU_PID_FILE")). Waiting for SSH (up to 5 min)..."
+
+timeout=300
+until ssh_ready; do
+  if (( timeout <= 0 )); then
+    die "SSH did not come up within 5 minutes"
+  fi
+  sleep 2
+  timeout=$((timeout - 2))
+done
+log "SSH ready."
+
+# Ensure a known deploy target exists so wintest-deploy can sftp directly.
+wintest_ssh 'if not exist "%USERPROFILE%\testbin" mkdir "%USERPROFILE%\testbin"' || true
+
+cat <<EOF
+[wintest] VM is up.
+  Manual GUI:        wintest-view
+  Live monitor:      wintest-watch     (additional viewer; multi-client)
+  Deploy a binary:   wintest-deploy <local-path> [guest-dest]
+  Run a command:     wintest-run <cmd...>
+  Status:            wintest-status
+  Shut down:         wintest-stop
+EOF

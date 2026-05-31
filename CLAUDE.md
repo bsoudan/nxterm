@@ -15,7 +15,20 @@ make test               # run e2e tests (builds everything first)
 make test-stress        # quick stress test (30s default)
 make test-stress-long   # extended stress test (120s, more clients)
 make check-windows      # cross-compile check for Windows
+make test-winapp        # build+GUI-test the WinUI 3 HelloApp in the Windows VM (dev shell only)
+make build-winui        # build the WinUI 3 nxterm GUI client in the Windows VM
+make test-winui         # WinAppDriver UI test for the GUI client's tabs + status bar
 ```
+
+`make test-winapp` drives the `testenv/windows` wfvm VM: it deploys, provisions
+(.NET SDK + WinAppDriver), builds, and runs a WinAppDriver UI test against a real
+WinUI 3 GUI. Requires the dev shell (`nix develop`) and x86_64-linux + KVM. See
+`testenv/windows/helloapp/README.md`.
+
+`clients/winui/` is a native WinUI 3 (C#/Win2D) GUI client for nxterm. It builds
+in the VM (WinUI 3 needs Windows tooling) and connects over TCP to an `nxtermd`
+on the Linux host (the server is Unix-only). `make test-winui` runs its
+WinAppDriver UI test. See `clients/winui/README.md`.
 
 Run a single test:
 ```bash

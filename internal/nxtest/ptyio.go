@@ -133,6 +133,13 @@ func (p *PtyIO) ScreenCells() [][]te.Cell {
 	return p.screen.LinesCells()
 }
 
+// Cursor returns the current cursor row and column (0-based).
+func (p *PtyIO) Cursor() (row, col int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.screen.Cursor.Row, p.screen.Cursor.Col
+}
+
 // WaitForScreen polls the virtual screen until check returns true or timeout.
 func (p *PtyIO) WaitForScreen(check func([]string) bool, desc string, timeout time.Duration) ([]string, error) {
 	deadline := time.After(timeout)
