@@ -57,9 +57,12 @@ type Envelope struct {
 
 // SelectApp asks the broker to run app App for the given surface. For the spike
 // App is a registry name; it will become a content hash (see control.wit).
+// Session names a shared instance: hosts that select the same (App, Session)
+// attach to one companion (multi-client / reconnect).
 type SelectApp struct {
 	Surface uint32 `json:"surface"`
 	App     string `json:"app"`
+	Session string `json:"session,omitempty"`
 }
 
 // Selected reports the outcome of a SelectApp.

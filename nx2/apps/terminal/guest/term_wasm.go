@@ -3,11 +3,16 @@
 package main
 
 import (
+	"encoding/json"
 	"unsafe"
 
+	"nxtermd/nx2/apps/terminal/proto"
 	"nxtermd/nx2/internal/cellgrid"
 	"nxtermd/pkg/te"
 )
+
+// historyLines is the guest-side scrollback capacity.
+const historyLines = 1000
 
 // Host functions (module "nx2"). See nx2/wit/host-surface.wit interface `host`.
 
@@ -18,8 +23,9 @@ func hostSubmitCells(ptr, n int32)
 func hostReadInput(ptr, capacity int32) int32
 
 var (
-	screen *te.Screen
-	stream *te.Stream
+	hscreen *te.HistoryScreen
+	stream  *te.Stream
+	dec     proto.Decoder // reassembles companion data-plane frames
 
 	inBuf  []byte // host writes feed() input here (via alloc)
 	outBuf []byte // encoded frame handed to the host in render()
@@ -47,28 +53,46 @@ func configure(cols, rows int32) {
 	if cols <= 0 || rows <= 0 {
 		return
 	}
-	screen = te.NewScreen(int(cols), int(rows))
-	stream = te.NewStream(screen, false)
+	hscreen = te.NewHistoryScreen(int(cols), int(rows), historyLines)
+	stream = te.NewStream(hscreen, false)
 }
 
+// feed delivers companion data-plane bytes: proto frames (Raw VT bytes or a
+// ScreenState/HistoryState Snapshot), reassembled across host chunking by dec.
+//
 //go:wasmexport feed
 func feed(ptr, n int32) {
-	if stream == nil || n <= 0 {
+	if hscreen == nil || n <= 0 {
 		return
 	}
 	data := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(ptr))), int(n))
-	_ = stream.Feed(string(data))
+	dec.Push(data)
+	for {
+		kind, payload, err, ok := dec.Next()
+		if err != nil || !ok {
+			return
+		}
+		switch kind {
+		case proto.Raw:
+			_ = stream.Feed(string(payload))
+		case proto.Snapshot:
+			var st te.HistoryState
+			if json.Unmarshal(payload, &st) == nil {
+				hscreen.UnmarshalState(&st)
+			}
+		}
+	}
 }
 
 //go:wasmexport resize
 func resize(cols, rows int32) {
-	// Spike: reconfigure to the new size. Reflow/content-preservation is M2 work.
+	// Spike: reconfigure to the new size. Reflow/content-preservation is later work.
 	configure(cols, rows)
 }
 
 //go:wasmexport render
 func render() {
-	if screen == nil {
+	if hscreen == nil {
 		return
 	}
 	outBuf = cellgrid.Encode(buildFrame(), outBuf[:0])
@@ -79,15 +103,25 @@ func render() {
 	hostSubmitCells(p, int32(len(outBuf)))
 }
 
+// scrollback reports the number of lines in the guest's scrollback history.
+//
+//go:wasmexport scrollback
+func scrollback() int32 {
+	if hscreen == nil {
+		return 0
+	}
+	return int32(hscreen.Scrollback())
+}
+
 func buildFrame() *cellgrid.Frame {
-	cols, rows := screen.Columns, screen.Lines
-	lc := screen.LinesCells()
+	cols, rows := hscreen.Columns, hscreen.Lines
+	lc := hscreen.LinesCells()
 	f := &cellgrid.Frame{
 		Cols:         cols,
 		Rows:         rows,
-		CursorRow:    screen.Cursor.Row,
-		CursorCol:    screen.Cursor.Col,
-		CursorHidden: screen.Cursor.Hidden,
+		CursorRow:    hscreen.Cursor.Row,
+		CursorCol:    hscreen.Cursor.Col,
+		CursorHidden: hscreen.Cursor.Hidden,
 		Cells:        make([]cellgrid.Cell, cols*rows),
 	}
 	for r := 0; r < rows; r++ {
@@ -113,8 +147,7 @@ func buildFrame() *cellgrid.Frame {
 func cvtColor(c te.Color) cellgrid.Color {
 	out := cellgrid.Color{Mode: uint8(c.Mode), Index: c.Index}
 	// te.Color carries 24-bit color in its Name field (no R/G/B fields). For
-	// truecolor, best-effort parse "#rrggbb"/"rrggbb". TODO(M2): confirm te's
-	// exact truecolor representation and tighten this.
+	// truecolor, parse "#rrggbb"/"rrggbb".
 	if c.Mode == te.ColorTrueColor {
 		if r, g, b, ok := parseHexRGB(c.Name); ok {
 			out.R, out.G, out.B = r, g, b
@@ -185,5 +218,5 @@ func cvtAttrs(a te.Attr) uint16 {
 	return f
 }
 
-// keep hostReadInput referenced so the import is retained until S2 wires input.
+// keep hostReadInput referenced so the import is retained until input is wired.
 var _ = hostReadInput

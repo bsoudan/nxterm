@@ -1,7 +1,10 @@
-// Package broker is the nx2d server core. It accepts host connections, runs a
-// per-app server-side companion process on select_app, and relays the opaque
-// data plane between the host and the companion. The broker never inspects data
-// payloads — it is a blind pipe (templated on internal/server/native_backend.go).
+// Package broker is the nx2d server core. It accepts host connections and, on
+// select_app, attaches each host to a server-side companion process keyed by
+// (app, session). Companions are shared: multiple hosts on the same key drive
+// one companion (multi-client), the companion's output is fanned out to all
+// attached hosts, and each new attach signals the companion to emit a snapshot
+// so late joiners/reconnects see the live screen. The broker never inspects the
+// opaque data plane — it is a blind relay (templated on native_backend.go).
 package broker
 
 import (
@@ -31,15 +34,22 @@ type App struct {
 	Hash      string
 }
 
-// Broker holds the app registry, the content store, and serves host connections.
+// Broker holds the app registry, the content store, and the live shared companions.
 type Broker struct {
-	mu    sync.RWMutex
-	apps  map[string]App
-	store *capsule.Store
+	mu     sync.Mutex
+	apps   map[string]App
+	store  *capsule.Store
+	shared map[string]*shared
 }
 
 // New returns an empty broker.
-func New() *Broker { return &Broker{apps: make(map[string]App), store: capsule.NewStore()} }
+func New() *Broker {
+	return &Broker{
+		apps:   make(map[string]App),
+		store:  capsule.NewStore(),
+		shared: make(map[string]*shared),
+	}
+}
 
 // Register adds or replaces an app, content-addressing its WASM module.
 func (b *Broker) Register(a App) App {
@@ -53,10 +63,43 @@ func (b *Broker) Register(a App) App {
 }
 
 func (b *Broker) lookup(name string) (App, bool) {
-	b.mu.RLock()
+	b.mu.Lock()
 	a, ok := b.apps[name]
-	b.mu.RUnlock()
+	b.mu.Unlock()
 	return a, ok
+}
+
+func (b *Broker) removeShared(key string) {
+	b.mu.Lock()
+	delete(b.shared, key)
+	b.mu.Unlock()
+}
+
+// attach binds conn to the companion for (app, session), spawning it if needed,
+// then signals it to snapshot the (re)joining host.
+func (b *Broker) attach(app App, session string, conn *wire.Conn) (*shared, error) {
+	key := app.Name + "\x00" + session
+
+	b.mu.Lock()
+	sc, ok := b.shared[key]
+	if !ok {
+		cp, err := startCompanion(app)
+		if err != nil {
+			b.mu.Unlock()
+			return nil, fmt.Errorf("start companion %q: %w", app.Name, err)
+		}
+		sc = &shared{key: key, broker: b, cp: cp, hosts: make(map[*wire.Conn]struct{})}
+		b.shared[key] = sc
+		slog.Debug("nx2 companion started", "app", app.Name, "session", session, "pid", cp.pid())
+	}
+	b.mu.Unlock()
+
+	sc.addHost(conn)
+	if !ok {
+		go sc.pump()
+	}
+	sc.cp.signalAttach()
+	return sc, nil
 }
 
 // Serve accepts connections until l errors.
@@ -75,14 +118,80 @@ func (b *Broker) ServeConn(rwc io.ReadWriteCloser) {
 	(&session{broker: b, conn: wire.NewConn(rwc)}).run()
 }
 
-// session is one host connection. For the spike it drives a single surface and
-// its companion; multi-surface fan-out is a later milestone.
+// shared is one companion process and the set of host connections attached to it.
+type shared struct {
+	key    string
+	broker *Broker
+	cp     *companion
+
+	mu    sync.Mutex
+	hosts map[*wire.Conn]struct{}
+}
+
+func (sc *shared) addHost(c *wire.Conn) {
+	sc.mu.Lock()
+	sc.hosts[c] = struct{}{}
+	sc.mu.Unlock()
+}
+
+// detach removes c; when the last host leaves, the companion is reaped.
+func (sc *shared) detach(c *wire.Conn) {
+	sc.mu.Lock()
+	delete(sc.hosts, c)
+	empty := len(sc.hosts) == 0
+	sc.mu.Unlock()
+	if empty {
+		sc.broker.removeShared(sc.key)
+		sc.cp.close()
+	}
+}
+
+// broadcast fans one data-plane chunk out to all attached hosts. A host whose
+// write fails is detached. (Backpressure/per-host buffering is a later refinement.)
+func (sc *shared) broadcast(b []byte) {
+	sc.mu.Lock()
+	conns := make([]*wire.Conn, 0, len(sc.hosts))
+	for c := range sc.hosts {
+		conns = append(conns, c)
+	}
+	sc.mu.Unlock()
+	for _, c := range conns {
+		if err := c.Write(wire.Data, b); err != nil {
+			sc.detach(c)
+		}
+	}
+}
+
+// pump forwards companion stdout to all hosts until the companion exits.
+func (sc *shared) pump() {
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := sc.cp.stdout.Read(buf)
+		if n > 0 {
+			sc.broadcast(buf[:n])
+		}
+		if err != nil {
+			break
+		}
+	}
+	sc.broker.removeShared(sc.key)
+	sc.cp.close()
+}
+
+// input forwards a host's data-plane bytes to the companion.
+func (sc *shared) input(b []byte) {
+	if _, err := sc.cp.stdin.Write(b); err != nil {
+		slog.Debug("nx2 companion stdin write failed", "err", err)
+	}
+}
+
+// session is one host connection.
 type session struct {
 	broker *Broker
 	conn   *wire.Conn
 
-	mu        sync.Mutex
-	companion *companion
+	mu       sync.Mutex
+	attached *shared
 }
 
 func (s *session) run() {
@@ -99,7 +208,7 @@ func (s *session) run() {
 		case wire.Control:
 			s.handleControl(payload)
 		case wire.Data:
-			s.toCompanion(payload)
+			s.onData(payload)
 		default:
 			slog.Debug("nx2 session unknown frame type", "type", t)
 		}
@@ -136,6 +245,34 @@ func (s *session) handleControl(b []byte) {
 	}
 }
 
+func (s *session) selectApp(m control.SelectApp) error {
+	app, ok := s.broker.lookup(m.App)
+	if !ok {
+		return fmt.Errorf("unknown app %q", m.App)
+	}
+	sc, err := s.broker.attach(app, m.Session, s.conn)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	prev := s.attached
+	s.attached = sc
+	s.mu.Unlock()
+	if prev != nil && prev != sc {
+		prev.detach(s.conn)
+	}
+	return nil
+}
+
+func (s *session) onData(b []byte) {
+	s.mu.Lock()
+	sc := s.attached
+	s.mu.Unlock()
+	if sc != nil {
+		sc.input(b)
+	}
+}
+
 // serveFetch streams the WASM module for hash to the host as chunk frames.
 func (s *session) serveFetch(hash string) {
 	blob, ok := s.broker.store.Get(hash)
@@ -160,56 +297,6 @@ func (s *session) replyChunk(c control.Chunk) {
 	_ = s.conn.Write(wire.Control, out)
 }
 
-func (s *session) selectApp(m control.SelectApp) error {
-	app, ok := s.broker.lookup(m.App)
-	if !ok {
-		return fmt.Errorf("unknown app %q", m.App)
-	}
-	cp, err := startCompanion(app)
-	if err != nil {
-		return fmt.Errorf("start companion %q: %w", app.Name, err)
-	}
-	s.mu.Lock()
-	old := s.companion
-	s.companion = cp
-	s.mu.Unlock()
-	if old != nil {
-		old.close()
-	}
-	slog.Debug("nx2 companion started", "app", app.Name, "surface", m.Surface, "pid", cp.pid())
-	go s.pumpFromCompanion(cp)
-	return nil
-}
-
-// pumpFromCompanion forwards companion stdout to the host as data frames.
-func (s *session) pumpFromCompanion(cp *companion) {
-	buf := make([]byte, 32*1024)
-	for {
-		n, err := cp.stdout.Read(buf)
-		if n > 0 {
-			if werr := s.conn.Write(wire.Data, buf[:n]); werr != nil {
-				return
-			}
-		}
-		if err != nil {
-			return
-		}
-	}
-}
-
-// toCompanion forwards host data-plane bytes to the active companion's stdin.
-func (s *session) toCompanion(payload []byte) {
-	s.mu.Lock()
-	cp := s.companion
-	s.mu.Unlock()
-	if cp == nil {
-		return
-	}
-	if _, err := cp.stdin.Write(payload); err != nil {
-		slog.Debug("nx2 companion stdin write failed", "err", err)
-	}
-}
-
 func (s *session) reply(m control.Selected) {
 	out, err := control.Marshal(control.TypeSelected, m)
 	if err != nil {
@@ -220,11 +307,11 @@ func (s *session) reply(m control.Selected) {
 
 func (s *session) teardown() {
 	s.mu.Lock()
-	cp := s.companion
-	s.companion = nil
+	sc := s.attached
+	s.attached = nil
 	s.mu.Unlock()
-	if cp != nil {
-		cp.close()
+	if sc != nil {
+		sc.detach(s.conn)
 	}
 	s.conn.Close()
 }

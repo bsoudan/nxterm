@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"nxtermd/nx2/apps/terminal/proto"
 	"nxtermd/nx2/internal/cellgrid"
 )
 
@@ -53,7 +54,8 @@ func TestGuestRendersFedText(t *testing.T) {
 	if err := inst.Configure(20, 3); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
-	if err := inst.Feed([]byte("\x1b[32mhi")); err != nil { // green "hi"
+	// The terminal guest expects data-plane proto frames; wrap the VT bytes.
+	if err := inst.Feed(proto.Encode(proto.Raw, []byte("\x1b[32mhi"), nil)); err != nil { // green "hi"
 		t.Fatalf("feed: %v", err)
 	}
 	if err := inst.Render(); err != nil {

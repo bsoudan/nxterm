@@ -11,6 +11,7 @@ package wasmhost
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
@@ -33,7 +34,13 @@ type Instance struct {
 	rt  wazero.Runtime
 	mod api.Module
 
+	// mu serializes calls into the guest: a wasm instance is single-threaded, so
+	// the host must not call exports concurrently (e.g. Feed from a read loop and
+	// Resize/Scrollback from elsewhere).
+	mu sync.Mutex
+
 	alloc, configure, feed, render, resize api.Function
+	scrollback                            api.Function // optional
 }
 
 // New instantiates the guest WASM module and wires the host functions.
@@ -94,8 +101,9 @@ func New(ctx context.Context, wasm []byte, surf Surface) (*Instance, error) {
 		alloc:     mod.ExportedFunction("alloc"),
 		configure: mod.ExportedFunction("configure"),
 		feed:      mod.ExportedFunction("feed"),
-		render:    mod.ExportedFunction("render"),
-		resize:    mod.ExportedFunction("resize"),
+		render:     mod.ExportedFunction("render"),
+		resize:     mod.ExportedFunction("resize"),
+		scrollback: mod.ExportedFunction("scrollback"),
 	}
 	for name, f := range map[string]api.Function{
 		"alloc": inst.alloc, "configure": inst.configure, "feed": inst.feed,
@@ -111,12 +119,16 @@ func New(ctx context.Context, wasm []byte, surf Surface) (*Instance, error) {
 
 // Configure (re)initializes the surface dimensions.
 func (i *Instance) Configure(cols, rows int) error {
+	i.mu.Lock()
+	defer i.mu.Unlock()
 	_, err := i.configure.Call(i.ctx, api.EncodeI32(int32(cols)), api.EncodeI32(int32(rows)))
 	return err
 }
 
 // Resize informs the guest of a new surface size.
 func (i *Instance) Resize(cols, rows int) error {
+	i.mu.Lock()
+	defer i.mu.Unlock()
 	_, err := i.resize.Call(i.ctx, api.EncodeI32(int32(cols)), api.EncodeI32(int32(rows)))
 	return err
 }
@@ -126,6 +138,8 @@ func (i *Instance) Feed(data []byte) error {
 	if len(data) == 0 {
 		return nil
 	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
 	res, err := i.alloc.Call(i.ctx, api.EncodeI32(int32(len(data))))
 	if err != nil {
 		return fmt.Errorf("alloc: %w", err)
@@ -140,8 +154,24 @@ func (i *Instance) Feed(data []byte) error {
 
 // Render asks the guest to produce one frame; it calls Surface.SubmitCells once.
 func (i *Instance) Render() error {
+	i.mu.Lock()
+	defer i.mu.Unlock()
 	_, err := i.render.Call(i.ctx)
 	return err
+}
+
+// Scrollback returns the guest's scrollback line count (0 if unsupported).
+func (i *Instance) Scrollback() int {
+	if i.scrollback == nil {
+		return 0
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	res, err := i.scrollback.Call(i.ctx)
+	if err != nil || len(res) == 0 {
+		return 0
+	}
+	return int(api.DecodeI32(res[0]))
 }
 
 // Close tears down the runtime.
