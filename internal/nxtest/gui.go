@@ -589,26 +589,24 @@ func (a *GuiWinApp) CloseTab(index int) error {
 }
 
 // ClickTerminalArea clicks inside the terminal canvas with a real pointer event
-// (QMP). The Win2D canvas has no UIA peer, so it can't be clicked by id; instead
-// we anchor off the status bar (which is findable) and click well above it,
-// which lands in the canvas.
+// via WAD pointer Actions, anchored off the canvas's UIA peer. Used by tests
+// that just need *a* click on the canvas (e.g. mouse reporting); the anchor
+// inside the canvas matches DragSelect's so behavior is consistent.
 func (a *GuiWinApp) ClickTerminalArea() error {
-	ids, err := a.wad.FindByAID("ActiveRegionId")
+	ids, err := a.wad.FindByAID("TerminalCanvas")
 	if err != nil {
 		return err
 	}
 	if len(ids) == 0 {
-		return fmt.Errorf("status bar (ActiveRegionId) not found")
+		return fmt.Errorf("TerminalCanvas not found (UIA peer missing?)")
 	}
-	x, y, w, _, err := a.wad.ElementRect(ids[0])
-	if err != nil {
+	if err := a.wad.MoveToElement(ids[0], 80, 80); err != nil {
 		return err
 	}
-	return qmpClick(x+w/2, y-80) // 80px above the status bar => inside the canvas
-}
-
-func qmpClick(x, y int) error {
-	return exec.Command("wintest-click", strconv.Itoa(x), strconv.Itoa(y)).Run()
+	if err := a.wad.PointerDown(); err != nil {
+		return err
+	}
+	return a.wad.PointerUp()
 }
 
 // CopyChord sends Ctrl+Shift+C to the terminal canvas via WAD's element-targeted
@@ -655,27 +653,6 @@ func (a *GuiWinApp) DragSelect() error {
 		return err
 	}
 	return a.wad.PointerUp()
-}
-
-// DragInTerminal drags horizontally inside the canvas (anchored off the status
-// bar) to make a click-drag text selection.
-func (a *GuiWinApp) DragInTerminal() error {
-	ids, err := a.wad.FindByAID("ActiveRegionId")
-	if err != nil {
-		return err
-	}
-	if len(ids) == 0 {
-		return fmt.Errorf("status bar (ActiveRegionId) not found")
-	}
-	x, y, w, _, err := a.wad.ElementRect(ids[0])
-	if err != nil {
-		return err
-	}
-	row := y - 80 // inside the canvas, above the status bar
-	startX := x + w/4
-	return exec.Command("wintest-drag",
-		strconv.Itoa(startX), strconv.Itoa(row),
-		strconv.Itoa(startX+w/3), strconv.Itoa(row)).Run()
 }
 
 // ActiveTabIndex returns the index of the active tab from the hook snapshot, or
