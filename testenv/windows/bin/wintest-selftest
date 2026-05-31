@@ -158,6 +158,11 @@ if ! is_running; then
   if $DO_START; then
     log "VM not running; starting it (--start)..."
     "$BINDIR/wintest-start" || die "wintest-start failed"
+    # wintest-start allocated this instance's ports into instance.env just now;
+    # adopt them (we sourced _common.sh before the file existed, so our SSH_PORT
+    # etc. are still the bases). ensure_instance_env re-reads the file and
+    # refreshes SSH_OPTS.
+    ensure_instance_env
   else
     die "VM not running. Start it first (wintest-start) or pass --start."
   fi

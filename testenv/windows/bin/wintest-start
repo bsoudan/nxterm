@@ -67,7 +67,6 @@ qemu-system-x86_64 \
   -device virtio-serial-pci \
   -chardev "spicevmc,id=spicechannel0,name=vdagent" \
   -device "virtserialport,chardev=spicechannel0,name=com.redhat.spice.0" \
-  -vnc "$SPICE_ADDR:0" \
   -display none \
   -qmp "unix:$QMP_SOCK,server=on,wait=off" \
   >/dev/null 2> "$STATE_DIR/qemu.log" &

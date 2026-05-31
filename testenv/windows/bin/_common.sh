@@ -48,7 +48,11 @@ OVERLAY="$STATE_DIR/overlay.qcow2"
 # nears that for "default" and overflows for longer instance names. Put the
 # sockets in a per-instance runtime dir keyed by a hash of STATE_DIR (stable
 # across invocations) so the absolute socket path stays well under the limit.
-RUNTIME_BASE="${XDG_RUNTIME_DIR:-/tmp}/wintest"
+#
+# Use /tmp, not $XDG_RUNTIME_DIR: under the bwrap sandbox /run/user/<uid> is
+# read-only (only the worktree, /tmp, and /dev are writable). /tmp is short and
+# writable everywhere. WINTEST_SOCK_BASE overrides if /tmp is unsuitable.
+RUNTIME_BASE="${WINTEST_SOCK_BASE:-/tmp/wintest}"
 SOCK_DIR="$RUNTIME_BASE/$(printf '%s' "$STATE_DIR" | cksum | cut -d' ' -f1)"
 QMP_SOCK="$SOCK_DIR/qmp.sock"
 TPM_SOCK="$SOCK_DIR/tpm.sock"
