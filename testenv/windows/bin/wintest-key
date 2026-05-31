@@ -12,7 +12,10 @@
 #   home end pgup pgdn ins f1..f12 ctrl alt shift meta_l a..z 0..9
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
-is_running || die "VM not running — start it with wintest-start"
+# Use the QMP socket (file) as the running-check rather than is_running's
+# kill -0 on the QEMU pid, which cross-namespace under bwrap --unshare-pid gives
+# a false negative even when the VM is up. wintest_qmp re-checks the socket too.
+[[ -S "$QMP_SOCK" ]] || die "VM not running (no QMP socket) — start it with wintest-start"
 (( $# >= 1 )) || die "usage: wintest-key <qkeycode> [qkeycode...]   (e.g. ctrl c)"
 
 keys=$(printf '%s\n' "$@" | jq -R . | jq -sc 'map({type:"qcode",data:.})')

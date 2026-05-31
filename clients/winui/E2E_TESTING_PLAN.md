@@ -35,8 +35,10 @@ over the `NXTERM_TEST_HOOK` introspection server.
   shared `renderStylesExtended` + hook `cursor_style`).
 - Command-palette + help overlays (`TestCommandPalette_GUI`, `TestHelp_GUI`) via the
   hook `overlay` field.
-- WinAppDriver Actions drag-select (`TestDragSelectActions_GUI`) — real input stack,
-  foreground-safe (unlike QMP).
+- WinAppDriver Actions drag-select (`TestDragSelectActions_GUI`, hook-copy
+  variant; `TestDragSelectChord_GUI`, real Ctrl+Shift+C via the canvas's UIA
+  peer) — real input stack, foreground-safe (unlike QMP). See Known gaps for
+  the full clipboard story.
 - Multi-session switcher (`TestSessionSwitch_GUI`) + dual-backend tab `Chrome`
   (`TestTabSpawnSwitchClose`(`_GUI`) over the shared `nxtest.Chrome` interface).
 - Local scrollback (`TestScrollback_GUI`): a history ring in `TerminalGrid`
@@ -48,31 +50,48 @@ over the `NXTERM_TEST_HOOK` introspection server.
   local/server overlap — the `walkScrollbackStrict` analog),
   `TestScrollbackAfterReconnect_GUI` (pre-disconnect history reachable after an
   in-process reconnect), `TestScrollbackMode2026Delta_GUI` (rows scrolled off
-  during a synchronized-output batch reach history via `ScrollbackDelta`).
+  during a synchronized-output batch reach history via `ScrollbackDelta`),
+  `TestScrollbackEvictionDuringSync_GUI` (small-cap server; a large burst evicts
+  the server's oldest rows while the fetch is in flight — the strict walk proves
+  reconcile-by-seq adds no duplicates/out-of-order rows under a moving window),
+  `TestScrollbackDesync_GUI` (enter→exit scrollback, new output arrives live,
+  re-enter — the late lines are reachable and the oldest line still tops out via
+  the desync-reset re-fetch).
 
 ### Known gaps
 
-- **Clipboard copy round-trip**: WinAppDriver pointer Actions now drag-select
-  reliably (foreground is held), but the follow-on `Ctrl+Shift+C` chord doesn't
-  populate the clipboard under synthetic input — the manual modifier check
-  (`GetKeyStateForCurrentThread`) doesn't observe WinAppDriver's synthetic
-  Ctrl+Shift. The fix is a WinUI `KeyboardAccelerator` (idiomatic modifier
-  handling); it needs local WinUI iteration to wire without regressing key
-  routing, so the test asserts the selection only for now.
+- **Clipboard copy — done, two angles.** The Win2D canvas now exposes an
+  `AutomationProperties.AutomationId="TerminalCanvas"` UIA peer, so WAD can
+  target it directly. Two tests cover different concerns:
+  - `TestDragSelectActions_GUI` — WAD drag forms a selection, then the test
+    hook's `{"op":"copy"}` runs `CopySelection` directly on the UI thread.
+    Deterministic logic test of selection → clipboard, no keybinding dependency.
+  - `TestDragSelectChord_GUI` — WAD drag forms a selection, then the test sends
+    a real Ctrl+Shift+C chord via WAD's element-targeted `/value` endpoint
+    against the canvas's UIA peer (`SendKeysNoClick` so the click doesn't clear
+    the selection). Validates the full keybinding path end-to-end:
+    WAD → `KeyDown` → chord detector → `CopySelection` → clipboard.
+  The chord detector tracks Ctrl/Shift from `KeyDown`/`KeyUp` events (the
+  per-thread `GetKeyStateForCurrentThread` doesn't observe synthetic modifiers
+  and `KeyboardAccelerator` matching uses the same plumbing). Both fills use a
+  continuous 60 000-char "COPYME" stream so autowrap saturates every visible
+  cell — the drag anchors 80 px into the canvas (top-left, not the
+  partially-filled cursor row) using the new UIA peer for ElementRect.
 - **Wide-char/CJK double-width, IME/layout-aware input**: deferred (font/tooling).
 - **Server-synced scrollback — done** (fetch + reconcile-by-seq, strict no-dup
-  walk, after-reconnect, mode-2026 delta; see above). Remaining edges, handled in
-  principle by reconcile-by-seq but not yet explicitly GUI-tested: **eviction
-  during sync** (server scrollback cap exceeded mid-fetch — the hardest TUI test;
-  needs a small-cap server + the desync re-fetch path) and **desync on dropped
-  broadcast** (needs backpressure setup). The client clears its "queried" flag on
-  `scrollback_desync` so the next scroll re-fetches; the dedicated tests are TODO.
+  walk, after-reconnect, mode-2026 delta, **eviction during sync**, and
+  **desync re-fetch**; see above). The client clears its "queried" flag on
+  `scrollback_desync` so the next scroll re-fetches.
 
 ### Environment gotchas (hard-won)
 
-- QEMU runs under `bwrap --unshare-pid`, so it's invisible to host `ps`/`kill`
-  and `is_running` is unreliable; a stale VM with old args persists. Recover by
-  SSH `shutdown /s` + killing the visible `swtpm`, then `wintest-start`.
+- QEMU runs under `bwrap --unshare-pid`, so it's invisible to host `ps`/`kill`.
+  `is_running` (used by `wintest-start`/`-stop`/`-status`) is unreliable across
+  namespaces; a stale VM with old args persists. Recover by `pkill -9 -x swtpm`
+  (QEMU exits when TPM dies), then `wintest-start`. The QMP-input tools
+  (`wintest-key`/`-type`/`-click`/`-drag`) gate on `[[ -S "$QMP_SOCK" ]]`
+  instead of `is_running` — sockets are namespace-independent, so QMP input
+  works from any nested bwrap context.
 - **`hostfwd` changes need a full VM stop+start** to take effect.
 - The hook binds `0.0.0.0` (reachable via hostfwd to the guest NIC).
   **WinAppDriver binds loopback only and rejects `0.0.0.0`**, so it's reached via

@@ -135,16 +135,7 @@ func TestScrollbackStrict_GUI(t *testing.T) {
 	// prepends nothing leaves ScrollTotal unchanged, so use the sync counter).
 	before := g.gf.ScrollbackSyncs()
 	g.gf.ScrollHistory(1)
-	deadline := time.Now().Add(15 * time.Second)
-	for time.Now().Before(deadline) {
-		if g.gf.ScrollbackSyncs() > before {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	if g.gf.ScrollbackSyncs() == before {
-		t.Fatal("scrollback fetch/reconcile did not complete")
-	}
+	waitScrollbackSync(t, g, before)
 
 	// Ground truth: the server's scrollback SEQ set.
 	serverOut := runNxtermctl(t, g.socketPath, "region", "scrollback", g.region.ID())
@@ -210,13 +201,7 @@ func TestScrollbackAfterReconnect_GUI(t *testing.T) {
 	// line must be reachable.
 	syncs := g.gf.ScrollbackSyncs()
 	g.gf.ScrollHistory(1)
-	deadline = time.Now().Add(15 * time.Second)
-	for time.Now().Before(deadline) {
-		if g.gf.ScrollbackSyncs() > syncs {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	waitScrollbackSync(t, g, syncs)
 	g.gf.ScrollToTop()
 	g.nxt.WaitForScreen(func(lines []string) bool {
 		return screenHasLine(lines, "PRE0001")
@@ -240,13 +225,7 @@ func TestScrollbackMode2026Delta_GUI(t *testing.T) {
 	// Enter scrollback (fetch) so the client holds a populated local history.
 	syncs := g.gf.ScrollbackSyncs()
 	g.gf.ScrollHistory(1)
-	deadline := time.Now().Add(15 * time.Second)
-	for time.Now().Before(deadline) {
-		if g.gf.ScrollbackSyncs() > syncs {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	waitScrollbackSync(t, g, syncs)
 
 	// Mode-2026 batch: many unique lines scroll off; the server flushes a single
 	// snapshot whose ScrollbackDelta carries the scrolled-off rows.
@@ -289,6 +268,134 @@ func TestScrollbackMode2026Delta_GUI(t *testing.T) {
 		t.Fatalf("no scrolled-off SYNC_ line (1..26) reached scrollback via the 2026 delta:\n%s",
 			strings.Join(g.nxt.ScreenLines(), "\n"))
 	}
+}
+
+// TestScrollbackEvictionDuringSync_GUI is the GUI analog of the TUI's
+// TestScrollbackEvictionDuringSync. A small server scrollback cap is configured;
+// the client enters scrollback (triggering a fetch), then a large burst of output
+// is pushed while the GetScrollbackResponse is still streaming back. The server
+// evicts its oldest rows aggressively during the sync, so the response reflects a
+// moving window. The strict walk then asserts the client's reconciled view has no
+// duplicates or out-of-order SEQ values, and that every SEQ still in the server's
+// scrollback is reachable — i.e. reconcile-by-seq prepends nothing it already has
+// even as the window moves under it.
+func TestScrollbackEvictionDuringSync_GUI(t *testing.T) {
+	g := setupGuiCustom(t, `
+[[programs]]
+name = "shell"
+cmd = "bash"
+args = ["--norc"]
+
+[sessions]
+default-programs = ["shell"]
+
+[scrollback]
+size = 50
+`)
+	defer g.cleanup()
+
+	// Fill to roughly capacity: a 24-row screen + 50-line cap saturates at ~74.
+	var buf bytes.Buffer
+	for i := 1; i <= 80; i++ {
+		fmt.Fprintf(&buf, "SEQ%04d\r\n", i)
+	}
+	g.region.Output(buf.Bytes()).Sync(g.nxt, "fill to capacity")
+
+	// Enter scrollback (sends the fetch), then immediately push a large burst
+	// without waiting — the server evicts while GetScrollbackResponse is in flight.
+	before := g.gf.ScrollbackSyncs()
+	g.gf.ScrollHistory(1)
+	buf.Reset()
+	for i := 81; i <= 280; i++ {
+		fmt.Fprintf(&buf, "SEQ%04d\r\n", i)
+	}
+	g.region.Output(buf.Bytes()).Sync(g.nxt, "evicting burst + sync response")
+	waitScrollbackSync(t, g, before) // the reconcile (moving window) landed
+
+	// Ground truth: the SEQ set still in the server's scrollback after eviction.
+	serverOut := runNxtermctl(t, g.socketPath, "region", "scrollback", g.region.ID())
+	var expected []int
+	for _, l := range strings.Split(strings.TrimSpace(serverOut), "\n") {
+		if n := parseSEQ(l); n > 0 {
+			expected = append(expected, n)
+		}
+	}
+	if len(expected) == 0 {
+		t.Fatal("server scrollback empty — test setup invalid")
+	}
+
+	allSeen := walkScrollbackStrictGui(t, g)
+
+	var missing []int
+	for _, e := range expected {
+		if !allSeen[e] {
+			missing = append(missing, e)
+		}
+	}
+	if len(missing) > 0 {
+		head := missing
+		if len(head) > 20 {
+			head = head[:20]
+		}
+		t.Errorf("%d SEQ values missing from client scrollback (server had them); first: %v",
+			len(missing), head)
+	}
+}
+
+// TestScrollbackDesync_GUI is the GUI analog of the TUI's TestScrollbackDesync.
+// The client enters then exits scrollback (fetching a snapshot, then returning to
+// live), new output arrives while viewing live, and on re-entering scrollback the
+// late lines must be reachable and the oldest line still reachable at the top.
+// This guards the desync-reset path: a stale "queried" flag would leave the
+// re-entered view frozen at the pre-output snapshot.
+func TestScrollbackDesync_GUI(t *testing.T) {
+	g := setupGui(t)
+	defer g.cleanup()
+
+	var buf bytes.Buffer
+	for i := 1; i <= 100; i++ {
+		fmt.Fprintf(&buf, "LINE_%d\r\n", i)
+	}
+	g.region.Output(buf.Bytes()).Sync(g.nxt, "feed LINE_1..100")
+
+	beforeCount := serverScrollbackCount(t, g.socketPath, g.region.ID())
+
+	// Enter scrollback (fetch), then return to live (the snapshot is discarded).
+	syncs := g.gf.ScrollbackSyncs()
+	g.gf.ScrollHistory(1)
+	waitScrollbackSync(t, g, syncs)
+	g.gf.ScrollToLive()
+	waitGuiOffset(t, g, 0)
+
+	// Second batch arrives while viewing live.
+	buf.Reset()
+	for i := 200; i <= 300; i++ {
+		fmt.Fprintf(&buf, "LATE_%d\r\n", i)
+	}
+	g.region.Output(buf.Bytes()).Sync(g.nxt, "feed LATE_200..300")
+
+	afterCount := serverScrollbackCount(t, g.socketPath, g.region.ID())
+	if afterCount <= beforeCount {
+		t.Fatalf("server scrollback did not grow (before=%d after=%d)", beforeCount, afterCount)
+	}
+
+	// Re-enter scrollback: the late lines must be reachable.
+	g.gf.ScrollHistory(1)
+	g.nxt.WaitForScreen(func(lines []string) bool {
+		return screenHasLine(lines, "LATE_")
+	}, "late lines reachable after re-entering scrollback", 5*time.Second)
+
+	// And the oldest line is still reachable at the very top (exact field match so
+	// LINE_1 is not satisfied by LINE_10 / LINE_100).
+	g.gf.ScrollToTop()
+	g.nxt.WaitForScreen(func(lines []string) bool {
+		for _, l := range lines {
+			if f := strings.Fields(l); len(f) > 0 && f[0] == "LINE_1" {
+				return true
+			}
+		}
+		return false
+	}, "oldest line LINE_1 reachable at top", 5*time.Second)
 }
 
 // walkScrollbackStrictGui jumps to the top of scrollback and pages down a half
@@ -335,6 +442,32 @@ func walkScrollbackStrictGui(t *testing.T, g *guiSession) map[int]bool {
 		pageGuiDown(t, g, len(lines)/2)
 	}
 	return allSeen
+}
+
+// waitScrollbackSync blocks until the client has completed at least one
+// scrollback reconcile beyond prev (a reconcile that prepends nothing leaves
+// ScrollTotal unchanged, so the sync counter is the deterministic signal).
+func waitScrollbackSync(t *testing.T, g *guiSession, prev int) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if g.gf.ScrollbackSyncs() > prev {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("scrollback fetch/reconcile did not complete")
+}
+
+// serverScrollbackCount returns how many lines the server retains in regionID's
+// scrollback, per nxtermctl.
+func serverScrollbackCount(t *testing.T, socketPath, regionID string) int {
+	t.Helper()
+	out := strings.TrimSpace(runNxtermctl(t, socketPath, "region", "scrollback", regionID))
+	if out == "" {
+		return 0
+	}
+	return len(strings.Split(out, "\n"))
 }
 
 // waitGuiOffset blocks until the client's cached scroll offset equals want (the

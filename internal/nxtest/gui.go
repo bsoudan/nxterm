@@ -383,6 +383,15 @@ func (g *guiScreen) Overlay() string          { return g.snapshot().Overlay }
 func (g *guiScreen) Reconnects() int          { return g.snapshot().Reconnects }
 func (g *guiScreen) ScrollbackSyncs() int     { return g.snapshot().ScrollbackSyncs }
 
+// Copy invokes the client's CopySelection on the UI thread via the test hook —
+// the deterministic analog of pressing Ctrl+Shift+C. The chord itself can't be
+// driven from these tests: WinAppDriver's synthetic /keys do not reach the
+// opaque Win2D canvas's focused key handler, and the WinAppDriver-launched app
+// does not own the QMP session keyboard focus. See E2E_TESTING_PLAN.md.
+func (g *guiScreen) Copy() error {
+	return g.request(map[string]any{"op": "copy"}, nil)
+}
+
 func (g *guiScreen) Tabs() []TabInfo {
 	st := g.snapshot()
 	out := make([]TabInfo, len(st.Tabs))
@@ -602,38 +611,50 @@ func qmpClick(x, y int) error {
 	return exec.Command("wintest-click", strconv.Itoa(x), strconv.Itoa(y)).Run()
 }
 
-// DragSelectAndCopy drags horizontally inside the canvas (anchored off the
-// status bar) using real WinAppDriver pointer Actions, then sends Ctrl+Shift+C.
-// Unlike a QMP drag, the Actions go through the OS input stack and keep the app
-// foregrounded. The drag forms a selection reliably; the copy chord does not yet
-// populate the clipboard under synthetic input (see TestDragSelectActions_GUI
-// and the clipboard gap in E2E_TESTING_PLAN.md).
-func (a *GuiWinApp) DragSelectAndCopy() error {
-	ids, err := a.wad.FindByAID("ActiveRegionId")
+// CopyChord sends Ctrl+Shift+C to the terminal canvas via WAD's element-targeted
+// /value endpoint, exercising the real keybinding path (the canvas exposes an
+// AutomationProperties.AutomationId="TerminalCanvas" UIA peer in XAML so WAD has
+// a handle to target). Pair with DragSelect, in that order: this does NOT click
+// first, because a click on the canvas would clear _hasSelection before
+// CopySelection runs. The chord uses WebDriver's sticky-modifier codepoints
+// ( Ctrl,  Shift,  NULL releases all modifiers).
+func (a *GuiWinApp) CopyChord() error {
+	ids, err := a.wad.FindByAID("TerminalCanvas")
 	if err != nil {
 		return err
 	}
 	if len(ids) == 0 {
-		return fmt.Errorf("status bar (ActiveRegionId) not found")
+		return fmt.Errorf("TerminalCanvas not found (UIA peer missing?)")
 	}
-	// Anchor at the status-bar element, step up into the canvas, then drag right.
-	if err := a.wad.MoveToElement(ids[0], 0, 0); err != nil {
+	return a.wad.SendKeysNoClick(ids[0], "c")
+}
+
+// DragSelect drags horizontally inside the canvas (anchored off the status bar)
+// using real WinAppDriver pointer Actions. Unlike a QMP drag, the Actions go
+// through the OS input stack and keep the app foregrounded. The drag forms a
+// selection; pair with Copy (the hook op) for the deterministic logic test, or
+// CopyChord for the full keybinding round-trip.
+func (a *GuiWinApp) DragSelect() error {
+	ids, err := a.wad.FindByAID("TerminalCanvas")
+	if err != nil {
 		return err
 	}
-	if err := a.wad.MoveTo(0, -80); err != nil { // 80px above the status bar => canvas
+	if len(ids) == 0 {
+		return fmt.Errorf("TerminalCanvas not found (UIA peer missing?)")
+	}
+	// Anchor 80px into the canvas from its top-left, then drag 150px right.
+	// Staying near the top keeps the drag well clear of the bottom-most cursor
+	// row (which can be partially filled mid-COPYME after fillCopyMe).
+	if err := a.wad.MoveToElement(ids[0], 80, 80); err != nil {
 		return err
 	}
 	if err := a.wad.PointerDown(); err != nil {
 		return err
 	}
-	if err := a.wad.MoveTo(150, 0); err != nil { // drag across several cells
+	if err := a.wad.MoveTo(150, 0); err != nil {
 		return err
 	}
-	if err := a.wad.PointerUp(); err != nil {
-		return err
-	}
-	// Ctrl down, Shift down, 'c', then NULL to release the modifiers.
-	return a.wad.Keys("c")
+	return a.wad.PointerUp()
 }
 
 // DragInTerminal drags horizontally inside the canvas (anchored off the status

@@ -123,6 +123,14 @@ func (w *WinAppDriver) SendKeys(elementID, text string) error {
 	if err := w.Click(elementID); err != nil {
 		return err
 	}
+	return w.SendKeysNoClick(elementID, text)
+}
+
+// SendKeysNoClick posts /element/{id}/value without the preceding Click that
+// SendKeys does. Use when focus is already on (or near) the element and a click
+// would disturb state — e.g. after a drag has formed a selection on the canvas,
+// where any PointerPressed would reset _hasSelection.
+func (w *WinAppDriver) SendKeysNoClick(elementID, text string) error {
 	return w.do("POST", "/session/"+w.sid+"/element/"+elementID+"/value",
 		map[string]any{"value": []string{text}}, nil)
 }
@@ -155,15 +163,6 @@ func (w *WinAppDriver) PointerDown() error {
 // PointerUp releases the left mouse button at the current pointer position.
 func (w *WinAppDriver) PointerUp() error {
 	return w.do("POST", "/session/"+w.sid+"/buttonup", map[string]any{"button": 0}, nil)
-}
-
-// Keys sends keystrokes to the focused element of the session (legacy /keys).
-// Used for chords like Ctrl+Shift+C after a pointer drag; WinAppDriver maps
-// WebDriver key codepoints (e.g.  Ctrl,  Shift) with the usual
-// "press the listed modifiers, send the final char, release" semantics.
-func (w *WinAppDriver) Keys(text string) error {
-	return w.do("POST", "/session/"+w.sid+"/keys",
-		map[string]any{"value": []string{text}}, nil)
 }
 
 // ElementRect returns the element's absolute screen rectangle, via the legacy

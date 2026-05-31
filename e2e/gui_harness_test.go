@@ -60,6 +60,31 @@ func hookPorts() (guestPort int, hostAddr string) {
 	return guestPort, net.JoinHostPort("127.0.0.1", strconv.Itoa(guestPort))
 }
 
+// startServerCustomWithTCP starts nxtermd with a custom config (TOML) and a TCP
+// listener, returning the unix socket path (for the host-side driver/nxtermctl)
+// and the TCP address (for the VM client). It is startServerWithTCP +
+// startServerCustom combined — no such helper exists for the TUI tests, which
+// never need both at once.
+func startServerCustomWithTCP(t *testing.T, configContent string) (socketPath, tcpAddr string, cleanup func()) {
+	t.Helper()
+	env := testEnv(t)
+	if err := nxtest.WriteServerConfigCustom(env, configContent); err != nil {
+		t.Fatal(err)
+	}
+	srv, addrs, err := nxtest.StartServerWithListeners(t.TempDir(), env, "tcp://127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range addrs {
+		tcpAddr = a
+	}
+	if tcpAddr == "" {
+		srv.Stop()
+		t.Fatal("could not find TCP listen address")
+	}
+	return srv.SocketPath, tcpAddr, srv.Stop
+}
+
 // setupGui starts a TCP-reachable server, creates a native region in a fresh
 // session, launches the WinUI client against it, and waits until the client is
 // connected and subscribed. GUI tests run serially (one VM client and one hook
@@ -67,7 +92,22 @@ func hookPorts() (guestPort int, hostAddr string) {
 func setupGui(t *testing.T) *guiSession {
 	t.Helper()
 	socketPath, tcpAddr, srvCleanup := startServerWithTCP(t)
+	return finishGuiSetup(t, socketPath, tcpAddr, srvCleanup)
+}
 
+// setupGuiCustom is setupGui with a custom server config (TOML) — e.g. a small
+// [scrollback] size for the eviction tests. The server still listens on TCP so
+// the VM client can reach it.
+func setupGuiCustom(t *testing.T, configContent string) *guiSession {
+	t.Helper()
+	socketPath, tcpAddr, srvCleanup := startServerCustomWithTCP(t, configContent)
+	return finishGuiSetup(t, socketPath, tcpAddr, srvCleanup)
+}
+
+// finishGuiSetup is the shared tail of setupGui/setupGuiCustom: spawn the region,
+// launch the client, wait until subscribed, and bundle the guiSession.
+func finishGuiSetup(t *testing.T, socketPath, tcpAddr string, srvCleanup func()) *guiSession {
+	t.Helper()
 	_, port, err := net.SplitHostPort(tcpAddr)
 	if err != nil {
 		srvCleanup()

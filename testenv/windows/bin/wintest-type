@@ -6,7 +6,8 @@
 # usage: wintest-type <text...>
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
-is_running || die "VM not running — start it with wintest-start"
+# See wintest-key for why this uses the socket rather than is_running (bwrap).
+[[ -S "$QMP_SOCK" ]] || die "VM not running (no QMP socket) — start it with wintest-start"
 (( $# >= 1 )) || die "usage: wintest-type <text...>"
 text="$*"
 

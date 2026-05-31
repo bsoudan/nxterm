@@ -52,6 +52,12 @@ public sealed partial class MainWindow : Window
     private bool _mouseDown;
     private (int row, int col) _lastMouseCell = (-1, -1);
 
+    // Tracked Ctrl/Shift state for chord detection (Ctrl+Shift+C/V/O/P). Driven by
+    // the modifier key events rather than GetKeyStateForCurrentThread, which is a
+    // per-thread snapshot that does not reflect synthetic modifier input from UI
+    // automation. Real human keystrokes still work with either approach.
+    private bool _ctrlDown, _shiftDown;
+
     // Last text copied to the clipboard, surfaced over the test hook so the e2e
     // harness can assert a copy round-trip without reading the system clipboard
     // (which a synthetic key event can't reliably populate cross-session).
@@ -102,6 +108,10 @@ public sealed partial class MainWindow : Window
 
         TerminalCanvas.AddHandler(UIElement.KeyDownEvent,
             new Microsoft.UI.Xaml.Input.KeyEventHandler(TerminalCanvas_KeyDown), handledEventsToo: true);
+        // KeyUp resets the tracked Ctrl/Shift state used by the chord detector.
+        TerminalCanvas.AddHandler(UIElement.KeyUpEvent,
+            new Microsoft.UI.Xaml.Input.KeyEventHandler(TerminalCanvas_KeyUp), handledEventsToo: true);
+        TerminalCanvas.LostFocus += (_, _) => { _ctrlDown = _shiftDown = false; };
 
         (_lastCols, _lastRows) = SizeToGrid(TerminalCanvas.ActualWidth, TerminalCanvas.ActualHeight);
         lock (_gridLock) _grid = new TerminalGrid(_lastCols, _lastRows);
@@ -507,9 +517,27 @@ public sealed partial class MainWindow : Window
 
     // --- input --------------------------------------------------------------
 
+    private void TerminalCanvas_KeyUp(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs e)
+    {
+        if (e.Key is VirtualKey.Control or VirtualKey.LeftControl or VirtualKey.RightControl) _ctrlDown = false;
+        else if (e.Key is VirtualKey.Shift or VirtualKey.LeftShift or VirtualKey.RightShift) _shiftDown = false;
+    }
+
     private void TerminalCanvas_KeyDown(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs e)
     {
-        bool ctrl = IsDown(VirtualKey.Control), shift = IsDown(VirtualKey.Shift), alt = IsDown(VirtualKey.Menu);
+        // Track Ctrl/Shift from their own key events. WinAppDriver's synthetic
+        // input raises real KeyDown/KeyUp for the modifiers, but does not update
+        // the per-thread key state that GetKeyStateForCurrentThread (IsDown)
+        // reads — so the chords below must rely on the tracked flags (OR'd with
+        // IsDown for the rare case a modifier was already down before focus).
+        if (e.Key is VirtualKey.Control or VirtualKey.LeftControl or VirtualKey.RightControl) _ctrlDown = true;
+        else if (e.Key is VirtualKey.Shift or VirtualKey.LeftShift or VirtualKey.RightShift) _shiftDown = true;
+        bool ctrl = _ctrlDown || IsDown(VirtualKey.Control);
+        bool shift = _shiftDown || IsDown(VirtualKey.Shift);
+        bool alt = IsDown(VirtualKey.Menu);
+
+        // Chords are intercepted before the encoder so no control byte leaks to
+        // the PTY (and the encoder's selection-clear does not run).
         if (ctrl && shift && e.Key == VirtualKey.C) { CopySelection(); e.Handled = true; return; }
         if (ctrl && shift && e.Key == VirtualKey.V) { _ = PasteAsync(); e.Handled = true; return; }
         if (ctrl && shift && e.Key == VirtualKey.O) { ShowConnectDialog(); e.Handled = true; return; }
@@ -790,6 +818,13 @@ public sealed partial class MainWindow : Window
                 return "{\"ok\":true}";
             case "scroll_to_live":
                 OnUiSync(() => { lock (_gridLock) _grid.ScrollToLive(); TerminalCanvas.Invalidate(); UiRefresh(); return 0; });
+                return "{\"ok\":true}";
+            case "copy":
+                // Direct invocation of the same UI-thread copy path the Ctrl+Shift+C
+                // chord runs. Lets the e2e harness validate selection → clipboard
+                // without depending on synthetic key delivery to the Win2D canvas
+                // (WinAppDriver's /keys don't reach it; see E2E_TESTING_PLAN.md).
+                OnUiSync(() => { CopySelection(); return 0; });
                 return "{\"ok\":true}";
             default:
                 return "{\"error\":\"unknown op\"}";

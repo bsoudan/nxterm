@@ -9,7 +9,8 @@
 # Coordinates are guest pixels (as in wintest-screenshot / wintest-click).
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
-is_running || die "VM not running — start it with wintest-start"
+# See wintest-key for why this uses the socket rather than is_running (bwrap).
+[[ -S "$QMP_SOCK" ]] || die "VM not running (no QMP socket) — start it with wintest-start"
 (( $# >= 4 )) || die "usage: wintest-drag X1 Y1 X2 Y2 [left|right|middle]"
 X1="$1"; Y1="$2"; X2="$3"; Y2="$4"; BTN="${5:-left}"
 

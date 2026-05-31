@@ -10,7 +10,8 @@
 # X,Y are pixels in the screenshot you captured with wintest-screenshot.
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
-is_running || die "VM not running — start it with wintest-start"
+# See wintest-key for why this uses the socket rather than is_running (bwrap).
+[[ -S "$QMP_SOCK" ]] || die "VM not running (no QMP socket) — start it with wintest-start"
 
 move_only=false
 if [[ "${1:-}" == "--move" ]]; then move_only=true; shift; fi

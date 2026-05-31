@@ -96,10 +96,16 @@
             <Border Grid.Column="2" Background="Transparent" />
         </Grid>
 
-        <!-- Terminal viewport -->
+        <!-- Terminal viewport. The AutomationProperties.AutomationId gives WAD a
+             handle on the otherwise UIA-opaque Win2D canvas — necessary for the
+             clipboard test, which sends Ctrl+Shift+C via WAD's element-targeted
+             key endpoint (session-level /keys and QMP keys do not reach a
+             WAD-launched app's canvas). -->
         <canvas:CanvasControl Grid.Row="1"
                               x:Name="TerminalCanvas"
                               IsTabStop="True"
+                              AutomationProperties.AutomationId="TerminalCanvas"
+                              AutomationProperties.Name="Terminal"
                               Draw="TerminalCanvas_Draw"
                               Loaded="TerminalCanvas_Loaded"
                               PointerPressed="TerminalCanvas_PointerPressed"
