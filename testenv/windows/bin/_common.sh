@@ -117,6 +117,44 @@ port_in_use() {
   return 1
 }
 
+# ensure_instance_env allocates this instance's host ports (probing up from
+# per-instance bases, spread by a cksum stride) and persists them to
+# instance.env once, then sources it so the live SSH_PORT/HOOK_PORT/etc. reflect
+# the allocation. Idempotent: a second call adopts the existing file. Called by
+# wintest-start before its already-running guard so every wintest-* targets the
+# same VM; also unit-testable on its own (no VM needed).
+ensure_instance_env() {
+  mkdir -p "$STATE_DIR" "$TPM_DIR"
+  if [[ ! -f "$INSTANCE_ENV" ]]; then
+    local stride
+    stride=$(( $(printf '%s' "$WINTEST_INSTANCE" | cksum | cut -d' ' -f1) % 100 * 10 ))
+    SSH_PORT=$(pick_port $(( SSH_PORT + stride )))
+    HOOK_PORT=$(pick_port $(( HOOK_PORT + stride )))
+    WINAPPDRIVER_PORT=$(pick_port $(( WINAPPDRIVER_PORT + stride )))
+    SPICE_PORT=$(pick_port $(( SPICE_PORT + stride )))
+    cat > "$INSTANCE_ENV" <<EOF
+# wintest instance "$WINTEST_INSTANCE" — allocated host ports (sourced by _common.sh)
+SSH_PORT=$SSH_PORT
+HOOK_PORT=$HOOK_PORT
+WINAPPDRIVER_PORT=$WINAPPDRIVER_PORT
+SPICE_PORT=$SPICE_PORT
+EOF
+    log "instance '$WINTEST_INSTANCE' ports: ssh=$SSH_PORT hook=$HOOK_PORT wad=$WINAPPDRIVER_PORT spice=$SPICE_PORT"
+  else
+    # shellcheck disable=SC1090
+    source "$INSTANCE_ENV"
+  fi
+  # Refresh anything derived from the (possibly changed) SSH_PORT.
+  SSH_OPTS=(
+    -F /dev/null
+    -o "Port=$SSH_PORT"
+    -o StrictHostKeyChecking=no
+    -o UserKnownHostsFile=/dev/null
+    -o LogLevel=ERROR
+    -o ConnectTimeout=3
+  )
+}
+
 ssh_ready() {
   sshpass -p "$SSH_PASS" ssh "${SSH_OPTS[@]}" "$SSH_USER@127.0.0.1" 'echo ready' >/dev/null 2>&1
 }

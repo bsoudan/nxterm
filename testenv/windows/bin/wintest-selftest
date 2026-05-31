@@ -10,10 +10,16 @@
 #   - click:    move the absolute pointer to a known pixel, then read the guest
 #     cursor position back (DPI-aware GetCursorPos) and compare within tolerance.
 #
+# Multi-instance checks (per-instance state + port allocation) run first and
+# need no VM — they exercise ensure_instance_env/pick_port against throwaway
+# instance names. --concurrency additionally boots a second VM to prove true
+# coexistence (slow; off by default).
+#
 # usage:
 #   wintest-selftest            # requires a running VM (wintest-start first)
 #   wintest-selftest --start    # boot the VM first if it isn't running
 #   wintest-selftest --stop     # shut the VM down after the run
+#   wintest-selftest --concurrency  # also boot a 2nd VM (coexistence check)
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
 # We drive control flow ourselves: a failed check must not abort the whole run.
@@ -23,11 +29,13 @@ set +e
 BINDIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 DO_START=false
 DO_STOP=false
+DO_CONCURRENCY=false
 for a in "$@"; do
   case "$a" in
     --start) DO_START=true ;;
     --stop)  DO_STOP=true ;;
-    -h|--help) sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --concurrency) DO_CONCURRENCY=true ;;   # also boot a 2nd VM to prove true coexistence (slow)
+    -h|--help) sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown argument: $a (see --help)" ;;
   esac
 done
@@ -36,7 +44,6 @@ TOL=8                      # cursor round-trip tolerance, pixels
 RUN_MARKER="selftest$RANDOM$RANDOM"
 DEPLOY_MARKER="deploy-$RANDOM-$RANDOM"
 TMPDIR_HOST="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR_HOST"' EXIT
 
 PASS=0; FAIL=0
 if [[ -t 1 ]]; then C_OK=$'\033[32m'; C_NO=$'\033[31m'; C_Z=$'\033[0m'; else C_OK=; C_NO=; C_Z=; fi
@@ -71,7 +78,81 @@ guest_file_exists() {
 }
 
 # ---------------------------------------------------------------------------
-# Preconditions
+# Multi-instance checks (no VM boot needed — exercise the per-instance state +
+# port-allocation logic against throwaway instance names, then clean up). These
+# run first because they don't depend on the primary VM.
+# ---------------------------------------------------------------------------
+
+# inst_env_path INSTANCE: echo the state dir for a given instance name.
+inst_state_dir() { printf '%s\n' "$WINTEST_ROOT/state/$1"; }
+
+# alloc_instance INSTANCE: run ensure_instance_env for INSTANCE in a subshell and
+# echo "ssh hook wad spice" from the written instance.env. The subshell isolates
+# the WINTEST_INSTANCE/STATE_DIR/port mutations from our process.
+alloc_instance() {
+  ( WINTEST_INSTANCE="$1"; source "$BINDIR/_common.sh"; ensure_instance_env >/dev/null 2>&1
+    # shellcheck disable=SC1090
+    source "$INSTANCE_ENV"
+    printf '%s %s %s %s\n' "$SSH_PORT" "$HOOK_PORT" "$WINAPPDRIVER_PORT" "$SPICE_PORT" )
+}
+
+# Throwaway instance names for the logic checks; cleaned up on exit.
+MI_A="selftest-mi-a-$$"
+MI_B="selftest-mi-b-$$"
+cleanup_mi() { rm -rf "$(inst_state_dir "$MI_A")" "$(inst_state_dir "$MI_B")" 2>/dev/null; }
+trap 'rm -rf "$TMPDIR_HOST"; cleanup_mi' EXIT
+
+check_mi_isolation() {
+  cleanup_mi
+  local a b
+  a=$(alloc_instance "$MI_A") || { echo "alloc $MI_A failed"; return 1; }
+  b=$(alloc_instance "$MI_B") || { echo "alloc $MI_B failed"; return 1; }
+  # Separate state dirs.
+  [[ -f "$(inst_state_dir "$MI_A")/instance.env" ]] || { echo "no instance.env for $MI_A"; return 1; }
+  [[ -f "$(inst_state_dir "$MI_B")/instance.env" ]] || { echo "no instance.env for $MI_B"; return 1; }
+  # Every allocated port must differ between the two instances (no collisions).
+  local pa pb i
+  read -ra pa <<<"$a"; read -ra pb <<<"$b"
+  for i in 0 1 2 3; do
+    [[ -n "${pa[$i]}" && "${pa[$i]}" =~ ^[0-9]+$ ]] || { echo "non-numeric port in '$a'"; return 1; }
+    (( pa[i] != pb[i] )) || { echo "port collision at slot $i: $MI_A=${pa[i]} $MI_B=${pb[i]}"; return 1; }
+  done
+}
+
+check_mi_idempotent() {
+  # A second allocation for the same instance must return the SAME ports (adopt
+  # the existing instance.env, not re-probe).
+  local a1 a2
+  a1=$(alloc_instance "$MI_A") || { echo "first alloc failed"; return 1; }
+  a2=$(alloc_instance "$MI_A") || { echo "second alloc failed"; return 1; }
+  [[ "$a1" == "$a2" ]] || { echo "ports changed on re-alloc: '$a1' -> '$a2'"; return 1; }
+}
+
+check_mi_pick_port() {
+  # pick_port must skip a port that is actually in use. Bind one, then ask for it.
+  # Use a listener on a high port so we don't disturb anything real.
+  local base=28000
+  # Find a currently-free base to bind.
+  while port_in_use "$base"; do base=$(( base + 1 )); done
+  # Bind it with a backgrounded socat listener (socat is a wintest dep).
+  socat TCP-LISTEN:"$base",reuseaddr,fork /dev/null >/dev/null 2>&1 &
+  local lpid=$!
+  # Give the listener a moment to bind.
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10; do port_in_use "$base" && break; sleep 0.2; done
+  local got; got=$(pick_port "$base")
+  kill "$lpid" 2>/dev/null
+  [[ "$got" =~ ^[0-9]+$ ]] || { echo "pick_port returned non-numeric '$got'"; return 1; }
+  (( got != base )) || { echo "pick_port returned the busy port $base"; return 1; }
+  (( got > base )) || { echo "pick_port went backwards: $got <= $base"; return 1; }
+}
+
+run_check "multi-instance: isolated state + distinct ports" check_mi_isolation
+run_check "multi-instance: alloc is idempotent"            check_mi_idempotent
+run_check "multi-instance: pick_port skips a busy port"    check_mi_pick_port
+
+# ---------------------------------------------------------------------------
+# Preconditions (the remaining feature checks need the primary VM)
 # ---------------------------------------------------------------------------
 if ! is_running; then
   if $DO_START; then
@@ -228,6 +309,38 @@ run_check "deploy: file content round-trip"     check_deploy
 run_check "screenshot: valid PNG"               check_screenshot
 run_check "type+key: Run-dialog file round-trip" check_input_type_key
 run_check "click: cursor position round-trip"    check_input_click
+
+# ---------------------------------------------------------------------------
+# Optional full-concurrency check (--concurrency): boot a SECOND VM in a fresh
+# instance and confirm both VMs are simultaneously up on distinct ports, then
+# reap only the second one and confirm the primary survives. Slow (a full
+# Windows boot on a fresh overlay), so opt-in.
+# ---------------------------------------------------------------------------
+MI_VM="selftest-vm-$$"
+check_mi_concurrency() {
+  local sdir; sdir=$(inst_state_dir "$MI_VM")
+  # Boot the second VM all in this process (it dies with us, which is fine —
+  # we shut it down explicitly anyway).
+  WINTEST_INSTANCE="$MI_VM" "$BINDIR/wintest-start" >/dev/null 2>&1 \
+    || { echo "second VM ($MI_VM) failed to start"; return 1; }
+  # Primary still up?
+  is_running || { echo "primary VM went down while second started"; return 1; }
+  # Second up, on its own QMP socket + ports, distinct from primary?
+  WINTEST_INSTANCE="$MI_VM" "$BINDIR/wintest-status" 2>&1 | grep -q running \
+    || { echo "second VM not reporting running"; return 1; }
+  [[ -S "$sdir/qmp.sock" ]] || { echo "second VM has no qmp.sock"; return 1; }
+  local p2; p2=$(grep -h SSH_PORT "$sdir/instance.env" | cut -d= -f2)
+  (( p2 != SSH_PORT )) || { echo "second VM reused the primary SSH port $SSH_PORT"; return 1; }
+  # Reap only the second; primary must survive.
+  WINTEST_INSTANCE="$MI_VM" "$BINDIR/wintest-stop" >/dev/null 2>&1
+  is_running || { echo "primary VM died when the second was stopped"; return 1; }
+}
+if $DO_CONCURRENCY; then
+  run_check "multi-instance: two VMs coexist; stop one leaves the other" check_mi_concurrency
+  rm -rf "$(inst_state_dir "$MI_VM")" 2>/dev/null
+else
+  log "skipping full two-VM concurrency check (pass --concurrency to include it)"
+fi
 
 # ---------------------------------------------------------------------------
 # Summary
