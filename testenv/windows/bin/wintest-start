@@ -1,6 +1,31 @@
 #!/usr/bin/env bash
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
+# Allocate this instance's host ports once and persist them BEFORE the
+# already-running check, so instance.env always exists and every wintest-*
+# (which sources it via _common.sh) targets the same VM — even if this start
+# turns out to be a no-op because the VM is up. Probe up from per-instance bases
+# (spread by a cksum stride) so a leftover orphan on a base port can't block us.
+mkdir -p "$STATE_DIR" "$TPM_DIR"
+if [[ ! -f "$INSTANCE_ENV" ]]; then
+  stride=$(( $(printf '%s' "$WINTEST_INSTANCE" | cksum | cut -d' ' -f1) % 100 * 10 ))
+  SSH_PORT=$(pick_port $(( SSH_PORT + stride )))
+  HOOK_PORT=$(pick_port $(( HOOK_PORT + stride )))
+  WINAPPDRIVER_PORT=$(pick_port $(( WINAPPDRIVER_PORT + stride )))
+  SPICE_PORT=$(pick_port $(( SPICE_PORT + stride )))
+  cat > "$INSTANCE_ENV" <<EOF
+# wintest instance "$WINTEST_INSTANCE" — allocated host ports (sourced by _common.sh)
+SSH_PORT=$SSH_PORT
+HOOK_PORT=$HOOK_PORT
+WINAPPDRIVER_PORT=$WINAPPDRIVER_PORT
+SPICE_PORT=$SPICE_PORT
+EOF
+  log "instance '$WINTEST_INSTANCE' ports: ssh=$SSH_PORT hook=$HOOK_PORT wad=$WINAPPDRIVER_PORT spice=$SPICE_PORT"
+else
+  # shellcheck disable=SC1090
+  source "$INSTANCE_ENV"
+fi
+
 if is_running; then
   log "VM already running (pid $(cat "$QEMU_PID_FILE"))"
   exit 0
