@@ -15,6 +15,7 @@ ROOT="$(cd -- "$HERE/../.." && pwd)"
 BIN="$ROOT/testenv/windows/bin"
 OUT="$ROOT/.local/bin"
 PS='powershell -NoProfile -ExecutionPolicy Bypass -File'
+export WINTEST_INSTANCE="${WINTEST_INSTANCE:-winui}"   # own state dir + probed ports
 
 log() { printf '\n=== %s ===\n' "$*" >&2; }
 

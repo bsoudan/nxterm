@@ -17,7 +17,7 @@ ROOT="$(cd -- "$HERE/../.." && pwd)"
 BIN="$ROOT/testenv/windows/bin"
 HELLO="$ROOT/testenv/windows/helloapp/scripts"
 PS='powershell -NoProfile -ExecutionPolicy Bypass -File'
-HOOK_PORT="${HOOK_PORT:-9300}"
+export WINTEST_INSTANCE="${WINTEST_INSTANCE:-winui}"   # own state dir + probed ports
 run() { "$BIN/wintest-run" "$@"; }
 log() { printf '\n=== %s ===\n' "$*" >&2; }
 
@@ -30,6 +30,14 @@ trap cleanup EXIT
 
 log "ensure VM is running"
 "$BIN/wintest-start"
+
+# Adopt this instance's allocated host ports (written by wintest-start).
+# shellcheck disable=SC1090
+source "$ROOT/testenv/windows/state/$WINTEST_INSTANCE/instance.env"
+HOOK_PORT="${HOOK_PORT:-9300}"
+# Host port for the WinAppDriver SSH tunnel: derive from the instance's SSH port
+# so concurrent instances don't collide on a fixed 14723.
+WAD_TUNNEL_PORT=$(( SSH_PORT + 12500 ))
 
 log "deploy app + scripts"
 "$BIN/wintest-deploy" "$HERE/NxtermGui" nxgui
@@ -53,12 +61,12 @@ run "setx /M NXTERM_TEST_HOOK $HOOK_PORT" >/dev/null
 run "$PS %USERPROFILE%\\nxgui\\scripts\\start-winappdriver.ps1"
 
 # WinAppDriver binds the guest loopback only (and rejects 0.0.0.0), which a QEMU
-# hostfwd to the guest NIC can't reach. Tunnel host:14723 -> guest 127.0.0.1:4723
-# over SSH, which does reach the guest loopback.
-log "open WinAppDriver SSH tunnel (host 14723 -> guest 4723)"
-sshpass -p 1234 ssh -F /dev/null -o Port=2222 -o StrictHostKeyChecking=no \
+# hostfwd to the guest NIC can't reach. Tunnel host:$WAD_TUNNEL_PORT -> guest
+# 127.0.0.1:4723 over SSH (this instance's SSH port), which reaches the loopback.
+log "open WinAppDriver SSH tunnel (host $WAD_TUNNEL_PORT -> guest 4723, ssh $SSH_PORT)"
+sshpass -p 1234 ssh -F /dev/null -o Port="$SSH_PORT" -o StrictHostKeyChecking=no \
   -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ExitOnForwardFailure=yes \
-  -N -L 127.0.0.1:14723:127.0.0.1:4723 wfvm@127.0.0.1 &
+  -N -L "127.0.0.1:$WAD_TUNNEL_PORT:127.0.0.1:4723" wfvm@127.0.0.1 &
 TUNNEL_PID=$!
 sleep 1
 
@@ -66,6 +74,6 @@ log "run gui e2e (go test -tags gui)"
 cd "$ROOT"
 make -s build-server >/dev/null
 PATH="$ROOT/.local/bin:$PATH" HOOK_PORT="$HOOK_PORT" \
-  WINAPPDRIVER_ADDR="127.0.0.1:14723" \
+  WINAPPDRIVER_ADDR="127.0.0.1:$WAD_TUNNEL_PORT" \
   NXTERMGUI_PATH='C:\Users\wfvm\nxgui\publish\NxtermGui.exe' \
   go test -tags gui -count=1 -timeout 900s ./e2e -run '_GUI$' "$@"

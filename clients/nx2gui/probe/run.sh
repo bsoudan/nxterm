@@ -7,6 +7,7 @@ HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd -- "$HERE/../../.." && pwd)"
 BIN="$ROOT/testenv/windows/bin"
 WASM="$ROOT/.local/share/nx2/apps/terminal-guest.wasm"
+export WINTEST_INSTANCE="${WINTEST_INSTANCE:-nx2}"   # own state dir + probed ports
 
 log() { printf '\n=== %s ===\n' "$*" >&2; }
 
