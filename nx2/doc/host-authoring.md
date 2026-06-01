@@ -10,7 +10,7 @@ another language reimplements the same flow against the wire + ABI below.
 
 ## 1. Connect & control plane
 
-Dial the broker (`internal/transport` spec, e.g. `unix:/tmp/nx2d.sock`,
+Dial the server (`internal/transport` spec, e.g. `unix:/tmp/nx2.sock`,
 `tcp:host:port`, `ws://…`). All framing is **`wire`** (`nx2/internal/wire`):
 
     frame = [type:1][len:u32 little-endian][payload]   (len ≤ 16 MiB)

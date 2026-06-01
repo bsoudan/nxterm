@@ -1,4 +1,4 @@
-.PHONY: all build-server changelog build-tui build-termctl build-nxtest build-mousehelper build-nativeapp build-upgrade-test-binaries build-nx2-guest build-nx2-files-guest build-nx2-shell-guest build-nx2-echo build-nx2-files build-nx2d build-nx2-term build-nx2-shell build-nx2-host test-nx2 check-wasm check-windows test test-e2e test-race test-upgrade test-stress test-stress-long test-winapp build-winui test-winui rpm version clean
+.PHONY: all build-server changelog build-tui build-termctl build-nxtest build-mousehelper build-nativeapp build-upgrade-test-binaries build-nx2-guest build-nx2-files-guest build-nx2-shell-guest build-nx2-echo build-nx2-files build-nx2-term build-nx2mux build-nx2-host test-nx2 check-wasm check-windows test test-e2e test-race test-upgrade test-stress test-stress-long test-winapp build-winui test-winui rpm version clean
 
 # Binary names
 SERVER_BIN   := nxtermd
@@ -155,9 +155,6 @@ build-nx2-echo:
 build-nx2-files:
 	go build $(GCFLAGS) -o .local/bin/nx2-files ./nx2/apps/files/companion
 
-build-nx2d:
-	go build $(GCFLAGS) -o .local/bin/nx2d ./nx2/cmd/nx2d
-
 build-nx2-term:
 	go build $(GCFLAGS) -o .local/bin/nx2-term ./nx2/apps/terminal/companion
 
@@ -165,15 +162,20 @@ build-nx2-shell-guest:
 	@mkdir -p .local/share/nx2/apps
 	GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared $(GCFLAGS) -o .local/share/nx2/apps/shell-guest.wasm ./nx2/apps/shell/guest
 
-build-nx2-shell:
-	go build $(GCFLAGS) -o .local/bin/nx2-shell ./nx2/apps/shell/companion
+# nx2mux is self-contained: it links the broker library, runs the shell
+# multiplexer in-process, and embeds the shell guest WASM (copied into its assets
+# dir before building). It replaces the standalone nx2d broker + nx2-shell companion.
+build-nx2mux: build-nx2-shell-guest
+	@mkdir -p nx2/cmd/nx2mux/assets
+	cp .local/share/nx2/apps/shell-guest.wasm nx2/cmd/nx2mux/assets/shell-guest.wasm
+	go build $(GCFLAGS) -o .local/bin/nx2mux ./nx2/cmd/nx2mux
 
 build-nx2-host:
 	go build $(GCFLAGS) -o .local/bin/nx2-host-tui ./nx2/cmd/nx2-host-tui
 
 # Build the guest(s) + companions + host, then run all nx2 tests (they load the
 # .wasm and spawn the companions).
-test-nx2: build-nx2-guest build-nx2-files-guest build-nx2-shell-guest build-nx2-echo build-nx2-files build-nx2d build-nx2-term build-nx2-shell build-nx2-host build-mousehelper
+test-nx2: build-nx2-guest build-nx2-files-guest build-nx2-shell-guest build-nx2-echo build-nx2-files build-nx2-term build-nx2mux build-nx2-host build-mousehelper
 	go test ./nx2/...
 
 # Cross-compile gate (mirrors check-windows): fail fast if a WASM-hostile

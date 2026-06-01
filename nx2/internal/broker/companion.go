@@ -2,15 +2,42 @@ package broker
 
 import (
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"sync"
+	"syscall"
 )
 
-// companion is a running server-side app companion process. The broker speaks
-// the opaque data plane over stdin/stdout, signals attach events over an extra
+// Companion is the server-side half of an app: the endpoint the broker fans the
+// data plane to and from. The broker is blind to the bytes — it forwards host
+// input via Input, pumps companion output from Output, and asks the companion to
+// emit a fresh snapshot (for a new/reconnected host) via Snapshot.
+//
+// Two implementations exist: a process-backed companion (StartProcessCompanion,
+// the default) and any in-process implementation an app registers via a Factory
+// (e.g. the shell multiplexer).
+type Companion interface {
+	// Input forwards a host's data-plane bytes to the companion.
+	Input(b []byte)
+	// Output is the companion's data-plane output, fanned out to every host. It
+	// returns io.EOF when the companion exits.
+	Output() io.Reader
+	// Snapshot asks the companion to emit a fresh snapshot of its state.
+	Snapshot()
+	// Close terminates the companion and releases its resources.
+	Close()
+}
+
+// CompanionFactory builds a fresh companion for one (app, session). The shell app
+// registers one to run its multiplexer in-process; apps with a nil factory fall
+// back to StartProcessCompanion against the App's Command/Args.
+type CompanionFactory func(session string) (Companion, error)
+
+// procCompanion is a running server-side companion process. The broker speaks the
+// opaque data plane over stdin/stdout, signals snapshot events over an extra
 // control pipe (the child's fd 3), and inherits stderr for logging.
-type companion struct {
+type procCompanion struct {
 	cmd       *exec.Cmd
 	stdin     io.WriteCloser
 	stdout    io.ReadCloser
@@ -18,9 +45,14 @@ type companion struct {
 	closeOnce sync.Once
 }
 
-func startCompanion(app App) (*companion, error) {
-	cmd := exec.Command(app.Command, app.Args...)
+// StartProcessCompanion spawns command+args as a companion: stdin/stdout carry the
+// opaque data plane, fd 3 carries snapshot signals, and stderr is inherited. The
+// child is killed if its parent dies (Pdeathsig), so no companion lingers when the
+// broker — or a shell multiplexer reusing this helper — exits.
+func StartProcessCompanion(command string, args []string) (Companion, error) {
+	cmd := exec.Command(command, args...)
 	cmd.Stderr = os.Stderr
+	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -48,24 +80,25 @@ func startCompanion(app App) (*companion, error) {
 		return nil, err
 	}
 	cr.Close() // the child holds its own copy now
-	return &companion{cmd: cmd, stdin: stdin, stdout: stdout, control: cw}, nil
+	return &procCompanion{cmd: cmd, stdin: stdin, stdout: stdout, control: cw}, nil
 }
 
-func (c *companion) pid() int {
-	if c.cmd.Process == nil {
-		return 0
+func (c *procCompanion) Input(b []byte) {
+	if _, err := c.stdin.Write(b); err != nil {
+		slog.Debug("nx2 companion stdin write failed", "err", err)
 	}
-	return c.cmd.Process.Pid
 }
 
-// signalAttach asks the companion to emit a fresh snapshot (for a new/reconnected host).
-func (c *companion) signalAttach() {
+func (c *procCompanion) Output() io.Reader { return c.stdout }
+
+// Snapshot asks the companion to emit a fresh snapshot (for a new/reconnected host).
+func (c *procCompanion) Snapshot() {
 	if c.control != nil {
 		_, _ = c.control.Write([]byte{1})
 	}
 }
 
-func (c *companion) close() {
+func (c *procCompanion) Close() {
 	c.closeOnce.Do(func() {
 		c.stdin.Close()
 		if c.control != nil {

@@ -1,10 +1,10 @@
 // Command nx2-host-tui is the reference nx2 host: a terminal "native shell".
-// It is a thin wrapper over host.Driver — it connects to the broker, opens an
+// It is a thin wrapper over host.Driver — it connects to the server, opens an
 // app, paints the guest's cell-grid frames to this terminal as ANSI, and
 // forwards keystrokes. A native GUI host (WinUI/GTK) is the same wrapper with a
 // glyph-drawing Display instead of host.RenderANSI; see nx2/doc/host-authoring.md.
 //
-//	nx2-host-tui -connect unix:/tmp/nx2d.sock -app term -session main
+//	nx2-host-tui -connect unix:/tmp/nx2.sock -app shell -session main
 package main
 
 import (
@@ -36,7 +36,7 @@ func (a ansiDisplay) ClipboardSet(b []byte) {
 }
 
 func main() {
-	connect := flag.String("connect", "unix:/tmp/nx2d.sock", "broker transport spec")
+	connect := flag.String("connect", "unix:/tmp/nx2.sock", "server transport spec")
 	app := flag.String("app", "term", "app to run")
 	session := flag.String("session", "", "session id (shared instance)")
 	flag.Parse()

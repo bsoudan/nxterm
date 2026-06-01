@@ -16,11 +16,11 @@ See the full design sketch in `.claude-config/plans/adaptive-puzzling-parasol.md
 nx2/
   wit/                 interface contract (spec / north-star; realized in core wasm for now)
   cmd/
-    nx2d/              broker: transport.Listen, supervise companions, blind data-plane relay
+    nx2mux/            production server: links broker, runs the shell mux in-process,
+                       embeds the shell guest WASM (replaces the old generic nx2d broker)
     nx2-host-tui/      reference host: cell-grid renderer + wazero
-    nx2ctl/            admin CLI (control plane)
   internal/
-    broker/            surface/companion mgmt + dumb relay
+    broker/            companion-factory registry + blind data-plane relay (a library)
     control/           control-plane codec + tree
     capsule/           content-addressed app store
     wasmhost/          wazero runtime abstraction + core-wasm (ptr,len) ABI shims
@@ -28,9 +28,16 @@ nx2/
     terminal/
       guest/           default app: pkg/te -> WASM -> batched cell-grid update
       companion/       owns PTY, runs pkg/te headless, snapshots/scrollback
-  testharness/         nx2 analog of internal/nxtest
-  e2e/                 spike / terminal / relay / capsule tests
+    shell/
+      guest/           multiplexer UI (tabs, palette, keymap) as a WASM app
+      shellmux/        in-process broker.Companion: spawns one nx2-term child per tab
+  e2e/                 spike / terminal / relay / shell tests
 ```
+
+The broker is a library (`broker.New()` + `Serve`), not a standalone binary. An
+app registers either a process companion (`Command`/`Args`) or an in-process one
+(`Factory`); the shell is the latter, so `nx2mux` is one process that serves
+hosts and multiplexes tabs without a separate broker hop.
 
 ## Module decision
 
@@ -45,5 +52,9 @@ the nx2 host/broker binaries, never into `nxtermd`/`nxterm`.
 
 ```
 make build-nx2-guest   # compile the terminal guest to wasip1/wasm
+make build-nx2mux      # self-contained mux server (embeds the shell guest)
 make check-wasm        # CI gate: pkg/te + guest must cross-compile to wasm
+make test-nx2          # build everything + run the nx2 test suite
 ```
+
+Drive it by hand with `nx2/demo.sh` (`server` / `host` / `stop`).

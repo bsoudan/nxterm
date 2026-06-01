@@ -29,7 +29,7 @@ public sealed partial class MainWindow : Window
     private bool _ready;
     private int _cols = 80, _rows = 24;
     private string _status = "starting…";
-    private string _app = "term", _session = "", _endpoint = "";
+    private string _app = "shell", _session = "", _endpoint = "";
     private TestHook? _testHook;
     private readonly CancellationTokenSource _cts = new();
 
@@ -60,7 +60,7 @@ public sealed partial class MainWindow : Window
         _endpoint = argv.Length > 1 && argv[1].Length > 0
             ? argv[1]
             : (Environment.GetEnvironmentVariable("NX2_ENDPOINT") ?? "10.0.2.2:7777");
-        _app = argv.Length > 2 ? argv[2] : (Environment.GetEnvironmentVariable("NX2_APP") ?? "term");
+        _app = argv.Length > 2 ? argv[2] : (Environment.GetEnvironmentVariable("NX2_APP") ?? "shell");
         _session = argv.Length > 3 ? argv[3] : (Environment.GetEnvironmentVariable("NX2_SESSION") ?? "");
 
         _testHook = TestHook.FromEnv(HandleTestRequest);

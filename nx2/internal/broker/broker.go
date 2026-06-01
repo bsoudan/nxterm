@@ -1,10 +1,12 @@
-// Package broker is the nx2d server core. It accepts host connections and, on
-// select_app, attaches each host to a server-side companion process keyed by
-// (app, session). Companions are shared: multiple hosts on the same key drive
-// one companion (multi-client), the companion's output is fanned out to all
-// attached hosts, and each new attach signals the companion to emit a snapshot
-// so late joiners/reconnects see the live screen. The broker never inspects the
-// opaque data plane — it is a blind relay (templated on native_backend.go).
+// Package broker is the nx2 server core, used as a library (broker.New + Serve;
+// e.g. cmd/nx2mux links it). It accepts host connections and, on
+// select_app, attaches each host to a companion keyed by (app, session). A
+// companion is either a spawned process (the default) or an app-supplied
+// in-process Companion (see App.Factory and the shell multiplexer). Companions
+// are shared: multiple hosts on the same key drive one companion (multi-client),
+// its output is fanned out to all attached hosts, and each new attach asks the
+// companion for a snapshot so late joiners/reconnects see the live screen. The
+// broker never inspects the opaque data plane — it is a blind relay.
 package broker
 
 import (
@@ -26,12 +28,17 @@ const chunkSize = 64 * 1024
 // App is a launchable app: a server-side companion (analogous to a "program")
 // plus the client-side WASM module the host runs. Hash is the content hash of
 // GuestWASM; it is filled by Register.
+//
+// Factory builds the app's companion. When nil, the broker spawns Command/Args as
+// a process companion (StartProcessCompanion); an app that runs its companion
+// in-process (e.g. the shell multiplexer) sets Factory instead.
 type App struct {
 	Name      string
 	Command   string
 	Args      []string
 	GuestWASM []byte
 	Hash      string
+	Factory   CompanionFactory
 }
 
 // Broker holds the app registry, the content store, and the live shared companions.
@@ -83,14 +90,14 @@ func (b *Broker) attach(app App, session string, conn *wire.Conn) (*shared, erro
 	b.mu.Lock()
 	sc, ok := b.shared[key]
 	if !ok {
-		cp, err := startCompanion(app)
+		cp, err := startCompanion(app, session)
 		if err != nil {
 			b.mu.Unlock()
 			return nil, fmt.Errorf("start companion %q: %w", app.Name, err)
 		}
 		sc = &shared{key: key, broker: b, cp: cp, hosts: make(map[*wire.Conn]*hostSink)}
 		b.shared[key] = sc
-		slog.Debug("nx2 companion started", "app", app.Name, "session", session, "pid", cp.pid())
+		slog.Debug("nx2 companion started", "app", app.Name, "session", session)
 	}
 	b.mu.Unlock()
 
@@ -98,8 +105,17 @@ func (b *Broker) attach(app App, session string, conn *wire.Conn) (*shared, erro
 	if !ok {
 		go sc.pump()
 	}
-	sc.cp.signalAttach()
+	sc.cp.Snapshot()
 	return sc, nil
+}
+
+// startCompanion builds the companion for app/session: the app's Factory if set,
+// otherwise a process companion spawned from Command/Args.
+func startCompanion(app App, session string) (Companion, error) {
+	if app.Factory != nil {
+		return app.Factory(session)
+	}
+	return StartProcessCompanion(app.Command, app.Args)
 }
 
 // Serve accepts connections until l errors.
@@ -123,7 +139,7 @@ func (b *Broker) ServeConn(rwc io.ReadWriteCloser) {
 type shared struct {
 	key    string
 	broker *Broker
-	cp     *companion
+	cp     Companion
 
 	mu    sync.Mutex
 	hosts map[*wire.Conn]*hostSink
@@ -146,7 +162,7 @@ func (sc *shared) detach(c *wire.Conn) {
 	sc.mu.Unlock()
 	if empty {
 		sc.broker.removeShared(sc.key)
-		sc.cp.close()
+		sc.cp.Close()
 	}
 }
 
@@ -162,11 +178,12 @@ func (sc *shared) broadcast(b []byte) {
 	sc.mu.Unlock()
 }
 
-// pump forwards companion stdout to all hosts until the companion exits.
+// pump forwards companion output to all hosts until the companion exits.
 func (sc *shared) pump() {
+	out := sc.cp.Output()
 	buf := make([]byte, 32*1024)
 	for {
-		n, err := sc.cp.stdout.Read(buf)
+		n, err := out.Read(buf)
 		if n > 0 {
 			sc.broadcast(buf[:n])
 		}
@@ -175,14 +192,12 @@ func (sc *shared) pump() {
 		}
 	}
 	sc.broker.removeShared(sc.key)
-	sc.cp.close()
+	sc.cp.Close()
 }
 
 // input forwards a host's data-plane bytes to the companion.
 func (sc *shared) input(b []byte) {
-	if _, err := sc.cp.stdin.Write(b); err != nil {
-		slog.Debug("nx2 companion stdin write failed", "err", err)
-	}
+	sc.cp.Input(b)
 }
 
 // session is one host connection.
