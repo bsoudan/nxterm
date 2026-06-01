@@ -18,7 +18,7 @@ export WINTEST_INSTANCE="${WINTEST_INSTANCE:-nx2}"
 
 log() { printf '\n=== %s ===\n' "$*" >&2; }
 
-for b in nx2mux nx2-term; do [ -x "$OUT/$b" ] || { echo "missing $b; run: make build-nx2mux build-nx2-term" >&2; exit 1; }; done
+[ -x "$OUT/nx2mux" ] || { echo "missing nx2mux; run: make build-nx2mux" >&2; exit 1; }
 
 log "start VM (instance=$WINTEST_INSTANCE)"
 "$BIN/wintest-start" || { echo "wintest-start failed" >&2; exit 1; }
@@ -33,7 +33,7 @@ log "publish Nx2Gui into the VM (provision + build)"
 log "start nx2mux on host tcp:0.0.0.0:$PORT"
 pkill -f 'nx2mux -listen' 2>/dev/null || true
 "$OUT/nx2mux" -listen "tcp:0.0.0.0:$PORT" -debug \
-    -term "$OUT/nx2-term" -- bash > /tmp/nx2.log 2>&1 &
+    -- bash > /tmp/nx2.log 2>&1 &
 SERVER_PID=$!
 sleep 1
 

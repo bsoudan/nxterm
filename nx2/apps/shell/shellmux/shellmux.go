@@ -1,8 +1,8 @@
 // Package shellmux is the nx2 shell app's server-side half: a terminal
-// MULTIPLEXER that runs in-process inside the broker as a broker.Companion. It
-// brokers one or more child terminal companions (nx2-term), each owning its own
-// PTY and canonical pkg/te state, and relays their data plane to the shell guest
-// under a tab envelope (see apps/shell/sproto).
+// MULTIPLEXER that runs in-process inside nx2mux as a broker.Companion. It
+// brokers one or more child terminal companions, each an in-process termcore
+// actor owning its own PTY and canonical pkg/te state, and relays their data
+// plane to the shell guest under a tab envelope (see apps/shell/sproto).
 //
 // The multiplexer never parses the inner terminal protocol — it only wraps a
 // child's output chunks as sproto.Tab(tabID, …) and unwraps the guest's
@@ -22,30 +22,24 @@ import (
 	"sync"
 
 	"nxtermd/nx2/apps/shell/sproto"
+	"nxtermd/nx2/apps/terminal/termcore"
 	"nxtermd/nx2/internal/broker"
 )
 
-// outQueue bounds the multiplexer's outbound frame backlog before writes block on
-// the broker's pump. The pump drains promptly into per-host sinks, so this only
-// absorbs bursts (and lets the initial tab open before a pump is attached).
-const outQueue = 256
-
 // Factory returns a broker.CompanionFactory that builds a fresh multiplexer per
-// session, spawning termBin+termArgs for every tab.
-func Factory(termBin string, termArgs []string) broker.CompanionFactory {
+// session, where every tab runs a terminal companion executing termArgs.
+func Factory(termArgs []string) broker.CompanionFactory {
 	return func(string) (broker.Companion, error) {
-		return New(termBin, termArgs)
+		return New(termArgs)
 	}
 }
 
 // Companion is one shell multiplexer: the set of child terminals for a session
 // plus the data-plane endpoint the broker fans out to and from.
 type Companion struct {
-	termBin  string
 	termArgs []string
 
-	out    chan []byte
-	closed chan struct{}
+	out *broker.CompanionOutput
 
 	inMu sync.Mutex // serializes the input decoder across hosts
 	dec  sproto.Decoder
@@ -57,12 +51,10 @@ type Companion struct {
 }
 
 // New builds a multiplexer and opens its initial tab.
-func New(termBin string, termArgs []string) (*Companion, error) {
+func New(termArgs []string) (*Companion, error) {
 	s := &Companion{
-		termBin:  termBin,
 		termArgs: termArgs,
-		out:      make(chan []byte, outQueue),
-		closed:   make(chan struct{}),
+		out:      broker.NewCompanionOutput(),
 		tabs:     map[uint32]*tab{},
 	}
 	if _, err := s.openTab(nil); err != nil {
@@ -94,7 +86,7 @@ func (s *Companion) Input(b []byte) {
 }
 
 // Output is the multiplexer's data plane, drained by the broker's pump.
-func (s *Companion) Output() io.Reader { return &chanReader{ch: s.out, closed: s.closed} }
+func (s *Companion) Output() io.Reader { return s.out.Reader() }
 
 // Snapshot reports the current tab list and re-snapshots every child for a
 // (re)joining host.
@@ -122,7 +114,7 @@ func (s *Companion) Snapshot() {
 // Close terminates every child and ends the output stream.
 func (s *Companion) Close() {
 	s.closeOnce.Do(func() {
-		close(s.closed)
+		s.out.Close()
 		s.mu.Lock()
 		children := make([]*tab, 0, len(s.tabs))
 		for _, c := range s.tabs {
@@ -136,17 +128,8 @@ func (s *Companion) Close() {
 	})
 }
 
-// emit queues one framed message for the broker's pump, dropping it if the
-// multiplexer is closing (so a blocked write can't outlive Close).
-func (s *Companion) emit(frame []byte) {
-	select {
-	case s.out <- frame:
-	case <-s.closed:
-	}
-}
-
 func (s *Companion) writeFrame(ctrl sproto.Ctrl, tab uint32, inner []byte) {
-	s.emit(sproto.Encode(ctrl, tab, inner, nil))
+	s.out.Send(sproto.Encode(ctrl, tab, inner, nil))
 }
 
 func (s *Companion) writeEvent(ev sproto.MuxEventMsg) {
@@ -155,14 +138,14 @@ func (s *Companion) writeEvent(ev sproto.MuxEventMsg) {
 	}
 }
 
-// openTab spawns a child running argv (or the term template if argv is empty),
-// pumps its output under a Tab envelope, and announces it.
+// openTab opens a terminal child running argv (or the term template if argv is
+// empty), pumps its output under a Tab envelope, and announces it.
 func (s *Companion) openTab(argv []string) (uint32, error) {
-	command, args := s.termBin, s.termArgs
+	args := s.termArgs
 	if len(argv) > 0 {
-		command, args = argv[0], argv[1:]
+		args = argv
 	}
-	comp, err := broker.StartProcessCompanion(command, args)
+	comp, err := termcore.New(args)
 	if err != nil {
 		return 0, err
 	}
@@ -231,29 +214,8 @@ func (s *Companion) routeToChild(id uint32, payload []byte) {
 	}
 }
 
-// tab is one open terminal: a child terminal companion owning a PTY and canonical state.
+// tab is one open terminal: an in-process terminal companion owning a PTY and
+// canonical pkg/te state.
 type tab struct {
 	comp broker.Companion
-}
-
-// chanReader adapts the multiplexer's output channel to an io.Reader for the
-// broker's pump, returning io.EOF once the multiplexer is closed.
-type chanReader struct {
-	ch     <-chan []byte
-	closed <-chan struct{}
-	rem    []byte
-}
-
-func (r *chanReader) Read(p []byte) (int, error) {
-	if len(r.rem) == 0 {
-		select {
-		case b := <-r.ch:
-			r.rem = b
-		case <-r.closed:
-			return 0, io.EOF
-		}
-	}
-	n := copy(p, r.rem)
-	r.rem = r.rem[n:]
-	return n, nil
 }

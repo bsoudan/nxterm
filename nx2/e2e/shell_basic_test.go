@@ -8,21 +8,20 @@ import (
 	"nxtermd/nx2/internal/broker"
 )
 
-// shellApp registers the shell app whose in-process multiplexer (shellmux) spawns
-// a single child terminal (nx2-term) running childArgs. The shell guest renders
-// the child exactly as the standalone terminal would, through the sproto tab
-// envelope.
+// shellApp registers the shell app whose in-process multiplexer (shellmux) runs
+// each tab as an in-process terminal companion executing childArgs. The shell
+// guest renders the tab exactly as the standalone terminal would, through the
+// sproto tab envelope.
 func shellApp(t *testing.T, b *broker.Broker, childArgs ...string) broker.App {
 	t.Helper()
 	guestWasm, err := os.ReadFile(repoFile(t, ".local", "share", "nx2", "apps", "shell-guest.wasm"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	termBin := repoFile(t, ".local", "bin", "nx2-term")
 	return b.Register(broker.App{
 		Name:      "shell",
 		GuestWASM: guestWasm,
-		Factory:   shellmux.Factory(termBin, childArgs),
+		Factory:   shellmux.Factory(childArgs),
 	})
 }
 

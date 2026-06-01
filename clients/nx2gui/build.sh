@@ -40,9 +40,8 @@ Built. Host copy: $OUT/Nx2Gui.exe -> Nx2Gui/Nx2Gui.exe
 (self-contained win-x64; the whole $OUT/Nx2Gui/ folder is the runnable unit).
 
 To run it in the VM (visual):
-  1. Start the shell server on the host (TCP, so the VM can reach it):
-       .local/bin/nx2mux -listen tcp:0.0.0.0:7777 \\
-         -term \$PWD/.local/bin/nx2-term -- bash
+  1. Start the mux server on the host (TCP, so the VM can reach it):
+       .local/bin/nx2mux -listen tcp:0.0.0.0:7777 -- bash
   2. Watch the VM desktop:  wintest-view &
   3. Launch the host (session 1):
        wintest-run 'set NX2_APP=shell && powershell -NoProfile -ExecutionPolicy Bypass -File %USERPROFILE%\\nx2gui\\scripts\\run-gui.ps1'

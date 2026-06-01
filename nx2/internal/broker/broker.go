@@ -82,8 +82,12 @@ func (b *Broker) removeShared(key string) {
 	b.mu.Unlock()
 }
 
-// attach binds conn to the companion for (app, session), spawning it if needed,
-// then signals it to snapshot the (re)joining host.
+// attach binds conn to the companion for (app, session), spawning it if needed.
+// A host joining an EXISTING companion is signalled to snapshot so it sees the
+// live screen; the host that CREATES the companion is not — it has the full live
+// stream from the start, and a snapshot racing that stream (an in-process
+// companion emits it with no process-spawn latency) can interleave a stale/empty
+// state reset with the live output.
 func (b *Broker) attach(app App, session string, conn *wire.Conn) (*shared, error) {
 	key := app.Name + "\x00" + session
 
@@ -104,8 +108,9 @@ func (b *Broker) attach(app App, session string, conn *wire.Conn) (*shared, erro
 	sc.addHost(conn)
 	if !ok {
 		go sc.pump()
+	} else {
+		sc.cp.Snapshot()
 	}
-	sc.cp.Snapshot()
 	return sc, nil
 }
 

@@ -3,14 +3,14 @@
 //
 // It replaces the generic nx2d broker for the shell path. The broker is linked as
 // a library and the shell multiplexer (apps/shell/shellmux) is registered as an
-// in-process companion, so there is one fewer process and one fewer relay hop
-// between a tab's PTY and the host. Each tab is a child nx2-term companion the
-// multiplexer spawns via the broker's process-companion helper.
+// in-process companion; each tab is an in-process terminal companion goroutine
+// (apps/terminal/termcore). So the whole stack — listener, mux, and every tab's
+// PTY — is one process with no relay hops between a tab and the host.
 //
 // The shell guest WASM is embedded, so the binary is self-serving over the
 // unchanged resolve/fetch handshake — existing hosts connect unchanged.
 //
-//	nx2mux -listen unix:/tmp/nx2.sock -term nx2-term -- bash
+//	nx2mux -listen unix:/tmp/nx2.sock -- bash
 package main
 
 import (
@@ -29,7 +29,6 @@ var shellGuestWASM []byte
 
 func main() {
 	listen := flag.String("listen", "unix:/tmp/nx2.sock", "transport listen spec")
-	termBin := flag.String("term", "nx2-term", "terminal companion binary spawned per tab")
 	debug := flag.Bool("debug", false, "enable debug logging")
 	flag.Parse()
 
@@ -49,9 +48,9 @@ func main() {
 	app := b.Register(broker.App{
 		Name:      "shell",
 		GuestWASM: shellGuestWASM,
-		Factory:   shellmux.Factory(*termBin, termArgs),
+		Factory:   shellmux.Factory(termArgs),
 	})
-	slog.Info("registered shell app", "hash", app.Hash, "term", *termBin, "args", termArgs)
+	slog.Info("registered shell app", "hash", app.Hash, "args", termArgs)
 
 	l, err := transport.Listen(*listen)
 	if err != nil {

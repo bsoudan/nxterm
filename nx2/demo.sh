@@ -27,15 +27,14 @@ cmd="${1:-}"
 
 case "$cmd" in
 build)
-	exec make -C "$ROOT" build-nx2mux build-nx2-host build-nx2-term
+	exec make -C "$ROOT" build-nx2mux build-nx2-host
 	;;
 
 server | broker)
 	[ -x "$BIN/nx2mux" ] || { echo "binaries missing; run: nx2/demo.sh build" >&2; exit 1; }
 	rm -f "$SOCK"
 	echo "nx2mux: socket=$SOCK  (Ctrl+C to stop)" >&2
-	# PATH includes $BIN so the multiplexer can find nx2-term.
-	exec env PATH="$BIN:$PATH" "$BIN/nx2mux" -listen "unix:$SOCK" -term nx2-term -- bash
+	exec "$BIN/nx2mux" -listen "unix:$SOCK" -- bash
 	;;
 
 host)

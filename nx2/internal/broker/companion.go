@@ -111,3 +111,43 @@ func (c *procCompanion) Close() {
 		c.stdout.Close()
 	})
 }
+
+// ServeCompanionStdio runs an in-process Companion as a stdio process — the dual
+// of StartProcessCompanion. The data plane is stdin (host→Input) and stdout
+// (Output→host); fd 3 carries snapshot signals (each byte → Snapshot). It blocks
+// until the companion's output ends, then closes it. A `package main` companion
+// is just `c, _ := app.New(args); ServeCompanionStdio(c)`.
+func ServeCompanionStdio(c Companion) {
+	go func() {
+		ctrl := os.NewFile(3, "control")
+		if ctrl == nil {
+			return
+		}
+		buf := make([]byte, 64)
+		for {
+			n, err := ctrl.Read(buf)
+			for range n {
+				c.Snapshot()
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	go func() {
+		buf := make([]byte, 32*1024)
+		for {
+			n, err := os.Stdin.Read(buf)
+			if n > 0 {
+				b := make([]byte, n)
+				copy(b, buf[:n])
+				c.Input(b)
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	_, _ = io.Copy(os.Stdout, c.Output())
+	c.Close()
+}

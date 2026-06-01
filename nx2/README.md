@@ -27,17 +27,21 @@ nx2/
   apps/
     terminal/
       guest/           default app: pkg/te -> WASM -> batched cell-grid update
-      companion/       owns PTY, runs pkg/te headless, snapshots/scrollback
+      termcore/        in-process broker.Companion: owns a PTY, runs pkg/te
+                       headless, snapshots/scrollback (the terminal actor)
+      companion/       nx2-term: termcore over stdio for standalone/process use
     shell/
       guest/           multiplexer UI (tabs, palette, keymap) as a WASM app
-      shellmux/        in-process broker.Companion: spawns one nx2-term child per tab
+      shellmux/        in-process broker.Companion: one termcore goroutine per tab
   e2e/                 spike / terminal / relay / shell tests
 ```
 
 The broker is a library (`broker.New()` + `Serve`), not a standalone binary. An
 app registers either a process companion (`Command`/`Args`) or an in-process one
-(`Factory`); the shell is the latter, so `nx2mux` is one process that serves
-hosts and multiplexes tabs without a separate broker hop.
+(`Factory`); the shell is the latter, and its tabs are in-process terminal actors
+too — so `nx2mux` is a single process holding the listener, the mux, and every
+tab's PTY, with no relay hops. The same `termcore` actor also runs as the
+standalone `nx2-term` process via `broker.ServeCompanionStdio`.
 
 ## Module decision
 
