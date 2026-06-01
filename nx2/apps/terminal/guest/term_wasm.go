@@ -8,6 +8,7 @@ import (
 
 	"nxtermd/nx2/apps/terminal/proto"
 	"nxtermd/nx2/internal/cellgrid"
+	"nxtermd/nx2/internal/guestframe"
 	"nxtermd/pkg/te"
 )
 
@@ -22,6 +23,9 @@ func hostSubmitCells(ptr, n int32)
 //go:wasmimport nx2 channel_send
 func hostChannelSend(ptr, n int32)
 
+//go:wasmimport nx2 host_clipboard_set
+func hostClipboardSet(ptr, n int32)
+
 var (
 	hscreen *te.HistoryScreen
 	stream  *te.Stream
@@ -30,6 +34,8 @@ var (
 	inBuf   []byte // host writes feed()/input() bytes here (via alloc)
 	outBuf  []byte // encoded frame handed to the host in render()
 	sendBuf []byte // encoded data-plane frame handed to the host in input()
+	fwdBuf  []byte // input bytes destined for the app after mouse routing
+	clipBuf []byte // clipboard payload handed to the host in feed()
 )
 
 // alloc returns a linear-memory offset to n writable bytes. The host calls this
@@ -81,6 +87,13 @@ func feed(ptr, n int32) {
 			if json.Unmarshal(payload, &st) == nil {
 				hscreen.UnmarshalState(&st)
 			}
+		case proto.Clipboard:
+			clipBuf = append(clipBuf[:0], payload...)
+			var p int32
+			if len(clipBuf) > 0 {
+				p = int32(uintptr(unsafe.Pointer(&clipBuf[0])))
+			}
+			hostClipboardSet(p, int32(len(clipBuf)))
 		}
 	}
 }
@@ -103,11 +116,23 @@ func resize(cols, rows int32) {
 }
 
 //go:wasmexport render
-func render() {
+func render() { renderNow() }
+
+// renderNow encodes the current frame (live screen, or the scrolled history view
+// when scrollback is active) and hands it to the host. Called from render() and
+// directly from input() when a scroll changes the view with no new companion data.
+func renderNow() {
 	if hscreen == nil {
 		return
 	}
-	outBuf = cellgrid.Encode(buildFrame(), outBuf[:0])
+	var f *cellgrid.Frame
+	if sb.Active {
+		sb.AdvanceAnchor(hscreen)
+		f = guestframe.BuildScrollback(hscreen, sb.Offset)
+	} else {
+		f = guestframe.Build(hscreen)
+	}
+	outBuf = cellgrid.Encode(f, outBuf[:0])
 	var p int32
 	if len(outBuf) > 0 {
 		p = int32(uintptr(unsafe.Pointer(&outBuf[0])))
@@ -124,7 +149,11 @@ func input(ptr, n int32) {
 		return
 	}
 	data := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(ptr))), int(n))
-	sendBuf = proto.Encode(proto.Raw, data, sendBuf[:0])
+	fwd := processInput(data)
+	if len(fwd) == 0 {
+		return
+	}
+	sendBuf = proto.Encode(proto.Raw, fwd, sendBuf[:0])
 	var p int32
 	if len(sendBuf) > 0 {
 		p = int32(uintptr(unsafe.Pointer(&sendBuf[0])))
@@ -142,108 +171,15 @@ func scrollback() int32 {
 	return int32(hscreen.Scrollback())
 }
 
-func buildFrame() *cellgrid.Frame {
-	cols, rows := hscreen.Columns, hscreen.Lines
-	lc := hscreen.LinesCells()
-	f := &cellgrid.Frame{
-		Cols:         cols,
-		Rows:         rows,
-		CursorRow:    hscreen.Cursor.Row,
-		CursorCol:    hscreen.Cursor.Col,
-		CursorHidden: hscreen.Cursor.Hidden,
-		Cells:        make([]cellgrid.Cell, cols*rows),
+// scrollback_offset reports the current scrollback viewport offset (0 = live).
+//
+//go:wasmexport scrollback_offset
+func scrollbackOffset() int32 {
+	if hscreen == nil || !sb.Active {
+		return 0
 	}
-	for r := 0; r < rows; r++ {
-		var row []te.Cell
-		if r < len(lc) {
-			row = lc[r]
-		}
-		for c := 0; c < cols; c++ {
-			var src te.Cell
-			if c < len(row) {
-				src = row[c]
-			}
-			dst := &f.Cells[r*cols+c]
-			dst.Data = src.Data
-			dst.Fg = cvtColor(src.Attr.Fg)
-			dst.Bg = cvtColor(src.Attr.Bg)
-			dst.Attrs = cvtAttrs(src.Attr)
-		}
-	}
-	return f
+	sb.AdvanceAnchor(hscreen)
+	return int32(sb.Offset)
 }
 
-func cvtColor(c te.Color) cellgrid.Color {
-	out := cellgrid.Color{Mode: uint8(c.Mode), Index: c.Index}
-	// te.Color carries 24-bit color in its Name field (no R/G/B fields). For
-	// truecolor, parse "#rrggbb"/"rrggbb".
-	if c.Mode == te.ColorTrueColor {
-		if r, g, b, ok := parseHexRGB(c.Name); ok {
-			out.R, out.G, out.B = r, g, b
-		}
-	}
-	return out
-}
-
-func parseHexRGB(s string) (r, g, b uint8, ok bool) {
-	if len(s) > 0 && s[0] == '#' {
-		s = s[1:]
-	}
-	if len(s) != 6 {
-		return 0, 0, 0, false
-	}
-	v := uint32(0)
-	for i := 0; i < 6; i++ {
-		d := hexNibble(s[i])
-		if d == 0xff {
-			return 0, 0, 0, false
-		}
-		v = v<<4 | uint32(d)
-	}
-	return uint8(v >> 16), uint8(v >> 8), uint8(v), true
-}
-
-func hexNibble(c byte) byte {
-	switch {
-	case c >= '0' && c <= '9':
-		return c - '0'
-	case c >= 'a' && c <= 'f':
-		return c - 'a' + 10
-	case c >= 'A' && c <= 'F':
-		return c - 'A' + 10
-	}
-	return 0xff
-}
-
-func cvtAttrs(a te.Attr) uint16 {
-	var f uint16
-	if a.Bold {
-		f |= cellgrid.AttrBold
-	}
-	if a.Faint {
-		f |= cellgrid.AttrFaint
-	}
-	if a.Italics {
-		f |= cellgrid.AttrItalic
-	}
-	if a.Underline {
-		f |= cellgrid.AttrUnderline
-	}
-	if a.Strikethrough {
-		f |= cellgrid.AttrStrikethrough
-	}
-	if a.Reverse {
-		f |= cellgrid.AttrReverse
-	}
-	if a.Blink {
-		f |= cellgrid.AttrBlink
-	}
-	if a.Conceal {
-		f |= cellgrid.AttrConceal
-	}
-	if a.Protected {
-		f |= cellgrid.AttrProtected
-	}
-	return f
-}
 

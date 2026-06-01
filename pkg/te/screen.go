@@ -2024,6 +2024,18 @@ func (s *Screen) SetSelectionData(selection, data string) {
 	s.selectionData[selection] = data
 }
 
+// SelectionData returns the stored OSC 52 selection data (the base64 payload as
+// received) for the given selection, e.g. "c" for the clipboard. Empty if unset.
+func (s *Screen) SelectionData(selection string) string {
+	if selection == "" {
+		selection = "s0"
+	}
+	if s.selectionData == nil {
+		return ""
+	}
+	return s.selectionData[selection]
+}
+
 // QuerySelectionData replies with OSC 52 selection data.
 func (s *Screen) QuerySelectionData(selection string) {
 	if selection == "" {

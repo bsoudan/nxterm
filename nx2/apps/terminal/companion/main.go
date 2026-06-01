@@ -52,6 +52,10 @@ func main() {
 	screen := te.NewHistoryScreen(defaultCols, defaultRows, historyLines)
 	stream := te.NewStream(screen, false)
 
+	// Terminal query replies (DSR, XTVERSION, OSC 52 query) are written back to
+	// the child by the emulator via WriteProcessInput; without this they vanish.
+	screen.WriteProcessInput = func(s string) { _, _ = ptmx.Write([]byte(s)) }
+
 	// PTY output -> actor.
 	ptyCh := make(chan []byte, 64)
 	go func() {
@@ -135,6 +139,8 @@ func main() {
 		wbuf = proto.Encode(k, payload, wbuf[:0])
 		_, _ = os.Stdout.Write(wbuf)
 	}
+	// Last clipboard value forwarded, so we emit only on change.
+	lastClip := screen.SelectionData("c")
 	for {
 		select {
 		case b, ok := <-ptyCh:
@@ -143,6 +149,12 @@ func main() {
 			}
 			_ = stream.Feed(string(b))
 			write(proto.Raw, b)
+			// An OSC 52 copy updates the clipboard selection; forward it so the
+			// host can place it on the system clipboard.
+			if clip := screen.SelectionData("c"); clip != lastClip {
+				lastClip = clip
+				write(proto.Clipboard, []byte(clip))
+			}
 		case <-attachCh:
 			if j, err := json.Marshal(screen.MarshalState()); err == nil {
 				write(proto.Snapshot, j)

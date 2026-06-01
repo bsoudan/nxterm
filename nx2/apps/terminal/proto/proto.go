@@ -26,6 +26,9 @@ const (
 	Snapshot Kind = 1
 	// Resize carries a terminal size change: cols:u16LE + rows:u16LE (4 bytes).
 	Resize Kind = 2
+	// Clipboard carries OSC 52 selection data (the base64 payload) the app copied,
+	// so the host can place it on the system clipboard. Companion -> guest only.
+	Clipboard Kind = 3
 )
 
 // MaxMsgLen bounds a single message payload.

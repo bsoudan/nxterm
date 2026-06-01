@@ -41,7 +41,7 @@ type Instance struct {
 	mu sync.Mutex
 
 	alloc, configure, feed, render, resize api.Function
-	input, scrollback                     api.Function // optional
+	input, scrollback, scrollbackOffset   api.Function // optional
 }
 
 // New instantiates the guest WASM module and wires the host functions.
@@ -78,6 +78,22 @@ func New(ctx context.Context, wasm []byte, surf Surface) (*Instance, error) {
 			copy(cp, buf)
 			surf.ChannelSend(cp)
 		}).Export("channel_send").
+		NewFunctionBuilder().
+		WithFunc(func(_ context.Context, m api.Module, ptr, n int32) {
+			// Optional: deliver an app's OSC 52 clipboard copy to a surface that
+			// supports the system clipboard. Surfaces that don't are unaffected.
+			cs, ok := surf.(interface{ ClipboardSet([]byte) })
+			if !ok || n <= 0 {
+				return
+			}
+			buf, ok := m.Memory().Read(uint32(ptr), uint32(n))
+			if !ok {
+				return
+			}
+			cp := make([]byte, n)
+			copy(cp, buf)
+			cs.ClipboardSet(cp)
+		}).Export("host_clipboard_set").
 		Instantiate(ctx)
 	if err != nil {
 		rt.Close(ctx)
@@ -102,8 +118,9 @@ func New(ctx context.Context, wasm []byte, surf Surface) (*Instance, error) {
 		feed:      mod.ExportedFunction("feed"),
 		render:     mod.ExportedFunction("render"),
 		resize:     mod.ExportedFunction("resize"),
-		input:      mod.ExportedFunction("input"),
-		scrollback: mod.ExportedFunction("scrollback"),
+		input:            mod.ExportedFunction("input"),
+		scrollback:       mod.ExportedFunction("scrollback"),
+		scrollbackOffset: mod.ExportedFunction("scrollback_offset"),
 	}
 	for name, f := range map[string]api.Function{
 		"alloc": inst.alloc, "configure": inst.configure, "feed": inst.feed,
@@ -188,6 +205,21 @@ func (i *Instance) Scrollback() int {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	res, err := i.scrollback.Call(i.ctx)
+	if err != nil || len(res) == 0 {
+		return 0
+	}
+	return int(api.DecodeI32(res[0]))
+}
+
+// ScrollbackOffset returns the guest's current scrollback viewport offset, the
+// number of lines scrolled back from the live bottom (0 = live, or unsupported).
+func (i *Instance) ScrollbackOffset() int {
+	if i.scrollbackOffset == nil {
+		return 0
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	res, err := i.scrollbackOffset.Call(i.ctx)
 	if err != nil || len(res) == 0 {
 		return 0
 	}

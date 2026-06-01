@@ -21,6 +21,7 @@ import (
 type syncSurface struct {
 	mu     sync.Mutex
 	frame  *cellgrid.Frame
+	clip   []byte
 	onSend func([]byte)
 }
 
@@ -33,6 +34,19 @@ func (s *syncSurface) ChannelSend(b []byte) {
 	if s.onSend != nil {
 		s.onSend(b)
 	}
+}
+
+// ClipboardSet records an app's OSC 52 copy (the optional host clipboard capability).
+func (s *syncSurface) ClipboardSet(b []byte) {
+	s.mu.Lock()
+	s.clip = append([]byte(nil), b...)
+	s.mu.Unlock()
+}
+
+func (s *syncSurface) clipboard() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return string(s.clip)
 }
 
 func (s *syncSurface) text() string {

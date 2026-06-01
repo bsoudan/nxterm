@@ -39,6 +39,14 @@ type driverSurface struct {
 
 func (s *driverSurface) SubmitCells(f *cellgrid.Frame) { s.display.Render(f) }
 
+// ClipboardSet forwards an app's OSC 52 clipboard copy to the Display if it
+// implements the optional ClipboardSet capability; otherwise it is dropped.
+func (s *driverSurface) ClipboardSet(b []byte) {
+	if cs, ok := s.display.(interface{ ClipboardSet([]byte) }); ok {
+		cs.ClipboardSet(b)
+	}
+}
+
 func (s *driverSurface) ChannelSend(b []byte) {
 	select {
 	case s.d.sendCh <- b:

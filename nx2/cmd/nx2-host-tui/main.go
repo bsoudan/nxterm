@@ -28,6 +28,13 @@ type ansiDisplay struct{ out io.Writer }
 
 func (a ansiDisplay) Render(f *cellgrid.Frame) { _, _ = io.WriteString(a.out, host.RenderANSI(f)) }
 
+// ClipboardSet re-emits the app's OSC 52 copy to the outer terminal. Terminals
+// with OSC 52 enabled (tmux/kitty/iterm) place it on the system clipboard; others
+// ignore it. b is the base64 payload as the app sent it.
+func (a ansiDisplay) ClipboardSet(b []byte) {
+	_, _ = io.WriteString(a.out, "\x1b]52;c;"+string(b)+"\x07")
+}
+
 func main() {
 	connect := flag.String("connect", "unix:/tmp/nx2d.sock", "broker transport spec")
 	app := flag.String("app", "term", "app to run")
