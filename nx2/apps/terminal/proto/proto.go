@@ -24,6 +24,8 @@ const (
 	Raw Kind = 0
 	// Snapshot carries a marshaled ScreenState (JSON).
 	Snapshot Kind = 1
+	// Resize carries a terminal size change: cols:u16LE + rows:u16LE (4 bytes).
+	Resize Kind = 2
 )
 
 // MaxMsgLen bounds a single message payload.
@@ -32,7 +34,26 @@ const MaxMsgLen = 16 << 20
 // ErrTooLarge is returned by a Decoder when a framed length exceeds MaxMsgLen.
 var ErrTooLarge = errors.New("proto: message exceeds maximum length")
 
+// ErrBadResize is returned when a Resize payload is not exactly 4 bytes.
+var ErrBadResize = errors.New("proto: resize payload must be 4 bytes")
+
 const headerLen = 5 // kind(1) + u32 len
+
+// EncodeResize appends a Resize frame to dst and returns it.
+func EncodeResize(cols, rows uint16, dst []byte) []byte {
+	var payload [4]byte
+	binary.LittleEndian.PutUint16(payload[0:2], cols)
+	binary.LittleEndian.PutUint16(payload[2:4], rows)
+	return Encode(Resize, payload[:], dst)
+}
+
+// DecodeResize extracts cols and rows from a Resize payload.
+func DecodeResize(payload []byte) (cols, rows uint16, err error) {
+	if len(payload) != 4 {
+		return 0, 0, ErrBadResize
+	}
+	return binary.LittleEndian.Uint16(payload[0:2]), binary.LittleEndian.Uint16(payload[2:4]), nil
+}
 
 // Encode appends one framed message to dst and returns it. Pass dst=buf[:0] to
 // reuse a buffer.

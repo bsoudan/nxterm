@@ -87,8 +87,19 @@ func feed(ptr, n int32) {
 
 //go:wasmexport resize
 func resize(cols, rows int32) {
-	// Spike: reconfigure to the new size. Reflow/content-preservation is later work.
-	configure(cols, rows)
+	if hscreen == nil || cols <= 0 || rows <= 0 {
+		return
+	}
+	// Tell the companion to resize its PTY.
+	sendBuf = proto.EncodeResize(uint16(cols), uint16(rows), sendBuf[:0])
+	var p int32
+	if len(sendBuf) > 0 {
+		p = int32(uintptr(unsafe.Pointer(&sendBuf[0])))
+	}
+	hostChannelSend(p, int32(len(sendBuf)))
+
+	// Resize the local screen (preserves content, unlike configure which destroys it).
+	hscreen.Resize(int(rows), int(cols)) // Resize(lines, columns)
 }
 
 //go:wasmexport render

@@ -8,12 +8,14 @@
 //     ScreenState, so a late-joining or reconnecting host renders the live
 //     screen without replaying history
 //   - host input (proto.Raw on stdin) -> PTY
+//   - host resize (proto.Resize on stdin) -> pty.Setsize + screen.Resize
 //
 // Usage: terminal-companion [command [args...]]  (defaults to $SHELL or /bin/sh)
 package main
 
 import (
 	"encoding/json"
+	"log/slog"
 	"os"
 	"os/exec"
 
@@ -24,8 +26,8 @@ import (
 )
 
 const (
-	cols         = 80
-	rows         = 24
+	defaultCols  = 80
+	defaultRows  = 24
 	historyLines = 1000
 )
 
@@ -45,9 +47,9 @@ func main() {
 		os.Exit(1)
 	}
 	defer ptmx.Close()
-	_ = pty.Setsize(ptmx, &pty.Winsize{Rows: rows, Cols: cols})
+	_ = pty.Setsize(ptmx, &pty.Winsize{Rows: defaultRows, Cols: defaultCols})
 
-	screen := te.NewHistoryScreen(cols, rows, historyLines)
+	screen := te.NewHistoryScreen(defaultCols, defaultRows, historyLines)
 	stream := te.NewStream(screen, false)
 
 	// PTY output -> actor.
@@ -90,7 +92,11 @@ func main() {
 		}
 	}()
 
-	// Host input (stdin) -> proto Raw -> PTY.
+	// Resize events from host input -> actor (so the actor owns all screen mutations).
+	type resizeMsg struct{ cols, rows uint16 }
+	resizeCh := make(chan resizeMsg, 4)
+
+	// Host input (stdin) -> proto Raw -> PTY, proto Resize -> resizeCh.
 	go func() {
 		var dec proto.Decoder
 		buf := make([]byte, 32*1024)
@@ -103,8 +109,17 @@ func main() {
 					if derr != nil || !ok {
 						break
 					}
-					if kind == proto.Raw {
+					switch kind {
+					case proto.Raw:
 						_, _ = ptmx.Write(payload)
+					case proto.Resize:
+						cols, rows, rerr := proto.DecodeResize(payload)
+						if rerr == nil && cols > 0 && rows > 0 {
+							select {
+							case resizeCh <- resizeMsg{cols, rows}:
+							default:
+							}
+						}
 					}
 				}
 			}
@@ -132,6 +147,11 @@ func main() {
 			if j, err := json.Marshal(screen.MarshalState()); err == nil {
 				write(proto.Snapshot, j)
 			}
+		case sz := <-resizeCh:
+			if err := pty.Setsize(ptmx, &pty.Winsize{Rows: sz.rows, Cols: sz.cols}); err != nil {
+				slog.Debug("nx2 companion pty setsize failed", "err", err)
+			}
+			screen.Resize(int(sz.rows), int(sz.cols)) // Resize(lines, columns)
 		}
 	}
 }
