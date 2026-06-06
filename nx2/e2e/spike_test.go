@@ -1,6 +1,9 @@
 // Package e2e holds the nx2 architecture-validating spike: it wires all four
 // layers (S1 wasmhost, S2 broker relay, S3 content-addressed fetch, and the
 // real PTY companion) into one flow and asserts the terminal app renders.
+// Unlike the rest of the suite (which drives nxtest.T via hosttest), the spike
+// deliberately hand-rolls the control plane and relay loop so a failure points
+// at the architecture, not the harness.
 package e2e
 
 import (
@@ -8,7 +11,6 @@ import (
 	"encoding/json"
 	"net"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -18,21 +20,10 @@ import (
 	"nxtermd/nx2/internal/cellgrid"
 	"nxtermd/nx2/internal/control"
 	"nxtermd/nx2/internal/host"
+	"nxtermd/nx2/internal/hosttest"
 	"nxtermd/nx2/internal/wasmhost"
 	"nxtermd/nx2/internal/wire"
 )
-
-func repoFile(t *testing.T, parts ...string) string {
-	t.Helper()
-	p, err := filepath.Abs(filepath.Join(append([]string{"..", ".."}, parts...)...))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(p); err != nil {
-		t.Skipf("missing %s (%v); run: make test-nx2", p, err)
-	}
-	return p
-}
 
 type captureSurface struct{ frame *cellgrid.Frame }
 
@@ -60,11 +51,12 @@ func frameText(f *cellgrid.Frame) string {
 // TestSpikeEchoHello is the spike's definition of done. A failure here means the
 // architecture doesn't hold together end to end.
 func TestSpikeEchoHello(t *testing.T) {
-	guestWasm, err := os.ReadFile(repoFile(t, ".local", "share", "nx2", "apps", "terminal-guest.wasm"))
+	t.Parallel()
+	guestWasm, err := os.ReadFile(hosttest.RepoFile(t, ".local", "share", "nx2", "apps", "terminal-guest.wasm"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	termBin := repoFile(t, ".local", "bin", "nx2-term")
+	termBin := hosttest.RepoFile(t, ".local", "bin", "nx2-term")
 
 	b := broker.New()
 	app := b.Register(broker.App{

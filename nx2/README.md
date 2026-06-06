@@ -24,6 +24,8 @@ nx2/
     control/           control-plane codec + tree
     capsule/           content-addressed app store
     wasmhost/          wazero runtime abstraction + core-wasm (ptr,len) ABI shims
+    hosttest/          e2e harness: in-process test host implementing nxtest.Screen,
+                       so nx2 e2e tests drive nxtest.T like the nxterm suite
   apps/
     terminal/
       guest/           default app: pkg/te -> WASM -> batched cell-grid update

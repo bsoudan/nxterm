@@ -4,8 +4,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"nxtermd/nx2/internal/broker"
+	"nxtermd/nx2/internal/hosttest"
 )
 
 // TestFilesAppBrowsesAndNavigates proves the platform is general: a non-terminal
@@ -13,11 +15,12 @@ import (
 // locally, and asks its companion (over the app's own fproto protocol) to change
 // directories — the companion does the OS work and owns no PTY.
 func TestFilesAppBrowsesAndNavigates(t *testing.T) {
-	guestWasm, err := os.ReadFile(repoFile(t, ".local", "share", "nx2", "apps", "files-guest.wasm"))
+	t.Parallel()
+	guestWasm, err := os.ReadFile(hosttest.RepoFile(t, ".local", "share", "nx2", "apps", "files-guest.wasm"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	filesBin := repoFile(t, ".local", "bin", "nx2-files")
+	filesBin := hosttest.RepoFile(t, ".local", "bin", "nx2-files")
 
 	root := t.TempDir()
 	mustMkdir(t, filepath.Join(root, "subdir"))
@@ -27,15 +30,15 @@ func TestFilesAppBrowsesAndNavigates(t *testing.T) {
 	b := broker.New()
 	app := b.Register(broker.App{Name: "files", Command: filesBin, Args: []string{root}, GuestWASM: guestWasm})
 
-	m := attach(t, b, "files", app.Hash, "")
-	m.waitText(t, "alpha.txt")
-	m.waitText(t, "subdir/")
+	nxt, _ := hosttest.Attach(t, b, "files", app.Hash, "")
+	nxt.WaitFor("alpha.txt", 10*time.Second)
+	nxt.WaitFor("subdir/", 10*time.Second)
 
 	// Entries are ["..", "alpha.txt", "subdir"]; move down twice and enter subdir.
-	m.sendInput(t, "\x1b[B")
-	m.sendInput(t, "\x1b[B")
-	m.sendInput(t, "\r")
-	m.waitText(t, "inner.txt")
+	nxt.Write([]byte("\x1b[B"))
+	nxt.Write([]byte("\x1b[B"))
+	nxt.Write([]byte("\r"))
+	nxt.WaitFor("inner.txt", 10*time.Second)
 }
 
 func mustMkdir(t *testing.T, p string) {

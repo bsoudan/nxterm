@@ -1,60 +1,46 @@
 package e2e
 
 import (
-	"os"
 	"testing"
+	"time"
 
-	"nxtermd/nx2/apps/shell/shellmux"
 	"nxtermd/nx2/internal/broker"
+	"nxtermd/nx2/internal/hosttest"
 )
 
-// shellApp registers the shell app whose in-process multiplexer (shellmux) runs
-// each tab as an in-process terminal companion executing childArgs. The shell
-// guest renders the tab exactly as the standalone terminal would, through the
-// sproto tab envelope.
-func shellApp(t *testing.T, b *broker.Broker, childArgs ...string) broker.App {
-	t.Helper()
-	guestWasm, err := os.ReadFile(repoFile(t, ".local", "share", "nx2", "apps", "shell-guest.wasm"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return b.Register(broker.App{
-		Name:      "shell",
-		GuestWASM: guestWasm,
-		Factory:   shellmux.Factory(childArgs),
-	})
-}
-
 // TestShellBasicRendersChild proves the full shell path: host -> shell guest ->
-// (sproto) -> shell companion -> child nx2-term -> PTY, with output rendered back.
+// (sproto) -> shell companion -> child terminal -> PTY, with output rendered back.
 func TestShellBasicRendersChild(t *testing.T) {
+	t.Parallel()
 	b := broker.New()
 	app := shellApp(t, b, "sh", "-c", "echo hello-shell; exec cat")
 
-	m := attach(t, b, "shell", app.Hash, "s1")
-	m.waitText(t, "hello-shell")
+	nxt, _ := hosttest.Attach(t, b, "shell", app.Hash, "s1")
+	nxt.WaitFor("hello-shell", 10*time.Second)
 }
 
 // TestShellBasicInput proves input travels host -> shell guest -> companion ->
 // child PTY (echoed by cat).
 func TestShellBasicInput(t *testing.T) {
+	t.Parallel()
 	b := broker.New()
 	app := shellApp(t, b, "cat")
 
-	m := attach(t, b, "shell", app.Hash, "io")
-	m.sendInput(t, "ping-shell\r")
-	m.waitText(t, "ping-shell")
+	nxt, _ := hosttest.Attach(t, b, "shell", app.Hash, "io")
+	nxt.Write([]byte("ping-shell\r"))
+	nxt.WaitFor("ping-shell", 10*time.Second)
 }
 
 // TestShellBasicLateJoin proves a second host on the same shell session gets the
 // child's screen via the snapshot forwarded through the tab envelope.
 func TestShellBasicLateJoin(t *testing.T) {
+	t.Parallel()
 	b := broker.New()
 	app := shellApp(t, b, "sh", "-c", "echo snapshot-me; exec cat")
 
-	a := attach(t, b, "shell", app.Hash, "lj")
-	a.waitText(t, "snapshot-me")
+	a, _ := hosttest.Attach(t, b, "shell", app.Hash, "lj")
+	a.WaitFor("snapshot-me", 10*time.Second)
 
-	bc := attach(t, b, "shell", app.Hash, "lj")
-	bc.waitText(t, "snapshot-me")
+	bc, _ := hosttest.Attach(t, b, "shell", app.Hash, "lj")
+	bc.WaitFor("snapshot-me", 10*time.Second)
 }

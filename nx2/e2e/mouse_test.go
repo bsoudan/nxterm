@@ -1,11 +1,12 @@
 package e2e
 
 import (
-	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"nxtermd/nx2/internal/broker"
+	"nxtermd/nx2/internal/hosttest"
 )
 
 // TestMouseForwardedWhenAppEnablesMouse proves the guest forwards SGR mouse
@@ -14,30 +15,20 @@ import (
 // receives as plain text. The standalone terminal has no tab bar, so coordinates
 // pass through unadjusted.
 func TestMouseForwardedWhenAppEnablesMouse(t *testing.T) {
-	guestWasm, err := os.ReadFile(repoFile(t, ".local", "share", "nx2", "apps", "terminal-guest.wasm"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	termBin := repoFile(t, ".local", "bin", "nx2-term")
-	helper := repoFile(t, ".local", "bin", "mousehelper")
-
+	t.Parallel()
 	b := broker.New()
-	app := b.Register(broker.App{
-		Name:      "term",
-		Command:   termBin,
-		Args:      []string{helper},
-		GuestWASM: guestWasm,
-	})
-	m := attach(t, b, "term", app.Hash, "mouse")
-	m.waitText(t, "READY") // mouse mode is now live (1002h+1006h emitted)
+	app := hosttest.TerminalApp(t, b, hosttest.RepoFile(t, ".local", "bin", "mousehelper"))
+
+	nxt, _ := hosttest.Attach(t, b, "term", app.Hash, "mouse")
+	nxt.WaitFor("READY", 10*time.Second) // mouse mode is now live (1002h+1006h emitted)
 
 	// Left click at col 5, row 3 (1-based SGR).
-	m.sendInput(t, "\x1b[<0;5;3M")
-	m.waitText(t, "MOUSE press 0 5 3")
+	nxt.Write([]byte("\x1b[<0;5;3M"))
+	nxt.WaitFor("MOUSE press 0 5 3", 10*time.Second)
 
 	// Wheel-up is classified and forwarded too.
-	m.sendInput(t, "\x1b[<64;5;3M")
-	m.waitText(t, "MOUSE wheelup 64 5 3")
+	nxt.Write([]byte("\x1b[<64;5;3M"))
+	nxt.WaitFor("MOUSE wheelup 64 5 3", 10*time.Second)
 }
 
 // TestMouseSwallowedWhenAppHasNoMouse proves the guest swallows mouse events when
@@ -46,27 +37,18 @@ func TestMouseForwardedWhenAppEnablesMouse(t *testing.T) {
 // visibly — so a forwarded ESC sequence would show as "^[[<...". We assert the
 // click is dropped while an ordinary marker still reaches the app.
 func TestMouseSwallowedWhenAppHasNoMouse(t *testing.T) {
-	guestWasm, err := os.ReadFile(repoFile(t, ".local", "share", "nx2", "apps", "terminal-guest.wasm"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	termBin := repoFile(t, ".local", "bin", "nx2-term")
-
+	t.Parallel()
 	b := broker.New()
-	app := b.Register(broker.App{
-		Name:      "term",
-		Command:   termBin,
-		Args:      []string{"sh", "-c", "stty raw -echo; exec cat -v"},
-		GuestWASM: guestWasm,
-	})
-	m := attach(t, b, "term", app.Hash, "nomouse")
+	app := hosttest.TerminalApp(t, b, "sh", "-c", "stty raw -echo; exec cat -v")
+
+	nxt, _ := hosttest.Attach(t, b, "term", app.Hash, "nomouse")
 
 	// A mouse click (must be swallowed) followed by a visible marker.
-	m.sendInput(t, "\x1b[<0;5;3M")
-	m.sendInput(t, "MARK\n")
-	m.waitText(t, "MARK")
+	nxt.Write([]byte("\x1b[<0;5;3M"))
+	nxt.Write([]byte("MARK\n"))
+	nxt.WaitFor("MARK", 10*time.Second)
 
-	if txt := m.surf.text(); strings.Contains(txt, "[<") {
-		t.Fatalf("mouse SGR leaked to the app (found \"[<\"):\n%s", txt)
+	if row, _ := nxt.FindOnScreen("[<"); row >= 0 {
+		t.Fatalf("mouse SGR leaked to the app (found \"[<\"):\n%s", strings.Join(nxt.ScreenLines(), "\n"))
 	}
 }

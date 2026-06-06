@@ -3,90 +3,70 @@ package e2e
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"nxtermd/nx2/internal/broker"
+	"nxtermd/nx2/internal/hosttest"
 )
-
-// frameRow returns row r of the surface's current frame as a string.
-func (m *mclient) frameRow(r int) string {
-	m.surf.mu.Lock()
-	defer m.surf.mu.Unlock()
-	f := m.surf.frame
-	if f == nil || r < 0 || r >= f.Rows {
-		return ""
-	}
-	var sb strings.Builder
-	for c := 0; c < f.Cols; c++ {
-		d := f.Cells[r*f.Cols+c].Data
-		if d == "" {
-			d = " "
-		}
-		sb.WriteString(d)
-	}
-	return sb.String()
-}
 
 // TestShellTabs exercises the multiplexer: open/switch/close tabs via keybinds,
 // the tab bar, tab isolation, and the command palette overlay. Each tab runs cat,
 // so typed markers echo back and identify which tab is active.
 func TestShellTabs(t *testing.T) {
+	t.Parallel()
 	b := broker.New()
 	app := shellApp(t, b, "cat")
 
-	m := attach(t, b, "shell", app.Hash, "tabs")
+	nxt, _ := hosttest.Attach(t, b, "shell", app.Hash, "tabs")
 
 	// Tab 0: type a marker.
-	m.sendInput(t, "AAA")
-	m.waitText(t, "AAA")
-	if tb := m.frameRow(0); !strings.Contains(tb, "1") || strings.Contains(tb, "2") {
-		t.Fatalf("tab bar should show one tab, got %q", tb)
-	}
+	nxt.Write([]byte("AAA"))
+	nxt.WaitFor("AAA", 10*time.Second)
+	nxt.RequireTabBarContains("1")
+	nxt.RequireTabBarDoesNotContain("2")
 
 	// Open a second tab (ctrl+b c). It becomes active.
-	m.sendInput(t, "\x02c")
-	m.waitFrame(t, "two-tab bar", func(string) bool {
-		return strings.Contains(m.frameRow(0), "2")
-	})
+	nxt.Write([]byte("\x02c"))
+	nxt.WaitForScreen(func(lines []string) bool {
+		return len(lines) > 0 && strings.Contains(lines[0], "2")
+	}, "two-tab bar", 10*time.Second)
 
 	// Type into the new tab; the old tab's marker must not be visible.
-	m.sendInput(t, "BBB")
-	m.waitText(t, "BBB")
-	if got := m.surf.text(); strings.Contains(got, "AAA") {
-		t.Fatalf("tab 2 active but tab 1 content leaked:\n%s", got)
+	nxt.Write([]byte("BBB"))
+	nxt.WaitFor("BBB", 10*time.Second)
+	if row, _ := nxt.FindOnScreen("AAA"); row >= 0 {
+		t.Fatalf("tab 2 active but tab 1 content leaked:\n%s", strings.Join(nxt.ScreenLines(), "\n"))
 	}
 
 	// Switch back to tab 1 (ctrl+b 1): AAA visible, BBB not.
-	m.sendInput(t, "\x021")
-	m.waitFrame(t, "tab 1 active", func(s string) bool {
-		return strings.Contains(s, "AAA") && !strings.Contains(s, "BBB")
-	})
+	nxt.Write([]byte("\x021"))
+	nxt.WaitForScreen(func(lines []string) bool {
+		return screenHasLine(lines, "AAA") && !screenHasLine(lines, "BBB")
+	}, "tab 1 active", 10*time.Second)
 
 	// Close the active tab (ctrl+b x): back to a single tab.
-	m.sendInput(t, "\x02x")
-	m.waitFrame(t, "one-tab bar after close", func(string) bool {
-		return !strings.Contains(m.frameRow(0), "2")
-	})
+	nxt.Write([]byte("\x02x"))
+	nxt.WaitForScreen(func(lines []string) bool {
+		return len(lines) > 0 && !strings.Contains(lines[0], "2")
+	}, "one-tab bar after close", 10*time.Second)
 
 	// Command palette (ctrl+b :) renders an overlay.
-	m.sendInput(t, "\x02:")
-	m.waitFrame(t, "command palette", func(s string) bool {
-		return strings.Contains(s, "Command palette")
-	})
+	nxt.Write([]byte("\x02:"))
+	nxt.WaitFor("Command palette", 10*time.Second)
 	// Esc dismisses it.
-	m.sendInput(t, "\x1b")
-	m.waitFrame(t, "palette dismissed", func(s string) bool {
-		return !strings.Contains(s, "Command palette")
-	})
+	nxt.Write([]byte("\x1b"))
+	nxt.WaitForScreen(func(lines []string) bool {
+		return !screenHasLine(lines, "Command palette")
+	}, "palette dismissed", 10*time.Second)
 }
 
 // TestShellHelpOverlay proves the help overlay renders keybindings.
 func TestShellHelpOverlay(t *testing.T) {
+	t.Parallel()
 	b := broker.New()
 	app := shellApp(t, b, "cat")
 
-	m := attach(t, b, "shell", app.Hash, "help")
-	m.sendInput(t, "\x02?") // ctrl+b ?
-	m.waitFrame(t, "help overlay", func(s string) bool {
-		return strings.Contains(s, "Keybindings")
-	})
+	nxt, _ := hosttest.Attach(t, b, "shell", app.Hash, "help")
+	nxt.Write([]byte("\x02?")) // ctrl+b ?
+	nxt.WaitFor("Keybindings", 10*time.Second)
 }
