@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -47,6 +48,7 @@ type Host struct {
 	ch     chan struct{} // edge-triggered "new frame/clipboard" wake-up
 	done   chan struct{} // closed when the broker connection ends
 	sendCh chan []byte   // guest ChannelSend -> broker, drained off the wasm call path
+	fed    atomic.Uint64 // total data-plane bytes fed (and rendered) so far
 }
 
 // Attach connects a new host to b, fetches and instantiates the guest by hash,
@@ -193,6 +195,8 @@ func (h *Host) pump() {
 		if typ == wire.Data {
 			_ = h.Inst.Feed(payload)
 			_ = h.Inst.Render()
+			h.fed.Add(uint64(len(payload)))
+			h.signal() // wake byte-count waiters even if the frame didn't change
 		}
 	}
 }
@@ -365,6 +369,10 @@ func (h *Host) WaitClipboard(want string, timeout time.Duration) error {
 		}
 	}
 }
+
+// FedBytes returns the total data-plane bytes fed to (and rendered by) the
+// guest so far. NativeRegion.OutputSync uses it as a render barrier.
+func (h *Host) FedBytes() uint64 { return h.fed.Load() }
 
 // ScrollbackOffset returns the guest's scrollback viewport offset (0 = live).
 func (h *Host) ScrollbackOffset() int { return h.Inst.ScrollbackOffset() }

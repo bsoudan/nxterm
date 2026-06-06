@@ -5,6 +5,8 @@ package e2e
 import (
 	"testing"
 	"time"
+
+	"nxtermd/internal/nxtest"
 )
 
 // TestRenderStylesExtended_GUI runs the shared 256/truecolor/underline body
@@ -14,7 +16,7 @@ func TestRenderStylesExtended_GUI(t *testing.T) {
 	g := setupGui(t)
 	defer g.cleanup()
 
-	renderStylesExtended(t, g.nxt, g.region)
+	nxtest.RenderStylesExtendedBody(t, g.nxt, g.region)
 
 	g.region.Output([]byte("\x1b[5 q")).Sync(g.nxt, "set bar cursor (DECSCUSR 5)")
 	deadline := time.Now().Add(5 * time.Second)

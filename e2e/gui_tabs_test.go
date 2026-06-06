@@ -118,5 +118,5 @@ func (g *guiTabSession) waitTabCount(want int) {
 func TestTabSpawnSwitchClose_GUI(t *testing.T) {
 	g := setupGuiTabs(t)
 	defer g.cleanup()
-	tabSpawnSwitchClose(t, g.app)
+	nxtest.TabSpawnSwitchCloseBody(t, g.app)
 }

@@ -179,6 +179,14 @@ func (h *RegionWriteHandle) Sync(nxt *T, desc string) {
 	}
 }
 
+// OutputSync feeds data as region output and barriers until the frontend has
+// rendered through it — Output followed by Sync as one call. It satisfies
+// OutputRegion, so the shared test bodies can drive this region.
+func (r *NativeRegion) OutputSync(nxt *T, data []byte, desc string) {
+	nxt.Helper()
+	r.Output(data).Sync(nxt, desc)
+}
+
 // Sync emits a sync marker without prior output and waits for its
 // ack. Useful as an initial "is the TUI up and receiving?" barrier.
 // desc is included in the failure message on timeout.

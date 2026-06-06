@@ -2,9 +2,9 @@ package e2e
 
 import (
 	"os"
-	"strings"
 	"testing"
 
+	"nxtermd/internal/nxtest"
 	"nxtermd/nx2/apps/shell/shellmux"
 	"nxtermd/nx2/internal/broker"
 	"nxtermd/nx2/internal/hosttest"
@@ -32,11 +32,5 @@ func shellApp(t *testing.T, b *broker.Broker, childArgs ...string) broker.App {
 	})
 }
 
-func screenHasLine(lines []string, want string) bool {
-	for _, l := range lines {
-		if strings.Contains(l, want) {
-			return true
-		}
-	}
-	return false
-}
+// screenHasLine is a package-local shorthand for the nxtest helper.
+func screenHasLine(lines []string, want string) bool { return nxtest.ScreenHasLine(lines, want) }

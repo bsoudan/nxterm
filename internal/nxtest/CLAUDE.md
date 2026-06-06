@@ -27,6 +27,13 @@ Reads PTY output and maintains a virtual screen via `pkg/te` terminal emulator:
 ### ServerProcess / Frontend
 Manage running nxtermd/nxterm processes. `StartServer()` launches nxtermd, `StartFrontend()` launches nxterm in a PTY.
 
+### Shared test bodies (`bodies.go`)
+Backend-agnostic e2e bodies (`RenderBasicBody`, `ResizeReflowBody`,
+`TabSpawnSwitchCloseBody`, …) that drive an `OutputRegion` (output + render
+barrier) or a `Chrome` (tab actions) and assert through `T`. Three backends run
+them: the TUI (`e2e/*_shared_test.go`), the WinUI GUI (`e2e/gui_*_test.go`),
+and the nx2 host (`nx2/e2e/shared_test.go` via `nx2/internal/hosttest`).
+
 ## Config Helpers
 
 `WriteServerConfig()`, `WriteKeybindConfig()`, `TestEnv()`, `XDGFromEnv()` — test fixture setup.

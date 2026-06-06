@@ -27,6 +27,8 @@ nx2/
     hosttest/          e2e harness: in-process test host implementing nxtest.Screen,
                        so nx2 e2e tests drive nxtest.T like the nxterm suite, plus
                        NativeRegion test companions (the nx2 nxtest.NativeRegion analog)
+                       and a shell-guest nxtest.Chrome — making nx2 the third backend
+                       of the shared test bodies (render/resize/tabs)
   apps/
     terminal/
       guest/           default app: pkg/te -> WASM -> batched cell-grid update

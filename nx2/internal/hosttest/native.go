@@ -6,9 +6,11 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"nxtermd/internal/nxtest"
 	"nxtermd/pkg/te"
 
 	"nxtermd/nx2/apps/shell/shellmux"
@@ -40,6 +42,8 @@ type NativeRegion struct {
 	input   []byte
 	resizes [][2]uint16
 	inputCh chan struct{} // edge-triggered "new input/resize" wake-up
+
+	emitted atomic.Uint64 // total data-plane bytes sent (snapshots included)
 }
 
 func newNativeRegion(t *testing.T, echo bool) *NativeRegion {
@@ -176,7 +180,44 @@ func (r *NativeRegion) Snapshot() {
 func (r *NativeRegion) Close() { r.out.Close() }
 
 func (r *NativeRegion) send(k proto.Kind, payload []byte) {
-	r.out.Send(proto.Encode(k, payload, nil))
+	b := proto.Encode(k, payload, nil)
+	r.emitted.Add(uint64(len(b)))
+	r.out.Send(b)
+}
+
+// OutputSync feeds data as region output and barriers until the host has fed
+// (and rendered) the guest through it, satisfying nxtest.OutputRegion so the
+// shared test bodies can drive this region.
+//
+// The barrier compares the region's emitted byte count against the host's fed
+// byte count, so it is exact only for the standalone terminal app with a
+// single host attached before the first output — the configuration the shared
+// bodies use. Tab children sit behind the shell's sproto envelope (the host
+// counts more bytes than the region emits), where the barrier would release
+// early; don't use it there.
+func (r *NativeRegion) OutputSync(nxt *nxtest.T, data []byte, desc string) {
+	nxt.Helper()
+	r.Output(data)
+	target := r.emitted.Load()
+	h, ok := nxt.Screen.(*Host)
+	if !ok {
+		nxt.Fatalf("OutputSync %q: nxt.Screen is %T, want *hosttest.Host", desc, nxt.Screen)
+	}
+	deadline := time.After(10 * time.Second)
+	for h.FedBytes() < target {
+		select {
+		case <-deadline:
+			nxt.Fatalf("region sync %q: host fed %d of %d emitted bytes after 10s",
+				desc, h.FedBytes(), target)
+		case <-h.ch:
+		case <-h.done:
+			if h.FedBytes() >= target {
+				return
+			}
+			nxt.Fatalf("region sync %q: host connection closed at %d of %d bytes",
+				desc, h.FedBytes(), target)
+		}
+	}
 }
 
 func (r *NativeRegion) recordInput(b []byte) {
