@@ -59,6 +59,15 @@ func Attach(t *testing.T, b *broker.Broker, appName, hash, session string) (*nxt
 	t.Helper()
 	cli, srv := net.Pipe()
 	go b.ServeConn(srv)
+	return attachConn(t, cli, appName, hash, session)
+}
+
+// attachConn runs the host side of the connect flow on an established
+// connection: fetch the guest by hash, instantiate it, select (app, session),
+// and start the pump. Shared by Attach (in-process broker over net.Pipe) and
+// AttachAddr (a real server process over a transport).
+func attachConn(t *testing.T, cli net.Conn, appName, hash, session string) (*nxtest.T, *Host) {
+	t.Helper()
 	t.Cleanup(func() { cli.Close() })
 	// Backstop only: a wedged broker fails reads with a deadline error (and a
 	// frame dump) instead of relying on the go test timeout.
