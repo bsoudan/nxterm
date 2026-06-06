@@ -44,9 +44,15 @@ type Instance struct {
 	input, scrollback, scrollbackOffset   api.Function // optional
 }
 
+// compilationCache shares compiled machine code across all Instances in the
+// process, so instantiating the same guest module repeatedly (multiple hosts,
+// e2e tests) pays the multi-second compile only once.
+var compilationCache = wazero.NewCompilationCache()
+
 // New instantiates the guest WASM module and wires the host functions.
 func New(ctx context.Context, wasm []byte, surf Surface) (*Instance, error) {
-	rt := wazero.NewRuntime(ctx)
+	rt := wazero.NewRuntimeWithConfig(ctx,
+		wazero.NewRuntimeConfig().WithCompilationCache(compilationCache))
 	wasi_snapshot_preview1.MustInstantiate(ctx, rt)
 
 	_, err := rt.NewHostModuleBuilder("nx2").
