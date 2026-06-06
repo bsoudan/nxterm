@@ -239,3 +239,69 @@ func TestHistoryEraseInDisplay(t *testing.T) {
 		t.Fatalf("expected history reset")
 	}
 }
+
+// Shrinking when the rows below the cursor are blank must trim those rows from
+// the bottom, not push visible content into history. This is the xterm/tmux
+// behavior; the old unconditional top-push hid early output (e.g. a child's
+// banner printed before the first resize) behind the scrollback.
+func TestHistoryResizeShrinkDropsBlankBottom(t *testing.T) {
+	screen := NewHistoryScreen(5, 6, 50)
+	screen.Draw("hello")
+	screen.LineFeed() // cursor to row 1; rows 1..5 blank
+
+	screen.Resize(4, 5)
+	if screen.Scrollback() != 0 {
+		t.Fatalf("blank-bottom shrink pushed %d rows into history, want 0", screen.Scrollback())
+	}
+	assertDisplay(t, screen.Screen, []string{"hello", "     ", "     ", "     "})
+	if screen.Cursor.Row != 1 {
+		t.Fatalf("cursor row = %d, want 1", screen.Cursor.Row)
+	}
+}
+
+// When the bottom rows hold content (cursor at the bottom), shrinking must
+// still scroll the top rows into history so no content is lost.
+func TestHistoryResizeShrinkPushesContentToHistory(t *testing.T) {
+	screen := NewHistoryScreen(5, 4, 50)
+	screen.SetMode([]int{ModeLNM}, false)
+	for i := 0; i < 4; i++ {
+		screen.Draw(string(rune('a' + i)))
+		if i < 3 {
+			screen.LineFeed()
+		}
+	}
+
+	screen.Resize(2, 5)
+	if screen.Scrollback() != 2 {
+		t.Fatalf("content shrink pushed %d rows into history, want 2", screen.Scrollback())
+	}
+	assertDisplay(t, screen.Screen, []string{"c    ", "d    "})
+	if got := historyLineString(screen.History()[0]); strings.TrimRight(got, " ") != "a" {
+		t.Fatalf("history[0] = %q, want \"a\"", got)
+	}
+}
+
+// A mixed shrink trims as many blank below-cursor rows as it can and pushes
+// only the remainder from the top.
+func TestHistoryResizeShrinkMixed(t *testing.T) {
+	screen := NewHistoryScreen(5, 6, 50)
+	screen.SetMode([]int{ModeLNM}, false)
+	for i := 0; i < 3; i++ {
+		screen.Draw(string(rune('a' + i)))
+		if i < 2 {
+			screen.LineFeed()
+		}
+	} // rows 0..2 = a,b,c (cursor row 2); rows 3..5 blank
+
+	screen.Resize(2, 5) // shrink by 4: 3 blank bottom rows + 1 from the top
+	if screen.Scrollback() != 1 {
+		t.Fatalf("mixed shrink pushed %d rows into history, want 1", screen.Scrollback())
+	}
+	assertDisplay(t, screen.Screen, []string{"b    ", "c    "})
+	if got := historyLineString(screen.History()[0]); strings.TrimRight(got, " ") != "a" {
+		t.Fatalf("history[0] = %q, want \"a\"", got)
+	}
+	if screen.Cursor.Row != 1 {
+		t.Fatalf("cursor row = %d, want 1", screen.Cursor.Row)
+	}
+}

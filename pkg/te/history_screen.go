@@ -868,10 +868,22 @@ func (h *HistoryScreen) Resize(lines, columns int) {
 		return
 	}
 
-	// Shrink vertically: top rows scroll into history in oldest-first
-	// order so their seqs remain monotonic.
+	// Shrink vertically. Blank rows below the cursor are trimmed from the
+	// bottom first (xterm/tmux behavior) — pushing top rows into history
+	// instead would hide visible content behind the scrollback on every
+	// shrink (e.g. a child's first output printed before an initial resize
+	// lands). Only the remainder scrolls into history, in oldest-first
+	// order so seqs remain monotonic.
 	if lines < h.Lines {
 		drop := h.Lines - lines
+		for drop > 0 {
+			last := len(h.Buffer) - 1
+			if last <= h.Cursor.Row || !h.rowBlank(h.Buffer[last]) {
+				break
+			}
+			h.Buffer = h.Buffer[:last]
+			drop--
+		}
 		for i := 0; i < drop; i++ {
 			if h.history.Top.append(h.Buffer[i]) {
 				h.history.FirstSeq++
@@ -925,4 +937,17 @@ func (h *HistoryScreen) Resize(lines, columns int) {
 	h.lineWrapped = make(map[int]bool)
 	h.wrapNext = false
 	h.markDirtyRange(0, lines-1)
+}
+
+// rowBlank reports whether every cell of row equals the screen's default cell.
+// Conservative: rows styled by SGR state (e.g. background-color erase) compare
+// unequal and are preserved in history rather than trimmed.
+func (h *HistoryScreen) rowBlank(row []Cell) bool {
+	blank := h.defaultCell()
+	for i := range row {
+		if row[i] != blank {
+			return false
+		}
+	}
+	return true
 }
