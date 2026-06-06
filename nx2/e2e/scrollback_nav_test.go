@@ -15,12 +15,12 @@ import (
 func TestScrollbackNavigation(t *testing.T) {
 	t.Parallel()
 	b := broker.New()
-	// 60 lines >> 24 rows, so ~36 lines land in history; then stay alive.
-	app := hosttest.TerminalApp(t, b,
-		"sh", "-c", "i=1; while [ $i -le 60 ]; do echo line$i; i=$((i+1)); done; exec cat")
+	app := hosttest.NativeTerminalApp(t, b)
 
-	nxt, h := hosttest.Attach(t, b, "term", app.Hash, "sb")
-	nxt.WaitFor("line60", 10*time.Second) // all output produced; live view at the bottom
+	nxt, h := hosttest.Attach(t, b, "term", app.App.Hash, "sb")
+	// 60 lines >> 24 rows, so ~36 lines land in history.
+	app.Region("sb").Output(numberedLines("line", 60))
+	nxt.WaitFor("line60", 10*time.Second) // live view at the bottom
 
 	// PageUp enters scrollback; Home jumps to the oldest line.
 	nxt.Write([]byte("\x1b[5~"))
@@ -41,14 +41,14 @@ func TestScrollbackNavigation(t *testing.T) {
 }
 
 // TestScrollbackWheel proves the mouse wheel drives scrollback when the app has
-// no mouse mode enabled (a plain shell), and that wheel-down returns to live.
+// no mouse mode enabled, and that wheel-down returns to live.
 func TestScrollbackWheel(t *testing.T) {
 	t.Parallel()
 	b := broker.New()
-	app := hosttest.TerminalApp(t, b,
-		"sh", "-c", "i=1; while [ $i -le 60 ]; do echo line$i; i=$((i+1)); done; exec cat")
+	app := hosttest.NativeTerminalApp(t, b)
 
-	nxt, h := hosttest.Attach(t, b, "term", app.Hash, "wheel")
+	nxt, h := hosttest.Attach(t, b, "term", app.App.Hash, "wheel")
+	app.Region("wheel").Output(numberedLines("line", 60))
 	nxt.WaitFor("line60", 10*time.Second)
 
 	// Several wheel-up notches scroll history into view.

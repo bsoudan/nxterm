@@ -175,7 +175,7 @@ build-nx2-host:
 
 # Build the guest(s) + companions + host, then run all nx2 tests (they load the
 # .wasm and spawn the companions).
-test-nx2: build-nx2-guest build-nx2-files-guest build-nx2-shell-guest build-nx2-echo build-nx2-files build-nx2-term build-nx2mux build-nx2-host build-mousehelper
+test-nx2: build-nx2-guest build-nx2-files-guest build-nx2-shell-guest build-nx2-echo build-nx2-files build-nx2-term build-nx2mux build-nx2-host
 	go test ./nx2/...
 
 # Cross-compile gate (mirrors check-windows): fail fast if a WASM-hostile

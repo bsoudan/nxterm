@@ -25,7 +25,8 @@ nx2/
     capsule/           content-addressed app store
     wasmhost/          wazero runtime abstraction + core-wasm (ptr,len) ABI shims
     hosttest/          e2e harness: in-process test host implementing nxtest.Screen,
-                       so nx2 e2e tests drive nxtest.T like the nxterm suite
+                       so nx2 e2e tests drive nxtest.T like the nxterm suite, plus
+                       NativeRegion test companions (the nx2 nxtest.NativeRegion analog)
   apps/
     terminal/
       guest/           default app: pkg/te -> WASM -> batched cell-grid update

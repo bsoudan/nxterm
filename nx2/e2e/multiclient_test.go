@@ -1,6 +1,8 @@
 package e2e
 
 import (
+	"bytes"
+	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -13,50 +15,68 @@ import (
 	"nxtermd/nx2/internal/wire"
 )
 
+// numberedLines returns "<prefix>1".."<prefix>n", one per line.
+func numberedLines(prefix string, n int) []byte {
+	var buf bytes.Buffer
+	for i := 1; i <= n; i++ {
+		fmt.Fprintf(&buf, "%s%d\r\n", prefix, i)
+	}
+	return buf.Bytes()
+}
+
 // TestMultiClientLateJoinSnapshot is the M1 validator: a host that joins a
 // session AFTER output occurred receives the live screen via the companion's
 // canonical-state snapshot — never having seen the original raw bytes.
 func TestMultiClientLateJoinSnapshot(t *testing.T) {
 	t.Parallel()
 	b := broker.New()
-	// Print "hello", then become cat so the companion (and its PTY) stays alive.
-	app := hosttest.TerminalApp(t, b, "sh", "-c", "echo hello; exec cat")
+	app := hosttest.NativeTerminalApp(t, b)
 
 	// Host A joins first and observes the live output. Once A sees "hello", the
-	// companion's canonical screen is guaranteed to contain it (it feeds the
-	// screen before broadcasting the raw bytes).
-	a, _ := hosttest.Attach(t, b, "term", app.Hash, "s1")
+	// companion's canonical screen is guaranteed to contain it (the region feeds
+	// the screen before relaying the raw bytes).
+	a, _ := hosttest.Attach(t, b, "term", app.App.Hash, "s1")
+	app.Region("s1").Output([]byte("hello"))
 	a.WaitFor("hello", 10*time.Second)
 
 	// Host B joins the SAME session afterward. The raw "hello" is already in the
 	// past; B can only learn it from the snapshot the companion emits on attach.
-	bc, _ := hosttest.Attach(t, b, "term", app.Hash, "s1")
+	bc, _ := hosttest.Attach(t, b, "term", app.App.Hash, "s1")
 	bc.WaitFor("hello", 10*time.Second)
 }
 
-// TestSeparateSessionsAreIsolated checks distinct sessions get distinct companions.
+// TestSeparateSessionsAreIsolated checks distinct sessions get distinct
+// companions: each session's host sees its own region's output and never the
+// other's.
 func TestSeparateSessionsAreIsolated(t *testing.T) {
 	t.Parallel()
 	b := broker.New()
-	app := hosttest.TerminalApp(t, b, "sh", "-c", "echo session-specific; exec cat")
+	app := hosttest.NativeTerminalApp(t, b)
 
-	a, _ := hosttest.Attach(t, b, "term", app.Hash, "alpha")
-	a.WaitFor("session-specific", 10*time.Second)
-	// A different session must spawn its own companion and also print the banner.
-	c, _ := hosttest.Attach(t, b, "term", app.Hash, "beta")
-	c.WaitFor("session-specific", 10*time.Second)
+	a, _ := hosttest.Attach(t, b, "term", app.App.Hash, "alpha")
+	app.Region("alpha").Output([]byte("alpha-marker"))
+	a.WaitFor("alpha-marker", 10*time.Second)
+
+	c, _ := hosttest.Attach(t, b, "term", app.App.Hash, "beta")
+	app.Region("beta").Output([]byte("beta-marker"))
+	c.WaitFor("beta-marker", 10*time.Second)
+	if row, _ := c.FindOnScreen("alpha-marker"); row >= 0 {
+		t.Fatal("session beta rendered session alpha's output")
+	}
 }
 
 // TestInputReachesCompanion proves the input path: bytes handed to the guest are
-// wrapped, relayed by the host, and reach the companion's PTY — here echoed back
-// by `cat` and rendered.
+// wrapped, relayed by the host, and reach the companion — observed directly at
+// the region and, via echo, back on the rendered screen.
 func TestInputReachesCompanion(t *testing.T) {
 	t.Parallel()
 	b := broker.New()
-	app := hosttest.TerminalApp(t, b, "cat")
+	app := hosttest.NativeTerminalApp(t, b)
+	app.Echo = true
 
-	nxt, _ := hosttest.Attach(t, b, "term", app.Hash, "io")
+	nxt, _ := hosttest.Attach(t, b, "term", app.App.Hash, "io")
 	nxt.Write([]byte("ping\r"))
+	app.Region("io").WaitInput("ping", 10*time.Second)
 	nxt.WaitFor("ping", 10*time.Second)
 }
 
@@ -67,7 +87,7 @@ func TestInputReachesCompanion(t *testing.T) {
 func TestSlowHostDoesNotBlockOthers(t *testing.T) {
 	t.Parallel()
 	b := broker.New()
-	app := hosttest.TerminalApp(t, b, "sh", "-c", "echo hello; exec cat")
+	app := hosttest.NativeTerminalApp(t, b)
 
 	stalled, ssrv := net.Pipe()
 	go b.ServeConn(ssrv)
@@ -78,7 +98,7 @@ func TestSlowHostDoesNotBlockOthers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.Fetch(sconn, scache, app.Hash); err != nil {
+	if _, err := host.Fetch(sconn, scache, app.App.Hash); err != nil {
 		t.Fatal(err)
 	}
 	ssel, _ := control.Marshal(control.TypeSelectApp, control.SelectApp{App: "term", Session: "slow"})
@@ -88,7 +108,8 @@ func TestSlowHostDoesNotBlockOthers(t *testing.T) {
 	// Intentionally never read sconn again -> its broker-side sink fills and drops.
 
 	// A healthy host on the same session must still render despite the stall.
-	h, _ := hosttest.Attach(t, b, "term", app.Hash, "slow")
+	h, _ := hosttest.Attach(t, b, "term", app.App.Hash, "slow")
+	app.Region("slow").Output([]byte("hello"))
 	h.WaitFor("hello", 10*time.Second)
 }
 
@@ -98,14 +119,14 @@ func TestSlowHostDoesNotBlockOthers(t *testing.T) {
 func TestLateJoinReceivesScrollback(t *testing.T) {
 	t.Parallel()
 	b := broker.New()
-	// 60 lines >> 24 rows, so ~36 lines scroll into history; then stay alive.
-	app := hosttest.TerminalApp(t, b,
-		"sh", "-c", "i=1; while [ $i -le 60 ]; do echo line$i; i=$((i+1)); done; exec cat")
+	app := hosttest.NativeTerminalApp(t, b)
 
-	a, _ := hosttest.Attach(t, b, "term", app.Hash, "sb")
-	a.WaitFor("line60", 10*time.Second) // last line visible => all 60 produced and parsed
+	a, _ := hosttest.Attach(t, b, "term", app.App.Hash, "sb")
+	// 60 lines >> 24 rows, so ~36 lines scroll into history.
+	app.Region("sb").Output(numberedLines("line", 60))
+	a.WaitFor("line60", 10*time.Second)
 
-	nxt, bh := hosttest.Attach(t, b, "term", app.Hash, "sb")
+	nxt, bh := hosttest.Attach(t, b, "term", app.App.Hash, "sb")
 	nxt.WaitFor("line60", 10*time.Second) // snapshot delivered to the late joiner
 	if sb := bh.Scrollback(); sb <= 0 {
 		t.Fatalf("late joiner received no scrollback history, want >0 (got %d)", sb)

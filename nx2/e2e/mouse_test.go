@@ -9,46 +9,52 @@ import (
 	"nxtermd/nx2/internal/hosttest"
 )
 
+// enableMouse is the output an app emits to turn on button-event tracking with
+// SGR encoding (what mousehelper does), plus a READY marker the test can wait
+// on so clicks aren't sent before the guest's mirror has the mode.
+var enableMouse = []byte("\x1b[?1002h\x1b[?1006hREADY")
+
 // TestMouseForwardedWhenAppEnablesMouse proves the guest forwards SGR mouse
-// events to the app when the app has enabled a mouse-tracking mode. The child is
-// mousehelper, which enables mouse mode (1002+1006) and prints each event it
-// receives as plain text. The standalone terminal has no tab bar, so coordinates
-// pass through unadjusted.
+// events to the app when the app has enabled a mouse-tracking mode. The
+// standalone terminal has no tab bar, so coordinates pass through unadjusted —
+// asserted directly on the region's recorded input.
 func TestMouseForwardedWhenAppEnablesMouse(t *testing.T) {
 	t.Parallel()
 	b := broker.New()
-	app := hosttest.TerminalApp(t, b, hosttest.RepoFile(t, ".local", "bin", "mousehelper"))
+	app := hosttest.NativeTerminalApp(t, b)
 
-	nxt, _ := hosttest.Attach(t, b, "term", app.Hash, "mouse")
-	nxt.WaitFor("READY", 10*time.Second) // mouse mode is now live (1002h+1006h emitted)
+	nxt, _ := hosttest.Attach(t, b, "term", app.App.Hash, "mouse")
+	r := app.Region("mouse")
+	r.Output(enableMouse)
+	nxt.WaitFor("READY", 10*time.Second) // guest mirror has mouse mode
 
 	// Left click at col 5, row 3 (1-based SGR).
 	nxt.Write([]byte("\x1b[<0;5;3M"))
-	nxt.WaitFor("MOUSE press 0 5 3", 10*time.Second)
+	r.WaitInput("\x1b[<0;5;3M", 10*time.Second)
 
 	// Wheel-up is classified and forwarded too.
 	nxt.Write([]byte("\x1b[<64;5;3M"))
-	nxt.WaitFor("MOUSE wheelup 64 5 3", 10*time.Second)
+	r.WaitInput("\x1b[<64;5;3M", 10*time.Second)
 }
 
-// TestMouseSwallowedWhenAppHasNoMouse proves the guest swallows mouse events when
-// the app has NOT enabled mouse reporting (so a plain shell never receives raw SGR
-// garbage). The child runs `cat -v` in raw mode, which renders any byte it receives
-// visibly — so a forwarded ESC sequence would show as "^[[<...". We assert the
-// click is dropped while an ordinary marker still reaches the app.
+// TestMouseSwallowedWhenAppHasNoMouse proves the guest swallows mouse events
+// when the app has NOT enabled mouse reporting (so a plain shell never receives
+// raw SGR garbage). A marker written after the click bounds the check: once the
+// marker has arrived, a forwarded click would already be in the recorded input.
 func TestMouseSwallowedWhenAppHasNoMouse(t *testing.T) {
 	t.Parallel()
 	b := broker.New()
-	app := hosttest.TerminalApp(t, b, "sh", "-c", "stty raw -echo; exec cat -v")
+	app := hosttest.NativeTerminalApp(t, b)
 
-	nxt, _ := hosttest.Attach(t, b, "term", app.Hash, "nomouse")
+	nxt, _ := hosttest.Attach(t, b, "term", app.App.Hash, "nomouse")
+	r := app.Region("nomouse")
 
 	// A mouse click (must be swallowed) followed by a visible marker.
 	nxt.Write([]byte("\x1b[<0;5;3M"))
-	nxt.Write([]byte("MARK\n"))
-	nxt.WaitFor("MARK", 10*time.Second)
+	nxt.Write([]byte("MARK"))
+	r.WaitInput("MARK", 10*time.Second)
 
-	if row, _ := nxt.FindOnScreen("[<"); row >= 0 {
-		t.Fatalf("mouse SGR leaked to the app (found \"[<\"):\n%s", strings.Join(nxt.ScreenLines(), "\n"))
+	if in := string(r.InputBytes()); strings.Contains(in, "[<") {
+		t.Fatalf("mouse SGR leaked to the app: %q", in)
 	}
 }

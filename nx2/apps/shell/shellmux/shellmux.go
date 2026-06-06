@@ -34,10 +34,23 @@ func Factory(termArgs []string) broker.CompanionFactory {
 	}
 }
 
+// Opener builds one tab's child companion. argv comes from the guest's open
+// command and is empty for the default tab template.
+type Opener func(argv []string) (broker.Companion, error)
+
+// FactoryWithOpener is Factory with a custom child source per tab — the
+// multiplexer never inspects what the opener returns, so any broker.Companion
+// works (e.g. the e2e suite's test-driven native companions).
+func FactoryWithOpener(open Opener) broker.CompanionFactory {
+	return func(string) (broker.Companion, error) {
+		return NewWithOpener(open)
+	}
+}
+
 // Companion is one shell multiplexer: the set of child terminals for a session
 // plus the data-plane endpoint the broker fans out to and from.
 type Companion struct {
-	termArgs []string
+	open Opener
 
 	out *broker.CompanionOutput
 
@@ -52,10 +65,22 @@ type Companion struct {
 
 // New builds a multiplexer and opens its initial tab.
 func New(termArgs []string) (*Companion, error) {
+	return NewWithOpener(func(argv []string) (broker.Companion, error) {
+		args := termArgs
+		if len(argv) > 0 {
+			args = argv
+		}
+		return termcore.New(args)
+	})
+}
+
+// NewWithOpener builds a multiplexer whose tab children come from open, and
+// opens its initial tab.
+func NewWithOpener(open Opener) (*Companion, error) {
 	s := &Companion{
-		termArgs: termArgs,
-		out:      broker.NewCompanionOutput(),
-		tabs:     map[uint32]*tab{},
+		open: open,
+		out:  broker.NewCompanionOutput(),
+		tabs: map[uint32]*tab{},
 	}
 	if _, err := s.openTab(nil); err != nil {
 		s.Close()
@@ -141,11 +166,7 @@ func (s *Companion) writeEvent(ev sproto.MuxEventMsg) {
 // openTab opens a terminal child running argv (or the term template if argv is
 // empty), pumps its output under a Tab envelope, and announces it.
 func (s *Companion) openTab(argv []string) (uint32, error) {
-	args := s.termArgs
-	if len(argv) > 0 {
-		args = argv
-	}
-	comp, err := termcore.New(args)
+	comp, err := s.open(argv)
 	if err != nil {
 		return 0, err
 	}

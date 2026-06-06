@@ -10,14 +10,16 @@ import (
 )
 
 // TestShellTabs exercises the multiplexer: open/switch/close tabs via keybinds,
-// the tab bar, tab isolation, and the command palette overlay. Each tab runs cat,
-// so typed markers echo back and identify which tab is active.
+// the tab bar, tab isolation, and the command palette overlay. Tab children are
+// echoing native regions, so typed markers echo back and identify which tab is
+// active.
 func TestShellTabs(t *testing.T) {
 	t.Parallel()
 	b := broker.New()
-	app := shellApp(t, b, "cat")
+	app := hosttest.NativeShellApp(t, b)
+	app.Echo = true
 
-	nxt, _ := hosttest.Attach(t, b, "shell", app.Hash, "tabs")
+	nxt, _ := hosttest.Attach(t, b, "shell", app.App.Hash, "tabs")
 
 	// Tab 0: type a marker.
 	nxt.Write([]byte("AAA"))
@@ -64,9 +66,9 @@ func TestShellTabs(t *testing.T) {
 func TestShellHelpOverlay(t *testing.T) {
 	t.Parallel()
 	b := broker.New()
-	app := shellApp(t, b, "cat")
+	app := hosttest.NativeShellApp(t, b)
 
-	nxt, _ := hosttest.Attach(t, b, "shell", app.Hash, "help")
+	nxt, _ := hosttest.Attach(t, b, "shell", app.App.Hash, "help")
 	nxt.Write([]byte("\x02?")) // ctrl+b ?
 	nxt.WaitFor("Keybindings", 10*time.Second)
 }
