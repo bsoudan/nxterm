@@ -133,6 +133,66 @@ func TestResize(t *testing.T) {
 	}
 }
 
+// Resize must keep the inactive buffer in step with the new dimensions:
+// the alt-screen swap installs it verbatim, so a stale-sized buffer under
+// the new Lines/Columns makes Display index out of range (seen in
+// production via regionActor.snapshot after a client resized a region
+// whose program held the alt screen).
+func TestResizeWhileAltScreenActive(t *testing.T) {
+	screen := NewScreen(4, 3)
+	screen.Draw("foo")
+	screen.SetMode([]int{ModeAltBufCursor}, false)
+	screen.Resize(5, 6)
+
+	screen.ResetMode([]int{ModeAltBufCursor}, false)
+	if len(screen.Buffer) != screen.Lines {
+		t.Fatalf("primary buffer rows = %d, want %d", len(screen.Buffer), screen.Lines)
+	}
+	for row := range screen.Buffer {
+		if len(screen.Buffer[row]) != screen.Columns {
+			t.Fatalf("row %d cols = %d, want %d", row, len(screen.Buffer[row]), screen.Columns)
+		}
+	}
+	screen.Display()
+}
+
+// Mode 47 keeps the alt buffer across exit/re-entry, so a resize while on
+// the primary screen must also resize the retained alt buffer.
+func TestResizeWithInactiveAltBuffer(t *testing.T) {
+	screen := NewScreen(4, 3)
+	screen.SetMode([]int{ModeAltBuf}, false)
+	screen.ResetMode([]int{ModeAltBuf}, false)
+	screen.Resize(5, 6)
+
+	screen.SetMode([]int{ModeAltBuf}, false)
+	if len(screen.Buffer) != screen.Lines {
+		t.Fatalf("alt buffer rows = %d, want %d", len(screen.Buffer), screen.Lines)
+	}
+	for row := range screen.Buffer {
+		if len(screen.Buffer[row]) != screen.Columns {
+			t.Fatalf("row %d cols = %d, want %d", row, len(screen.Buffer[row]), screen.Columns)
+		}
+	}
+	screen.Display()
+}
+
+// Shrinking while the alt screen is active must clamp the saved primary
+// cursor; mode 1049 exit restores it verbatim and an out-of-bounds cursor
+// panics the next Draw.
+func TestResizeShrinkWhileAltScreenClampsSavedCursor(t *testing.T) {
+	screen := NewScreen(10, 10)
+	screen.CursorPosition(10, 10)
+	screen.SetMode([]int{ModeAltBufCursor}, false)
+	screen.Resize(4, 5)
+
+	screen.ResetMode([]int{ModeAltBufCursor}, false)
+	if screen.Cursor.Row >= screen.Lines || screen.Cursor.Col >= screen.Columns {
+		t.Fatalf("restored cursor (%d,%d) out of bounds for %dx%d",
+			screen.Cursor.Row, screen.Cursor.Col, screen.Lines, screen.Columns)
+	}
+	screen.Draw("x")
+}
+
 func TestDrawAutowrapAndIRM(t *testing.T) {
 	screen := NewScreen(3, 3)
 	screen.SetMode([]int{ModeLNM}, false)

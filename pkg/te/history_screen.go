@@ -899,19 +899,7 @@ func (h *HistoryScreen) Resize(lines, columns int) {
 	}
 
 	// Column changes: truncate or pad each remaining row.
-	if columns != h.Columns {
-		for row := range h.Buffer {
-			if len(h.Buffer[row]) > columns {
-				h.Buffer[row] = h.Buffer[row][:columns]
-			} else if len(h.Buffer[row]) < columns {
-				missing := make([]Cell, columns-len(h.Buffer[row]))
-				for i := range missing {
-					missing[i] = h.defaultCell()
-				}
-				h.Buffer[row] = append(h.Buffer[row], missing...)
-			}
-		}
-	}
+	fitRowsWidth(h.Buffer, columns, h.defaultCell())
 
 	// Grow vertically: append blank rows at the bottom.
 	if lines > h.Lines {
@@ -919,6 +907,8 @@ func (h *HistoryScreen) Resize(lines, columns int) {
 			h.Buffer = append(h.Buffer, blankLine(columns, h.defaultCell()))
 		}
 	}
+
+	h.resizeInactiveBuffer(lines, columns)
 
 	h.Lines = lines
 	h.Columns = columns
@@ -937,6 +927,63 @@ func (h *HistoryScreen) Resize(lines, columns int) {
 	h.lineWrapped = make(map[int]bool)
 	h.wrapNext = false
 	h.markDirtyRange(0, lines-1)
+}
+
+// resizeInactiveBuffer keeps the buffer stashed in altBuffer in step with
+// the new dimensions. enter/exitAltScreen swap it in verbatim, so a
+// stale-sized buffer under the new Lines/Columns makes Display index out of
+// range on the next snapshot. While the alt screen is active the stashed
+// buffer is the primary screen: its overflow rows scroll into history
+// exactly like a live shrink (blank rows below the saved cursor trimmed
+// first), and the saved cursor shifts with them. When the primary screen is
+// active the stashed alt buffer is simply recreated blank, matching
+// Screen.Resize — alt-screen programs repaint on resize anyway.
+func (h *HistoryScreen) resizeInactiveBuffer(lines, columns int) {
+	if !h.altActive {
+		if h.altBuffer != nil {
+			h.altBuffer = makeBlankCells(lines, columns)
+			h.altLineWrapped = make(map[int]bool)
+			h.altWrapNext = false
+		}
+		return
+	}
+
+	if lines < len(h.altBuffer) {
+		drop := len(h.altBuffer) - lines
+		savedRow := 0
+		if h.altSavedCursor != nil {
+			savedRow = h.altSavedCursor.Row
+		}
+		for drop > 0 {
+			last := len(h.altBuffer) - 1
+			if last <= savedRow || !h.rowBlank(h.altBuffer[last]) {
+				break
+			}
+			h.altBuffer = h.altBuffer[:last]
+			drop--
+		}
+		for i := 0; i < drop; i++ {
+			if h.history.Top.append(h.altBuffer[i]) {
+				h.history.FirstSeq++
+			}
+			h.history.TotalAdded++
+		}
+		h.altBuffer = h.altBuffer[drop:]
+		if h.altSavedCursor != nil {
+			if h.altSavedCursor.Row >= drop {
+				h.altSavedCursor.Row -= drop
+			} else {
+				h.altSavedCursor.Row = 0
+			}
+		}
+	}
+
+	fitRowsWidth(h.altBuffer, columns, h.defaultCell())
+	for len(h.altBuffer) < lines {
+		h.altBuffer = append(h.altBuffer, blankLine(columns, h.defaultCell()))
+	}
+	h.altLineWrapped = make(map[int]bool)
+	h.altWrapNext = false
 }
 
 // rowBlank reports whether every cell of row equals the screen's default cell.

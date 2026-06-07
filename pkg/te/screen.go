@@ -207,25 +207,7 @@ func (s *Screen) Resize(lines, columns int) {
 		s.RestoreCursor()
 	}
 
-	if columns < s.Columns {
-		for row := range s.Buffer {
-			if len(s.Buffer[row]) > columns {
-				s.Buffer[row] = s.Buffer[row][:columns]
-			}
-		}
-	}
-
-	if columns > s.Columns {
-		for row := range s.Buffer {
-			if len(s.Buffer[row]) < columns {
-				missing := make([]Cell, columns-len(s.Buffer[row]))
-				for i := range missing {
-					missing[i] = s.defaultCell()
-				}
-				s.Buffer[row] = append(s.Buffer[row], missing...)
-			}
-		}
-	}
+	fitRowsWidth(s.Buffer, columns, s.defaultCell())
 
 	if lines > s.Lines {
 		for i := 0; i < lines-s.Lines; i++ {
@@ -1887,7 +1869,15 @@ func (s *Screen) exitAltScreen(clear bool, restoreCursor bool) {
 		s.altSavepoints = nil
 	}
 	if restoreCursor && s.altSavedCursor != nil {
+		// The screen may have shrunk since the cursor was saved; restoring
+		// an out-of-bounds cursor panics the next Draw.
 		s.Cursor = *s.altSavedCursor
+		if s.Cursor.Row >= s.Lines {
+			s.Cursor.Row = s.Lines - 1
+		}
+		if s.Cursor.Col >= s.Columns {
+			s.Cursor.Col = s.Columns - 1
+		}
 	}
 	s.altSavedCursor = nil
 	s.markDirtyRange(0, s.Lines-1)
@@ -2868,6 +2858,21 @@ func blankLine(cols int, cell Cell) []Cell {
 		line[col] = cell
 	}
 	return line
+}
+
+// fitRowsWidth truncates or pads every row in buf to exactly columns cells.
+func fitRowsWidth(buf [][]Cell, columns int, blank Cell) {
+	for row := range buf {
+		if len(buf[row]) > columns {
+			buf[row] = buf[row][:columns]
+		} else if len(buf[row]) < columns {
+			missing := make([]Cell, columns-len(buf[row]))
+			for i := range missing {
+				missing[i] = blank
+			}
+			buf[row] = append(buf[row], missing...)
+		}
+	}
 }
 
 func makeBlankCells(lines, cols int) [][]Cell {

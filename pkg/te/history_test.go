@@ -305,3 +305,53 @@ func TestHistoryResizeShrinkMixed(t *testing.T) {
 		t.Fatalf("cursor row = %d, want 1", screen.Cursor.Row)
 	}
 }
+
+// Growing while a program holds the alt screen must also grow the stashed
+// primary buffer — the production crash: client resize while a program held
+// the alt screen, alt-screen exit swapped the stale-sized primary back in,
+// Display panicked.
+func TestHistoryResizeGrowWhileAltScreenActive(t *testing.T) {
+	screen := NewHistoryScreen(5, 4, 50)
+	screen.Draw("hi")
+	screen.SetMode([]int{ModeAltBufCursor}, false)
+	screen.Resize(6, 7)
+
+	screen.ResetMode([]int{ModeAltBufCursor}, false)
+	if len(screen.Buffer) != screen.Lines {
+		t.Fatalf("primary buffer rows = %d, want %d", len(screen.Buffer), screen.Lines)
+	}
+	for row := range screen.Buffer {
+		if len(screen.Buffer[row]) != screen.Columns {
+			t.Fatalf("row %d cols = %d, want %d", row, len(screen.Buffer[row]), screen.Columns)
+		}
+	}
+	screen.Display()
+}
+
+// Shrinking while the alt screen is active scrolls the stashed primary
+// buffer's overflow rows into history, the same as a live shrink would.
+func TestHistoryResizeShrinkWhileAltScreenActive(t *testing.T) {
+	screen := NewHistoryScreen(5, 4, 50)
+	screen.SetMode([]int{ModeLNM}, false)
+	for i := 0; i < 4; i++ {
+		screen.Draw(string(rune('a' + i)))
+		if i < 3 {
+			screen.LineFeed()
+		}
+	}
+
+	screen.SetMode([]int{ModeAltBufCursor}, false)
+	screen.Resize(2, 5)
+
+	screen.ResetMode([]int{ModeAltBufCursor}, false)
+	if len(screen.Buffer) != screen.Lines {
+		t.Fatalf("primary buffer rows = %d, want %d", len(screen.Buffer), screen.Lines)
+	}
+	if screen.Scrollback() != 2 {
+		t.Fatalf("shrink pushed %d rows into history, want 2", screen.Scrollback())
+	}
+	assertDisplay(t, screen.Screen, []string{"c    ", "d    "})
+	if screen.Cursor.Row >= screen.Lines {
+		t.Fatalf("restored cursor row %d out of bounds for %d lines", screen.Cursor.Row, screen.Lines)
+	}
+}
