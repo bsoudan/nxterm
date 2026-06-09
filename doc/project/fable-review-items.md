@@ -1,0 +1,219 @@
+# Fable Architecture Review — Findings
+
+Date: 2026-06-09
+Reviewer: Claude (Fable 5), four parallel subsystem reviews (server, TUI client,
+`pkg/te` emulator, protocol/transport), code-only — no documentation consulted.
+Emulator findings were verified empirically by feeding byte sequences through
+`pkg/te`; all other findings were verified by reading the relevant code paths.
+
+## Original prompt
+
+> without using any documentation, review the code for nxterm & nxtermd as a
+> software architect specializing in tty/VT/terminal protocols. give an overall
+> architectural health picture, and if there are problems, itemize them and rate
+> them on a scale of 1 to 10, with 1 being the least severe and 10 being the
+> most severe.
+
+## Overall picture
+
+**The architecture is genuinely good; the robustness at the edges is not yet at
+the same level. Overall grade: B−/C+.**
+
+The bones are above average for this domain. The single-event-loop + region-actor
+model is disciplined (no mutex soup, typed request/response channels, liveness
+fallbacks on dead actors), the server→client backpressure design — byte-indexed
+drop detection, behind-flag with lazy catchup snapshots, seq-numbered scrollback
+windows, a circuit breaker — is more carefully engineered than most production
+muxes, the transport abstraction is clean, the PTY/fd plumbing (TIOCSWINSZ
+serialized through the actor, `SyscallConn` discipline, escape/UTF-8 carry at
+read boundaries) shows real expertise, and `pkg/te`'s conformance-test investment
+(esctest2 ports, pyte suites) is exceptional for a homegrown emulator.
+
+The problems cluster in four themes, consistent across all subsystems:
+
+1. **Security is the weakest pillar.** The tcp/ws transports have zero
+   authentication, the unix-socket fallback isn't permission-hardened, the one
+   authenticated transport doesn't verify host keys, and any connected client
+   can make the server exec an arbitrary binary via the upgrade path.
+2. **Invariants held by choreography, not structure.** The live-upgrade "pause"
+   can be broken by any in-flight client request; `WindowOp` bypasses
+   `HistoryScreen.Resize` through Go embedding and panics clients; tree geometry
+   silently diverges from actor geometry on resize.
+3. **Chunk-boundary and resource-bound gaps in the emulator** — exactly where
+   conformance suites don't look: split UTF-8 runes become mojibake, OSC
+   accumulation is quadratic and unbounded, ESC doesn't abort CSI/OSC so the
+   parser can't resynchronize.
+4. **Input loss is silent in both directions.** The output path has elaborate
+   drop accounting; the input path (TUI→server under backpressure,
+   server→native-region drivers) silently discards keystrokes.
+
+### Per-subsystem grades
+
+- **Server** (`internal/server`): **B−** — best-engineered subsystem; held down
+  by the upgrade-pause bug (#2) and the choreography-not-structure cluster
+  (#16, #19, #20, #25).
+- **Terminal emulator** (`pkg/te`): **C+** — B+ architecture and exceptional
+  test culture, but two crash/DoS-grade defects (#1, #4) reachable by any
+  program writing to its tty, plus everyday-fidelity gaps (#26, #27, #18, #17).
+- **TUI client** (`internal/tui`, `pkg/layer`): **C+** — strong
+  input-tokenization and event-loop design; lifecycle and protocol-edge
+  handling (double-dial, kitty-mode mismatch, panic path, paste) lag the data
+  path.
+- **Protocol/transport**: **C+** — clean abstraction and genuinely good
+  server→client flow control; the grade is almost entirely the security
+  posture (#6–#10).
+
+### Highest-leverage work, in order
+
+1. Fix the upgrade pause (#2) and the `WindowOp→Resize` embedding bypass (#1) —
+   both small, both crash-grade.
+2. Bound and harden the `pkg/te` parser: OSC caps, split-UTF-8 buffering,
+   ESC-aborts-anywhere, colon params (#3, #4, #14, #17).
+3. Decide the security story per transport — peer-cred or token auth before
+   tcp/ws can be considered shippable, host-key verification for dssh, and an
+   admin/viewer privilege split before `upgrade_to` exists on any network
+   transport (#6–#10).
+4. Make input loss impossible or at least *visible*, in both directions,
+   matching the rigor already applied to output (#15, #28).
+
+---
+
+## Itemized findings
+
+Severity scale: 1 = trivial nit, 10 = critical (data loss / crash in normal
+operation).
+
+### Crash / data-corruption grade
+
+| # | Sev | Status | Problem |
+|---|-----|--------|---------|
+| 1 | 8 | open | **`CSI 8;rows;cols t` shrink panics every attached client.** `WindowOp` case 8 calls `Screen.Resize`, which on vertical shrink never truncates `s.Buffer` and doesn't clamp the cursor, leaving `len(Buffer) > Lines`; `LinesCells()` then indexes out of range. Go embedding means this bypasses the careful `HistoryScreen.Resize` override. The TUI replays winop events into its local hscreen and calls `LinesCells()`, so a child running `printf '\e[8;20;80t'` crashes every attached nxterm. The server survives only because `actor.snapshot()` happens to take `min(height, len(Buffer))`. — `pkg/te/screen.go:203,303,2359`, `pkg/te/history_screen.go:856`, `internal/tui/terminal.go:328,479,962` |
+| 2 | 8 | open | **Live-upgrade "pause" consumes an arbitrary request as the resume signal.** `upgradeReq.handle` parks on `<-st.srv.requests` assuming the next message is `resumeUpgradeReq`, but client readLoops are never stopped (`stopAccepting()` only blocks new connections). Any in-flight request — someone typing during upgrade — is consumed and silently discarded (its sender blocks forever on `<-resp`, wedging that client's readLoop), and the event loop resumes full processing while `HandleUpgrade` concurrently iterates/mutates the same `ServerTree` from the signal goroutine: a Go map concurrent read/write (possible runtime panic) plus corrupt serialized upgrade state. Because `s.requests` is buffered (256), a single queued message at drain time breaks the freeze deterministically. — `internal/server/upgrade.go:403-420,330-344`, `internal/server/handlers.go:103-115` |
+| 3 | 7 | open | **UTF-8 runes split across Feed/FeedBytes calls are destroyed.** No partial-rune buffering: `DecodeRune` on an incomplete prefix returns `(RuneError, 1)` and the byte is emitted raw; `ByteStream`'s `buffer` field never actually retains a partial sequence. The server feeds raw PTY read chunks straight in. Verified: `日` fed as `[0xE6]` + `[0x97,0xA5]` renders `æ¥`. ~One corrupted character per PTY read-chunk boundary in CJK/emoji-heavy output. — `pkg/te/stream.go:201-217`, `pkg/te/byte_stream.go:17-38`, `internal/server/actor.go:501` |
+| 4 | 7 | open | **Unbounded + quadratic OSC/DCS string accumulation — CPU/memory DoS.** Per-rune `st.current += string(ch)` with no length cap. Measured: 16KB OSC payload = 39ms, 64KB = 783ms, 256KB = 16.3s; 1MB hung >3 minutes. `cat`ing a binary containing `ESC ]` with no early BEL/ST freezes that region's actor goroutine for minutes and grows memory without bound. xterm caps string buffers. — `pkg/te/stream.go:523,547` |
+| 5 | 7 | open | **Alt-screen and scroll-region scrolling pollutes scrollback.** `indexInternal` pushes `Buffer[top]` into history whenever the cursor is at the region bottom — no `altActive` check, no "region == full screen" check. Verified: 1049 alt-screen scrolling added 6 lines to scrollback (xterm: 0); a DECSTBM region scroll pushed 5 interior lines. Paging through `less`/`vim` stuffs primary scrollback with garbage **and** spuriously advances `TotalAdded`, the seq counter the whole client scrollback-sync protocol keys off. — `pkg/te/history_screen.go:661-670` |
+
+### Security
+
+| # | Sev | Status | Problem |
+|---|-----|--------|---------|
+| 6 | 8 | open | **No authentication on `tcp:` transport.** Any TCP connection is handed straight to `acceptClient`; `identify` is purely informational. Anyone who can reach the port can `session_connect`, spawn configured programs, send input to any region, `kill_client`, `kill_region`. Nothing enforces loopback binding. — `internal/transport/transport.go:29-34`, `internal/server/server.go:175`, `internal/server/handlers.go:119` |
+| 7 | 7 | open | **`upgrade_to_request` lets any connected client make the server exec an arbitrary binary.** Validates only existence + executable bit, then SIGUSR2s the server into live-upgrading to the client-supplied path, inheriting all PTYs and FDs. No admin/viewer privilege tiers exist anywhere in the protocol. Combined with #6/#8/#10 this is remote/local-user arbitrary code execution as the server user. — `internal/server/handlers.go:719-751` |
+| 8 | 7 | open | **WebSocket transport disables origin checking and has no auth.** `InsecureSkipVerify: true` disables the Origin check; combined with no auth layer, any web page the user visits can script a connection to `ws://localhost:<port>/` and drive the terminal server (cross-site WebSocket hijacking). — `internal/transport/ws.go:51-52` |
+| 9 | 7 | open | **dssh client blindly trusts any host key (MITM).** `HostKeyCallback: ssh.InsecureIgnoreHostKey()` — no knownhosts, no TOFU pinning, no prompt. The only authenticated transport never authenticates the server; an interceptor can proxy the whole session including anything typed into `sudo`. — `internal/transport/ssh.go:242` |
+| 10 | 6 | open | **Unix socket has no permission hardening and no peer-credential check.** `os.Remove` + `net.Listen` with no chmod/umask tightening and no `SO_PEERCRED` anywhere. With `XDG_RUNTIME_DIR` the parent dir protects it, but the fallback `DefaultSocket()` is `/tmp/nxtermd.sock` in a world-traversable directory, mode following the process umask — any local user gets the full admin surface of #6/#7. — `internal/transport/unix_unix.go:10-13`, `internal/config/config.go:241-246` |
+
+### Reliability / lifecycle
+
+| # | Sev | Status | Problem |
+|---|-----|--------|---------|
+| 11 | 7 | open | **Startup connect-overlay double-dials and leaks the losing connection.** `Update`'s `ConnectToServerMsg` case dials async via `m.connectFn`, then `drainUntil` matches the same message and `connectOverlay` dials again synchronously. Both create a `Server`, both `SessionConnectRequest`. The overlay's server is installed first; when dial #1's `ConnectedMsg` lands, `m.server = msg.Server` replaces it **without closing it** — its `Run` goroutine keeps the connection and subscription alive with nobody draining `Inbound`; once `Inbound` (256) fills it blocks forever and the server sees a permanently-slow phantom client. Also duplicates `SaveRecent` and double-wraps `WrapTracing`. — `internal/tui/model.go:96-103`, `internal/tui/mainlayer.go:782-830`, `internal/tui/main.go:219-241` |
+| 12 | 7 | open | **Host terminal put into kitty/modifyOtherKeys mode, but the raw-input path only understands legacy encodings.** The forked renderer unconditionally emits `SetModifyOtherKeys2` + `KittyKeyboard(disambiguate)` on every keyboard-enhancement flush. In kitty/ghostty/wezterm/foot/recent-VTE: (a) `ctrl+b` arrives as `\x1b[98;5u`, never matches the `bytes.IndexByte(raw, PrefixKey)` scan — **all chords including detach are dead**; (b) `rawSeqToChordKey` only decodes single bytes; (c) CSI-u sequences are forwarded verbatim to child apps that never opted in (Esc as `\x1b[27u` garbles vim). `keybind.go:572-577` hand-codes kitty forms for two bindings, showing the inconsistency. Needs a CSI-u/mok→legacy normalization pass or to stop enabling the enhancements. E2E PTY harnesses can't catch this. — `pkg/bubbletea/cursed_renderer.go:130-138,372-391`, `internal/tui/rawio.go:273-332`, `internal/tui/mainlayer.go:152-163,525` |
+| 13 | 6 | open | **Panic in the custom event loop skips bubbletea shutdown — terminal left in alt screen with mouse/kitty/bracketed-paste on.** The hand-rolled `Run` loop has no `recover` (upstream `tea.Program.Run` wraps with `recoverFromPanic` → `shutdown`). A panic unwinds through `runFrontend`, whose only deferred cleanup is termios `restore()` — the renderer's exit sequences never run. SIGTSTP is also unhandled (external `kill -TSTP` stops the process with all modes live). — `internal/tui/mainlayer.go:297-447`, `internal/tui/main.go:188-192`, `pkg/bubbletea/cursed_renderer.go:142-209` |
+| 14 | 6 | open | **No "anywhere" parser transitions: ESC does not abort CSI; CAN/ESC do not abort OSC.** Verified: `\e[1\e[31mX` renders `[31mX` literally with no red; `\e]0;tit\e[31mhello\aworld` sets the *title* to `tit\x1b[31mhello`; OSC + CAN swallows all subsequent output until the next BEL/ST. Also `\x18`/`\x1a` inside CSI puts a raw control byte into a cell via `Draw(string(ch))`. A program killed mid-sequence, or interleaved tty writers, leaves garbage or eats the stream where xterm resynchronizes. — `pkg/te/stream.go:429-500,502-525,486-489` |
+| 15 | 6 | open | **TUI silently drops outbound input/requests under backpressure.** `Server.Send` is non-blocking over a 64-slot channel with a bare `default:` drop — no log, no user feedback, no sequence/ack. The single `runConnection` goroutine drains it via synchronous `conn.Write` and sleeps during reconnect backoff; during a stall, typed input, pastes, `SubscribeRequest`, `ResizeRequest` vanish, desyncing the UI's subscription model. The server→client direction has elaborate drop accounting; the input path has none. — `internal/tui/server.go:83-94,208-231`, `internal/tui/mainlayer.go:808` |
+| 16 | 5 | open | **Event loop ↔ region actor cyclic blocking — structural deadlock window.** The event loop performs blocking sends into actor channels (`subscribeReq` → `AddSubscriber`, `removeClientReq` → `RemoveSubscriber`/`ClearOverlay`), while actors perform blocking round-trips back into the event loop (`childExitedMsg` → `destroyFn` → `s.send` + `<-resp`). If an actor is parked in `destroyRegion` waiting for the event loop and the event loop is parked sending into that actor's full `msgs` channel (cap 256, fillable by a fast native-region `Feed`), the global event loop is dead — total server livelock. Softer variant: a slow actor (large snapshot marshal) stalls the global loop on every subscribe/unsubscribe touching it. — `internal/server/server_requests.go:282-310,487-507`, `internal/server/actor.go:524-530`, `internal/server/server.go:277-292`, `internal/server/native_backend.go:40-54` |
+| 17 | 6 | open | **CSI colon sub-parameters abort the parse and leak text onto the screen.** `handleCSI` has no `:` case, so `:` is treated as a final byte and the rest of the sequence renders as text. Verified: `\e[38:2:255:0:0mHI` displays `2:255:0:0mHI`. Hit by kitty/foot-style colon truecolor and neovim curly underline `4:3` when terminfo advertises `Smulx`. Even consuming colon params without acting would be far better. — `pkg/te/stream.go:429-500` |
+| 18 | 6 | open | **Wide-character cell-pair invariants not maintained on overwrite.** Writing a narrow char over a wide char's continuation cell leaves the wide head intact and the new char **invisible** (`Display` advances `col += 2` over the head); overwriting the head leaves an orphaned `""` continuation cell that `Display` skips, shifting the rendered remainder of the line left by one. Vim editing mixed CJK/ASCII produces invisible typed characters and column misalignment. xterm clears the orphaned half to a space. — `pkg/te/screen.go:273-300,338-358` |
+| 19 | 5 | open | **Tree `RegionNode` geometry never updated on resize — stale client view, wrong actor geometry after live upgrade.** Only `SetRegion` writes width/height (spawn/restore); `resizeMsg` updates the actor + atomics but not the tree. So (a) every tree snapshot/`tree_events` stream advertises spawn-time size forever — and `native_backend.go:99-104` tells native drivers to "watch the tree for size changes," which can never work; (b) on upgrade, `buildUpgradeState` serializes the stale node and `RestoreRegion` seeds `actor.width/height` from it while `hscreen.UnmarshalState` restores the real dimensions — resized regions come out of upgrade with `snapshot()` building `Lines` of the wrong height until the next resize heals it. `ScrollbackLen` similarly frozen at 0. — `internal/server/tree.go:115-123`, `internal/server/actor.go:634-647`, `internal/server/upgrade.go:262-266`, `internal/server/region.go:350-381` |
+| 20 | 5 | open | **A dropped broadcast is only repaired by the *next* broadcast — quiescent regions stay corrupt.** Catchup piggybacks on a later successful regular send; if the last batch of a burst drops (writeCh full) and the program goes quiet, the behind flag stays set and the catchup snapshot is never sent — the final frame of a build/progress bar stays torn with no timer-based recovery. Related: `addSubscriberMsg` sends the *initial* snapshot via `SendMessage` with the return ignored — if it drops, the subscriber starts permanently desynced (`behind` never set) while `handleSubscribe` reports success. — `internal/server/actor.go:410-450,541-563` |
+| 21 | 5 | open | **Input routing is bracketed-paste-unaware.** Bubbletea enables host bracketed paste unconditionally, but the raw path doesn't track paste state: the prefix-byte scan and always-binding matching run *inside* paste content (pasted `0x02` enters command mode mid-paste; pasted `ESC x`-shaped text triggers alt-bindings — close-tab in the zellij preset; pasted OSC/DCS-shaped text gets diverted by `filterCapabilityResponses`). The paste markers themselves are forwarded to children that never set mode 2004, though the client knows the child's mode state in `hscreen.Mode`. — `internal/tui/mainlayer.go:525-535`, `internal/tui/rawio.go:273-332`, `pkg/bubbletea/cursed_renderer.go:326-332` |
+| 22 | 5 | open | **Resize while a tab/session is inactive leaves stale dimensions; switching activates with the old size.** `tea.WindowSizeMsg` is forwarded only to the active session's active terminal; `switchToTab` → `Activate()` then sends `ResizeRequest` with the stale `termWidth/termHeight`, resizing the server region to pre-resize geometry and seeding a mis-sized local hscreen until the next real SIGWINCH. Same staleness at the session level (`switchSession` → `Reconnect()`). — `internal/tui/session.go:264-271`, `internal/tui/terminal.go:73-84,110-126`, `internal/tui/sessionmanager.go:200-203,229-251` |
+| 23 | 5 | open | **Data races: task goroutines mutate UI state read by the render goroutine.** `Overlay` documents "tasks hold a pointer and mutate fields directly between blocking calls" — those mutations (`overlay.Lines = append(...)`, `StatusText = ...`) happen on the task goroutine while the main loop calls `Overlay.View`/`Status` every render: unsynchronized write/read of slice headers and strings (race-detector positive, torn-slice reads possible). Same pattern: `nextToastID++` from the upgrade task races with `ShowToast` on the main goroutine. Fix: route mutations through `Handle.Send`, like `upgradeInfoMsg` already does. — `internal/tui/upgrade.go:130-133,171-173,186-202,220-222`, `pkg/layer/task.go:30-31`, `internal/tui/mainlayer.go:277-280` |
+| 24 | 5 | open | **No request timeout; mid-request disconnect hangs the task and orphans correlation state.** `WaitFor`/`recv` block only on inbox or `ctx.Done()`. If the connection drops after a request is sent, the response never comes, `pendingReplies[reqID]` is never deleted (slow leak across reconnects), and the blocked task waits indefinitely. No "fail all in-flight requests on disconnect" sweep. — `pkg/layer/task.go`, `internal/tui/model.go:66-68`, `internal/tui/mainlayer.go:585-590` |
+| 25 | 4 | open | **Mode 2026 (synchronized output): no timeout, unbounded buffering.** `Flush` returns nothing while `syncMode`; sync is set on SM 2026 and cleared only on RM 2026. An app that sets it and crashes/hangs freezes the region's display for all subscribers indefinitely (standard mitigation is a ~150ms–1s flush timeout), and `p.batch` grows without bound under continued output — an unbounded-memory path drivable by any program. — `internal/server/event_proxy.go:61-66,170-182` |
+| 26 | 4 | open | **Failed upgrade leaks dup'd PTY FDs; SCM_RIGHTS hard cap; truncation unchecked.** `ptyDups` never closed on the `resumeAfterFailedUpgrade` paths — each failed attempt leaks one dup of every PTY master, marching toward EMFILE. All FDs sent in a single sendmsg — Linux caps SCM_RIGHTS at 253 FDs per message, so >253 regions makes upgrade fail unconditionally with EINVAL. `ReadMsgUnix` flags discarded (MSG_CTRUNC never checked); `msg.Specs[i]` indexed by file count — mismatch panics. — `internal/server/upgrade.go:146-153,158-219`, `internal/server/upgrade_protocol.go:62-88,99`, `internal/server/upgrade_recv.go:45-53` |
+| 27 | 4 | open | **Compression negotiation runs synchronously in the accept loop.** One client that connects and sends nothing stalls *all* connection acceptance for up to 5s (blocking `io.ReadFull` with deadline, inline in `acceptLoop`); repeated idle connects deny service indefinitely. Also `acceptLoop` hot-spins on persistent `Accept` errors (e.g. EMFILE) with no backoff. — `internal/server/server.go:157-178,164-166`, `internal/transport/compress.go:76-91` |
+| 28 | 4 | open | **Overlay double-register corrupts overlay routing bookkeeping.** Client A registers an overlay on region R; client B then registers (`regionOverlays[R]=B`) but `clientOverlays[A]` still points at R. When A disconnects, `removeClientReq` unconditionally deletes `regionOverlays[R]` — B's live overlay loses its reverse mapping, input routes to the PTY while B's overlay is still composited, and B's later `overlayClearReq` no-ops. — `internal/server/server_requests.go:289-295,550-573` |
+| 29 | 4 | open | **Silent input drop, server side: native regions and overlays.** PTY input is a kernel write and never drops, but native-region input (`WriteInput` → `driver.SendMessage`) and overlay-routed input ride the driver client's bounded `writeCh` via non-blocking `SendMessage` with the return value ignored — keystrokes silently discarded under backpressure, no warning, no retry, no behind-marking. — `internal/server/native_backend.go:91-97`, `internal/server/handlers.go:293-303` |
+| 30 | 4 | open | **`Screen.Resize` wipes unrelated terminal state.** The body looks copy-pasted from `Reset()`: a window resize resets `colorPalette`, `dynamicColors`, `savedModes` (XTSAVE), `cursorStyle` (DECSCUSR), `selectionData`, and the title stack — vim's bar cursor reverts, OSC 4 palette customizations vanish. `HistoryScreen.Resize` does *not* do this, so the two resize paths diverge (same embedding-split class as #1). Lines 222-235 vs 253-262 are duplicated/dead. — `pkg/te/screen.go:222-262` |
+| 31 | 4 | open | **Wide char at the last column is clipped instead of wrapped.** A width-2 cluster drawn with one column remaining is stored at the final column with its continuation clipped (verified: `abc日` on a 4-col screen keeps `日` on row 0; xterm wraps it to row 1, blanking the last cell). Desyncs the app's cursor bookkeeping vs the emulator's. — `pkg/te/screen.go:343-346,360-377` |
+| 32 | 4 | open | **`'` intermediate lookahead mis-dispatches across Feed boundaries.** If a buffer ends mid-sequence in `ESC [ Pn '`, FeedBytes force-dispatches it as HPA before the next chunk arrives. Verified: `\e[2'` + `}` in separate Feeds executes HPA(2) and prints a literal `}` instead of DECIC. The lookahead state should persist across Feed calls like every other parser state. — `pkg/te/stream.go:239-245` |
+| 33 | 4 | open | **ssh: transport data phase runs over a PTY left in cooked mode.** `pty.Start` with no `MakeRaw`/termios call (contrast the Windows path, which disables echo). Works today only because the wire is 7-bit newline-delimited ASCII JSON; a client→server line exceeding canonical `MAX_CANON` (~4096B) in the master→slave direction (large paste as one `InputMsg`, big `add_program` env) risks truncation, and any future binary framing would silently corrupt. — `internal/transport/exec_pty_unix.go:40-53`, `internal/transport/ssh_exec_flags_unix.go:10` |
+| 34 | 4 | open | **No protocol version negotiation; unknown messages silently dropped.** Envelope carries only `type` + `req_id`. Unknown types: server logs at debug and returns; client logs warn and continues. Introducing any new *required* message means a skewed pair fails in confusing ways rather than refusing to connect. — `internal/protocol/protocol.go:554-557`, `internal/server/handlers.go:110-112`, `internal/client/client.go:123-124` |
+| 35 | 4 | open | **`taskDoneMsg` is best-effort and can be lost — task state and subscriptions leak.** The deferred `select { case r.fromTasks <- taskDoneMsg…; default: }` on an *unbuffered* channel drops the done notification whenever the single `ListenCmd` reader isn't parked at that instant. The task stays in `r.tasks` forever: subscriptions filter every message, channels never closed, leftover `WaitFor` filters push into a dead inbox. Related: `Cancel()` doesn't unblock a task parked on a `Subscribe` channel (`<-statusCh` ignores `h.Context()`); `CheckFilters` returns early on first `handled=true`, hiding the message from other tasks' subscriptions. — `pkg/layer/task.go:216-221,284-287`, `internal/tui/upgrade.go:161` |
+
+### Fidelity gaps (pkg/te / TUI)
+
+| # | Sev | Status | Problem |
+|---|-----|--------|---------|
+| 36 | 5 | open | **No back-color-erase (BCE).** Every erase path fills with `s.defaultAttr()`, never the current SGR background. Verified: `\e[44m\e[2J` leaves default-bg cells. The `xterm-256color` terminfo children run under advertises `bce`; ncurses relies on it — vim/tmux color schemes show default-color stripes wherever the app cleared with EL/ED. — `pkg/te/screen.go:741,763-772,807-818` |
+| 37 | 5 | open | **Charset switching (`ESC ( 0`, SO/SI) entirely disabled in UTF-8 mode.** Verified: `\e(0lqk\e(B` renders literal `lqk` instead of `┌─┐`. xterm honors DEC Special Graphics in UTF-8 mode; `dialog`, `whiptail`, older ncurses (terminfo `smacs`/`acsc`) draw boxes as letter soup. (Mirrors pyte, but pyte was never the renderer for real ncurses apps.) — `pkg/te/stream.go:266-271,310-316` |
+| 38 | 3 | open | **Mouse translation loses modifiers and misparses modified wheel events.** `parseSGRMouse` matches wheel only on exact `btn==64/65`: shift+wheel (68/69) becomes a *left click* forwarded to the child; wheel-left/right (66/67) become right-clicks. `encodeSGRMouse` strips all modifier bits, so children never see shift/ctrl/alt-clicks. `ForwardMouse` adjusts for the tab bar but ignores `statusBarMargin` — with a margin, every forwarded click is off by that many rows. — `internal/tui/mouse.go:15-64,81-131`, `internal/tui/terminal.go:432-441`, `internal/tui/session.go:468` |
+| 39 | 3 | open | **No OSC 52 clipboard or DECSCUSR passthrough; simulated cursor.** Child OSC 52 copies never reach the host terminal; DECSCUSR shapes are applied to the local te.Screen but never to the host; the cursor is a reverse-video cell rather than the real terminal cursor (`v.Cursor` never set) — breaks IME positioning, screen readers, blink/shape fidelity. Defensible MVP scope, but a deliberate gap worth recording. — `internal/tui/terminal.go:308-381,633-688` |
+| 40 | 3 | open | **DECSC/DECRC: stack semantics; DEC variant discards the wrap-pending flag.** Uses a push/pop stack (xterm: single slot, DECRC restorable repeatedly), and `saveCursorState(false)` zeroes `Wrap`/`WrapNext` for the DEC variant — backwards vs xterm, where DECSC *is* the variant that saves the last-column wrap flag. Verified: fill to wrap-pending, `\e7\e8`, print `X` → overwrites the last column instead of wrapping. Unbounded `Savepoints` growth under repeated `ESC 7`. — `pkg/te/screen.go:522-585` |
+| 41 | 3 | open | **Index/ReverseIndex scroll full rows, ignoring left/right margins.** With DECLRMM margins set, the row-swap moves entire lines including content outside the margins (compare `ScrollUp`/`ScrollDown`, which correctly use `copyRowSegment`). DECLRMM-using apps get content outside the margin columns dragged along. — `pkg/te/screen.go:419-424,443-448,1097-1104` |
+| 42 | 3 | open | **SGR gaps: conceal (8/28) dead, no underline styles/colors, no SGR 21/53.** `graphics.go` has no entries for 8/28 even though `Attr.Conceal` exists and is reported by DECRQSS — conceal can never be set. No double/curly underline, no SGR 58/59 underline color, no overline. DECRQSS `m` also omits colors from its reply, which can confuse apps that round-trip SGR state. (256-color and semicolon truecolor are solid.) — `pkg/te/graphics.go:3-17`, `pkg/te/screen.go:1550-1573` |
+| 43 | 3 | open | **Scrollback/TotalAdded desync when Index doesn't actually scroll.** `indexInternal` appends to history and bumps `TotalAdded` *before* `Screen.Index()` decides (via `canScrollHorizontal`) whether to scroll at all. With DECLRMM set and the cursor outside the margins, a phantom scrollback line is recorded and the sync-protocol seq counters advance with no screen change. (Code-evident; not exercised end-to-end.) — `pkg/te/history_screen.go:661-670`, `pkg/te/screen.go:416-418` |
+| 44 | 3 | open | **`Kill()` signals only the direct child.** SIGKILL bypasses the session-leader HUP only partially: a background process ignoring SIGHUP that holds the slave open keeps `readLoop` alive and the region lingers after `kill_region` "succeeded". Pid-reuse hazard in the post-upgrade `syscall.Kill(b.pid, ...)` branch. — `internal/server/pty_backend.go:148-154` |
+| 45 | 3 | open | **Reconnect handshake consumes and discards the first inbound message.** `reconnect` waits for "identify" by reading **one** message from `c.Recv()` and throwing it away without checking its type — any protocol evolution that sends something else first silently drops real state. Cheap fix: type-check and forward non-identify messages. — `internal/tui/server.go:239-263` |
+| 46 | 3 | open | **`stepFocusSequence` heuristics are fragile.** One sequence at a time is written via `go m.pipeW.Write(seq)`, then the loop blocks on a single `p.Msgs()` receive and drains with a 1ms timer — assumes every token produces ≥1 message soon (true today only because the uv reader has a 50ms esc-timeout). A token producing no event stalls the loop until any unrelated message arrives, and the blocking read can consume an unrelated message as the "result". Deserves a guard timeout or comment. — `internal/tui/mainlayer.go:449-486`, `pkg/ultraviolet/terminal_reader.go:24-26` |
+| 47 | 3 | open | **Dropped `tree_events` have no server-side recovery path.** `commitAndBroadcast` ignores the `SendMessage` return — unlike screen updates (behind flag + catchup + circuit breaker), dropped tree-sync patches are simply gone; recovery depends entirely on the client noticing a version gap and issuing `tree_resync_request`. A client that misses `region_created` shows a stale tab list indefinitely. — `internal/server/server_requests.go:37-50` |
+| 48 | 3 | open | **`nextByteIndex` allocation vs writeCh enqueue is not atomic — spurious "lost N bytes" warnings.** Multiple goroutines call `SendMessage`/`sendReply` concurrently; a goroutine can claim byteIndex N, get descheduled, and N+k can be enqueued first — writeLoop fabricates a `dropped_data` warning for data never dropped, `writtenByteIndex` regresses producing a second spurious warning, and clients resync-churn for no reason. Real drops adjacent to the race can be misattributed. — `internal/server/client.go:100-116,161-166,180-187` |
+| 49 | 3 | open | **Oversized frame silently kills the connection.** Both readers cap `bufio.Scanner` at 16 MiB; a longer line yields `ErrTooLong` and the read loop just exits (debug log client-side, nothing server-side) — the peer sees an unexplained disconnect rather than a protocol error. Bounded in practice by scrollback chunking, but ungraceful. — `internal/client/client.go:95`, `internal/server/client.go:135` |
+| 50 | 4 | open | **Connect-failure errors are invisible; in-session reconnect destroys the current session before the dial succeeds.** `ConnectLayer` pops on enter, *before* the dial result, so `ConnectErrorMsg` falls through a stack that no longer contains it and is swallowed. Worse, `SessionManagerLayer` already executed `server.Close()` + `sessions = nil` on `ConnectToServerMsg` — a typo'd address mid-session kills the live view and leaves the user on the "no session" checkerboard with zero feedback. Teardown should happen on `ConnectedMsg`; the error needs a surface. — `internal/tui/connectlayer.go:64-75`, `internal/tui/sessionmanager.go:173-178`, `internal/tui/model.go:96-103` |
+
+### Severity 1–2 nits
+
+| # | Sev | Status | Problem |
+|---|-----|--------|---------|
+| 51 | 2 | open | **`EventProxy.Flush` contradicts its own contract.** Doc says post-sync events are returned; code discards the whole batch. Correct in effect for screen state (snapshot covers it) but loses non-screen events (e.g. a `bell` arriving after sync end). — `internal/server/event_proxy.go:55-77` |
+| 52 | 2 | open | **`allSyncs` grows unboundedly and is replayed in full to every new subscriber.** The comment admits it's only "bounded in practice because tests…". — `internal/server/event_proxy.go:20-26,43-50`, `internal/server/actor.go:546-558` |
+| 53 | 2 | open | **Mid-sync torn frames for new subscribers / overlay renders.** `addSubscriberMsg` snapshots the live screen even while mode 2026 is held, defeating 2026's purpose for that one frame. — `internal/server/actor.go:541-543` |
+| 54 | 2 | open | **`PTYRegion.session` is an unsynchronized plain field.** Written in the event loop, read from actor/destroy goroutines. Write-once in practice, but a formal data race the detector can flag. — `internal/server/region.go:96-97`, `internal/server/server.go:290` |
+| 55 | 2 | open | **Misleading rollback log; shutdown can strand senders.** `upgrade.go:343` claims "listeners were closed; restart may be needed" — they weren't (only `noAccept` was set and rollback clears it). Separately, when `s.done` closes, the event loop exits without draining `s.requests`; any goroutine that won the race in `Server.send` blocks forever on `<-resp` (e.g. `FindRegion`). Benign today only because the process exits shortly after Shutdown. — `internal/server/upgrade.go:343`, `internal/server/server_requests.go:244-264`, `internal/server/server.go:294-300` |
+| 56 | 2 | open | **Per-subscriber re-marshal of identical broadcast messages.** The same `TerminalEvents` batch is JSON-marshaled once per subscriber. Pure CPU waste at fan-out. — `internal/server/actor.go:410-415`, `internal/server/client.go:172-177` |
+| 57 | 2 | open | **`req_id` injected by JSON string splicing.** `sendReply` slices off the trailing `}` and re-appends. Every current response sets `Type` so it holds, but a response marshaling to `{}` would produce invalid JSON `{,"req_id":N}`. — `internal/server/client.go:155-158` |
+| 58 | 2 | open | **`Server.Close()` can race `Send`.** `Close` closes `s.ch` while `Send` selects on it — a cross-goroutine `Send` racing `Close` panics on send-to-closed-channel. Latent today (both run on the main goroutine). — `internal/tui/server.go:83-119` |
+| 59 | 2 | open | **`UIPrompter.secretInput` blocks forever if the program quit while a prompt was pending.** `p.Send` becomes a no-op; the dial goroutine leaks at shutdown. — `internal/tui/ui_prompter.go:54-66` |
+| 60 | 2 | open | **`execCmdSync` runs `tea.Cmd`s synchronously.** Any layer returning `tea.Tick` from a raw-input/SessionCmd path would freeze the loop for the duration. Nothing does so today; nothing prevents it. — `internal/tui/mainlayer.go:538-582` |
+| 61 | 2 | open | **Window title restored to `""` rather than the original on exit.** (Largely unavoidable without XTWINOPS title-stack support on the host, but visible.) — `pkg/bubbletea/cursed_renderer.go` (close path) |
+| 62 | 2 | open | **`trimBuffer` never trims — live-upgrade payload bloat.** The loop breaks when `c.Attr != (Attr{})`, but every blank cell carries `Attr{Fg/Bg: Color{Name:"default"}}` ≠ zero. Verified: an 80×24 screen with two characters marshals all 1920 cells — 137KB of JSON. The "dramatically reduces JSON serialization size" comment is dead code. — `pkg/te/state.go:228-236` |
+| 63 | 2 | open | **Raw C1 bytes from invalid UTF-8 are executed as controls.** Stray `0x80-0xBF` bytes fall back to `rune(b)`, and ground state interprets `0x90/0x98/0x9B/0x9D` as DCS/SOS/CSI/OSC introducers (verified: raw `0x9B 31 6D` sets red). In UTF-8 mode xterm does not honor raw single-byte C1; binary spew can enter string-absorbing states and swallow legitimate output until a terminator. — `pkg/te/stream.go:209-217,333-350` |
+| 64 | 2 | open | **Cell representation is GC-hostile.** `Cell = {Data string, Attr{Fg,Bg Color{Name string,…}}}` — two-plus heap strings per cell, `Color.Name` redundant to `Mode+Index`. At 256-col × deep scrollback this is a large footprint, and it's why `rowBlank`/`trimBuffer`-style equality tricks are fragile. The hot parse path also allocates per Feed (`[]byte` → `[]rune` → `string` per flush). — `pkg/te/types.go`, `pkg/te/stream.go` |
+| 65 | 2 | open | **Thread-safety and mode-key contracts are implicit.** The "caller locks" contract is stated nowhere in `pkg/te` (`LinesCells`/`Display` look temptingly callable from anywhere); the `mode << 5` private-mode encoding leaks into the public API and consumers hand-roll `privateModeKey`; `modes.go` lacks constants for the modes consumers actually need (1000/1002/1006/2004 recreated in the TUI). — `pkg/te/modes.go`, `internal/tui/terminal.go` |
+| 66 | 1 | open | **`CloseGracefully` polls with `time.Sleep`.** A closed-notification from writeLoop would be deterministic. — `internal/server/client.go:209-218` |
+| 67 | 1 | open | **`sessionCreateMus` never shrinks.** Unbounded with unique session names. — `internal/server/server.go:54,452-455` |
+| 68 | 1 | open | **Duplicate systemd unit-template code.** `generateUnit` re-inlined in `cmdRestart`; will drift. — `internal/server/service.go:51-66,212-213` |
+| 69 | 1 | open | **Dead/vestigial code in the parser.** `Stream.skipNext` reset in several places but never set true; `strict` stored, never read; `DiffScreen` wraps Screen and adds nothing; `handleCSI`'s `'$'` and `' '/'>'` branches unreachable (already consumed by the intermediate range check). — `pkg/te/stream.go:116,219-227,251-253,466,482-493`, `pkg/te/diff_screen.go` |
+
+---
+
+## Architectural strengths (for the record)
+
+- **Actor/event-loop decomposition**: region actors own all screen state with
+  zero mutexes; uniform `select { msgs <- m; case <-actorDone }` liveness
+  fallback so dead actors never wedge callers; single event loop owning the
+  tree with per-request `StartTx/CommitTx` and versioned op broadcast.
+- **Server→client backpressure**: byte-indexed drop detection (the client is
+  told exactly how much it lost), behind-flag + lazily-built catchup snapshot +
+  `ScrollbackDesync` re-heal, seq-numbered scrollback windows
+  (`FirstSeq`/`TotalAdded`), behind-timeout circuit breaker, and the
+  "never send catchup ahead of the regular msg" queue reasoning.
+- **PTY fundamentals**: `SyscallConn().Control` so the runtime poller survives
+  ioctls; TIOCSWINSZ serialized through the actor; `HistoryScreen.Resize`
+  preserving shrink-evicted rows into scrollback; `sequenceSafe` carry
+  preventing escape/UTF-8 tearing at read boundaries; `coalesceMaxBytes`
+  guaranteeing broadcast progress under floods; snapshot-inside-the-actor
+  ordering eliminating the classic snapshot/delta race.
+- **Upgrade mechanics** (modulo #2/#26): stop readers → consistent snapshot →
+  dup FDs → SCM_RIGHTS on the header write so JSON and FDs can't separate,
+  kernel PTY buffer as the in-flight-byte queue, SIGWINCH nudge after restore,
+  effective-config handoff, systemd MAINPID re-notification.
+- **TUI input architecture**: the complete-sequence invariant
+  (`InputParser`/`splitComplete`) with a 50ms lone-ESC flush and structural
+  capability-response filtering; the custom pump with priority drain,
+  `serverWorkBudget` anti-starvation, coalesced `renderIfDirty`, and batched
+  `TerminalEvents`; tree-driven UI derivation robust against ordering races;
+  scrollback anchor/seq reconciliation; OSC 2459 sync markers making the
+  pipeline deterministically testable; `drainUntil` quit propagation.
+- **pkg/te**: exceptional conformance-test investment (~90 esctest2-ported
+  suites + pyte suites); grapheme-cluster-aware drawing (uniseg + NFC combining
+  merge); correct deferred-wrap modeling; clean Stream → EventHandler → Screen
+  → HistoryScreen layering; thoughtfully designed seq-space scrollback model;
+  serializable full state supporting live upgrade.
+- **Protocol/transport**: clean `net.Listener`/`net.Conn` abstraction with
+  `ListenerFile` FD hand-off; careful ssh auth scanner (nonce-bound ready
+  sentinel, ANSI stripping, bounded buffering); robust compression negotiation
+  (magic probe, deadline, prefix-replay fallback); input/resize ordering
+  correct by construction; clean reflect-based type registry.
