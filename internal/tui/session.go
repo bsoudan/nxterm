@@ -264,11 +264,16 @@ func (s *SessionLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 	case tea.WindowSizeMsg:
 		s.termWidth = msg.Width
 		s.termHeight = msg.Height
-		if t := s.activeTerm(); t != nil {
-			_, cmd, _ := t.Update(msg)
-			return nil, cmd, true
+		// Forward to every tab, not just the active one, so inactive tabs keep
+		// their dimensions current and don't reactivate at a stale size (which
+		// resized the server region back to the pre-resize geometry).
+		var cmd tea.Cmd
+		for _, t := range s.tabs {
+			if _, c, _ := t.term.Update(msg); c != nil {
+				cmd = c
+			}
 		}
-		return nil, nil, true
+		return nil, cmd, true
 
 	case TreeChangedMsg:
 		s.syncFromTree(msg.Tree)
