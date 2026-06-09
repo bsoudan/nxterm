@@ -10,6 +10,34 @@ import (
 	"nxtermd/internal/nxtest"
 )
 
+// TestScrollbackNotPollutedByAltScreen verifies that scrolling inside the
+// alternate screen (less/vim) does not leak lines into the primary scrollback.
+func TestScrollbackNotPollutedByAltScreen(t *testing.T) {
+	t.Parallel()
+	socketPath, cleanup := startServer(t)
+	defer cleanup()
+
+	driver := nxtest.DialDriver(t, socketPath)
+	region := driver.SpawnNativeRegion("nxtest-altsb", "r1", 80, 24)
+
+	nxterm := startFrontendForSession(t, socketPath, "nxtest-altsb")
+	defer nxterm.Kill()
+	region.Sync(nxterm, "TUI boot + subscribe")
+
+	var buf bytes.Buffer
+	buf.WriteString("\x1b[?1049h") // enter alt screen
+	for i := 1; i <= 100; i++ {
+		fmt.Fprintf(&buf, "ALT_%d\r\n", i)
+	}
+	buf.WriteString("\x1b[?1049l") // leave alt screen
+	region.Output(buf.Bytes()).Sync(nxterm, "alt-screen scroll")
+
+	out := runNxtermctl(t, socketPath, "region", "scrollback", region.ID())
+	if strings.Contains(out, "ALT_") {
+		t.Errorf("primary scrollback polluted by alt-screen lines:\n%s", out)
+	}
+}
+
 func TestScrollbackBuffer(t *testing.T) {
 	t.Parallel()
 	socketPath, cleanup := startServer(t)

@@ -25,6 +25,48 @@ func historyLineString(line []Cell) string {
 	return b.String()
 }
 
+// TestScrollbackNotPollutedByAltOrRegion verifies that scrollback (and the
+// TotalAdded sequence counter the client sync protocol keys off) only accrues
+// from full-screen scrolling on the primary buffer — not from alt-screen
+// scrolling (less/vim) or DECSTBM scroll-region scrolling (status-line apps).
+func TestScrollbackNotPollutedByAltOrRegion(t *testing.T) {
+	t.Run("alt screen", func(t *testing.T) {
+		screen := NewHistoryScreen(20, 5, 100)
+		stream := NewStream(screen, false)
+		stream.Feed("\x1b[?1049h") // enter alt screen
+		for i := 0; i < 10; i++ {
+			stream.Feed("line\r\n")
+		}
+		if got := screen.TotalAdded(); got != 0 {
+			t.Errorf("alt-screen scrolling added %d lines to scrollback, want 0", got)
+		}
+	})
+
+	t.Run("scroll region", func(t *testing.T) {
+		screen := NewHistoryScreen(20, 5, 100)
+		stream := NewStream(screen, false)
+		stream.Feed("\x1b[2;4r")  // DECSTBM: region rows 2..4 (1-based), top margin > 0
+		stream.Feed("\x1b[4;1H") // cursor to region bottom
+		for i := 0; i < 10; i++ {
+			stream.Feed("x\r\n")
+		}
+		if got := screen.TotalAdded(); got != 0 {
+			t.Errorf("region scrolling added %d lines to scrollback, want 0", got)
+		}
+	})
+
+	t.Run("full screen still accrues", func(t *testing.T) {
+		screen := NewHistoryScreen(20, 5, 100)
+		stream := NewStream(screen, false)
+		for i := 0; i < 10; i++ {
+			stream.Feed("line\r\n")
+		}
+		if screen.TotalAdded() == 0 {
+			t.Error("full-screen scrolling added nothing to scrollback")
+		}
+	})
+}
+
 // TestResizeShrinkViaWindowOpNoCrash reproduces a client crash: CSI 8;rows;cols t
 // (XTWINOPS resize) shrank the screen without truncating the cell buffer, leaving
 // len(Buffer) > Lines so LinesCells panicked with index out of range. WindowOp

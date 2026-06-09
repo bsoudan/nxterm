@@ -658,9 +658,18 @@ func (h *HistoryScreen) ReverseIndex() {
 	h.afterEvent("reverse_index")
 }
 
+// scrollbackEligible reports whether a line scrolling off the top should be
+// saved to scrollback. Only full-screen scrolling on the primary buffer
+// accrues history: alt-screen scrolling (less/vim) and DECSTBM scroll-region
+// scrolling (status-line apps) must not, or they pollute scrollback and
+// spuriously advance the TotalAdded sequence the client sync protocol keys off.
+func (h *HistoryScreen) scrollbackEligible(top, bottom int) bool {
+	return top == 0 && bottom == h.Lines-1 && !h.IsAltScreenActive()
+}
+
 func (h *HistoryScreen) indexInternal() {
 	top, bottom := h.scrollRegion()
-	if h.Cursor.Row == bottom {
+	if h.Cursor.Row == bottom && h.scrollbackEligible(top, bottom) {
 		if h.history.Top.append(h.Buffer[top]) {
 			h.history.FirstSeq++
 		}
@@ -671,7 +680,7 @@ func (h *HistoryScreen) indexInternal() {
 
 func (h *HistoryScreen) reverseIndexInternal() {
 	top, bottom := h.scrollRegion()
-	if h.Cursor.Row == top {
+	if h.Cursor.Row == top && h.scrollbackEligible(top, bottom) {
 		h.history.Bottom.append(h.Buffer[bottom])
 	}
 	h.Screen.ReverseIndex()
