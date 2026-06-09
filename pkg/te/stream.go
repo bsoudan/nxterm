@@ -273,6 +273,10 @@ func (st *Stream) FeedBytes(data []byte) (err error) {
 		}
 		i += size
 	}
+	// A trailing ' (CSI Pn ') is the complete HPA sequence; dispatch it at the
+	// end of input. ' is overloaded as both the HPA final byte and the
+	// DECIC/DECDC intermediate, so this favors HPA — a DECIC split exactly at
+	// the ' across a FeedBytes boundary is the rare casualty (see #32).
 	if st.state == stateCSI && st.pendingQuote {
 		st.pendingQuote = false
 		params := st.params
@@ -485,12 +489,11 @@ func (st *Stream) handleEscape(ch rune) error {
 }
 
 func (st *Stream) handleCSI(ch rune) error {
-	if ch == '\x1b' {
-		// ESC aborts the in-progress CSI and begins a new escape sequence.
-		st.resetCSI()
-		st.state = stateEscape
-		return nil
-	}
+	// Resolve a pending ' first (it carries across FeedBytes calls): '}' / '~'
+	// complete DECIC/DECDC, anything else means the ' was the HPA final and this
+	// byte begins the next sequence (handled in ground, e.g. ESC → new escape).
+	// This must run before the ESC-abort below so a deferred HPA isn't dropped
+	// by the ESC of a following sequence.
 	if st.pendingQuote {
 		st.pendingQuote = false
 		if ch == '}' || ch == '~' {
@@ -505,6 +508,12 @@ func (st *Stream) handleCSI(ch rune) error {
 		st.dispatchCSI('\'', params)
 		st.resetCSI()
 		return st.handleGround(ch)
+	}
+	if ch == '\x1b' {
+		// ESC aborts the in-progress CSI and begins a new escape sequence.
+		st.resetCSI()
+		st.state = stateEscape
+		return nil
 	}
 	if ch == '?' {
 		st.private = true
