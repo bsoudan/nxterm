@@ -318,6 +318,23 @@ func (s *Screen) LinesCells() [][]Cell {
 	return lines
 }
 
+// clearWidePairAt blanks the surviving half of a wide-character pair that
+// overwriting cell col would orphan: writing over a wide head leaves a stray
+// empty continuation (shifts the line left on render), and writing over a
+// continuation leaves a half-rendered head (hides the new char). xterm blanks
+// the orphan to a space. Continuation cells are uniquely Data == "".
+func clearWidePairAt(line []Cell, col int) {
+	if col < 0 || col >= len(line) {
+		return
+	}
+	if runewidth.StringWidth(line[col].Data) == 2 && col+1 < len(line) {
+		line[col+1] = Cell{Data: " ", Attr: line[col+1].Attr}
+	}
+	if line[col].Data == "" && col > 0 && runewidth.StringWidth(line[col-1].Data) == 2 {
+		line[col-1] = Cell{Data: " ", Attr: line[col-1].Attr}
+	}
+}
+
 // Draw renders text at the current cursor position.
 func (s *Screen) Draw(data string) {
 	data = s.translate(data)
@@ -348,8 +365,13 @@ loop:
 		line := s.Buffer[s.Cursor.Row]
 		switch {
 		case width == 1:
+			clearWidePairAt(line, s.Cursor.Col)
 			line[s.Cursor.Col] = Cell{Data: cluster, Attr: s.Cursor.Attr}
 		case width == 2:
+			clearWidePairAt(line, s.Cursor.Col)
+			if s.Cursor.Col+1 < s.Columns {
+				clearWidePairAt(line, s.Cursor.Col+1)
+			}
 			line[s.Cursor.Col] = Cell{Data: cluster, Attr: s.Cursor.Attr}
 			if s.Cursor.Col+1 < s.Columns {
 				line[s.Cursor.Col+1] = Cell{Data: "", Attr: s.Cursor.Attr}
