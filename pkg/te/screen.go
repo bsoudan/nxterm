@@ -244,32 +244,11 @@ func (s *Screen) Resize(lines, columns int) {
 		s.screenPixelHeight = s.windowPixelHeight
 	}
 	s.rightMargin = s.Columns - 1
+	// Only geometry-related state is reset on resize. Palette, cursor style,
+	// saved modes, selection, title stacks, conformance, etc. are NOT touched —
+	// those belong to Reset(), not Resize() (this body had been copy-pasted).
 	s.lineWrapped = make(map[int]bool)
 	s.wrapNext = false
-	s.savedModes = make(map[int]bool)
-	s.selectionData = make(map[string]string)
-	s.colorPalette = make(map[int]string)
-	s.dynamicColors = make(map[int]string)
-	s.specialColors = make(map[int]string)
-	s.titleHexInput = false
-	s.titleHexOutput = false
-	s.conformanceLevel = 1
-	s.conformanceExplicit = false
-	s.cursorStyle = 0
-	s.charProtectionMode = 0
-	s.statusDisplay = 0
-	s.titleStack = nil
-	s.iconStack = nil
-	if s.charPixelWidth == 0 {
-		s.charPixelWidth = 8
-	}
-	if s.charPixelHeight == 0 {
-		s.charPixelHeight = 16
-	}
-	s.windowPixelWidth = s.Columns * s.charPixelWidth
-	s.windowPixelHeight = s.Lines * s.charPixelHeight
-	s.screenPixelWidth = s.windowPixelWidth
-	s.screenPixelHeight = s.windowPixelHeight
 
 	if s.altBuffer != nil {
 		s.altBuffer = makeBlankCells(lines, columns)
