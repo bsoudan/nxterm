@@ -162,6 +162,9 @@ func (s *Server) acceptLoop(ln net.Listener) {
 				return
 			}
 			slog.Debug("accept error", "err", err)
+			// Back off on persistent errors (e.g. EMFILE) so a failing
+			// Accept doesn't hot-spin the loop at 100% CPU.
+			time.Sleep(10 * time.Millisecond)
 			continue
 		}
 		if s.noAccept.Load() {
@@ -172,8 +175,16 @@ func (s *Server) acceptLoop(ln net.Listener) {
 			conn.Close()
 			continue
 		}
+		// Negotiate compression and register the client on a per-connection
+		// goroutine. The negotiation does a blocking read with a 5s deadline;
+		// running it inline would let one client that connects and sends
+		// nothing stall acceptance of every other client.
 		wrapped := transport.WrapTracing(conn, fmt.Sprintf("server:%s", conn.RemoteAddr()))
-		s.acceptClient(transport.NegotiateCompressionServer(wrapped))
+		go func() {
+			// Negotiation must be inside the goroutine: as an argument it would
+			// be evaluated synchronously and still block the accept loop.
+			s.acceptClient(transport.NegotiateCompressionServer(wrapped))
+		}()
 	}
 }
 
