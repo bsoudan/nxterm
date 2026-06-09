@@ -337,6 +337,21 @@ loop:
 			s.Cursor.Col = limit
 		}
 
+		// A width-2 cluster that can't fit in the single remaining column wraps
+		// to the next line (autowrap), blanking the last cell — xterm does not
+		// split a wide char across the right edge. Guarded so a 1-column screen
+		// can't loop, and only when a row below exists to wrap into without
+		// scrolling (on the last line the existing deferred-wrap applies, which
+		// the pyte conformance suite encodes for the line-end case).
+		if width == 2 && s.Cursor.Col == limit && s.Cursor.Col > 0 &&
+			s.Cursor.Row < s.Lines-1 && s.isModeSet(ModeDECAWM) {
+			s.Buffer[s.Cursor.Row][s.Cursor.Col] = s.defaultCell()
+			s.lineWrapped[s.Cursor.Row] = true
+			s.Dirty[s.Cursor.Row] = struct{}{}
+			s.CarriageReturn()
+			s.LineFeed()
+		}
+
 		if s.isModeSet(ModeIRM) && width > 0 {
 			s.InsertCharacters(width)
 		}
