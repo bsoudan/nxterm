@@ -25,6 +25,39 @@ func historyLineString(line []Cell) string {
 	return b.String()
 }
 
+// TestResizeShrinkViaWindowOpNoCrash reproduces a client crash: CSI 8;rows;cols t
+// (XTWINOPS resize) shrank the screen without truncating the cell buffer, leaving
+// len(Buffer) > Lines so LinesCells panicked with index out of range. WindowOp
+// dispatches to Screen.Resize (not the history-aware HistoryScreen.Resize), so the
+// invariant must hold in Screen.Resize itself.
+func TestResizeShrinkViaWindowOpNoCrash(t *testing.T) {
+	screen := NewHistoryScreen(80, 24, 100)
+	stream := NewStream(screen, false)
+	for i := 0; i < 24; i++ {
+		screen.Draw(strings.Repeat("x", 80))
+		if i != 23 {
+			screen.LineFeed()
+		}
+	}
+
+	stream.Feed("\x1b[8;5;80t")
+
+	if screen.Lines != 5 {
+		t.Fatalf("Lines = %d, want 5", screen.Lines)
+	}
+	if len(screen.Buffer) != screen.Lines {
+		t.Fatalf("len(Buffer) = %d, want %d (Lines) — buffer not truncated on shrink", len(screen.Buffer), screen.Lines)
+	}
+	if screen.Cursor.Row >= screen.Lines {
+		t.Fatalf("cursor row %d out of range for %d lines", screen.Cursor.Row, screen.Lines)
+	}
+
+	cells := screen.LinesCells()
+	if len(cells) != screen.Lines {
+		t.Fatalf("LinesCells len = %d, want %d", len(cells), screen.Lines)
+	}
+}
+
 // From pyte/tests/test_screen.py::test_index
 func TestHistoryIndex(t *testing.T) {
 	screen := NewHistoryScreen(5, 5, 50)

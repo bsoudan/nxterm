@@ -96,7 +96,7 @@ func recvMsg(conn *net.UnixConn, timeout time.Duration) (upgradeMsg, []*os.File,
 	// Read 4-byte header (may carry FDs).
 	header := make([]byte, 4)
 	oob := make([]byte, 4096)
-	n, oobn, _, _, err := conn.ReadMsgUnix(header, oob)
+	n, oobn, recvflags, _, err := conn.ReadMsgUnix(header, oob)
 	if err != nil {
 		return upgradeMsg{}, nil, fmt.Errorf("read header: %w", err)
 	}
@@ -120,6 +120,16 @@ func recvMsg(conn *net.UnixConn, timeout time.Duration) (upgradeMsg, []*os.File,
 				files = append(files, os.NewFile(uintptr(fd), fmt.Sprintf("fd-%d", fd)))
 			}
 		}
+	}
+	// If the ancillary buffer was too small the kernel drops the overflowing
+	// FDs and sets MSG_CTRUNC. Proceeding would leave us with a partial,
+	// mismatched FD set (and leaked descriptors in the sender), so fail loudly
+	// rather than reconstruct from a truncated handoff.
+	if recvflags&unix.MSG_CTRUNC != 0 {
+		for _, f := range files {
+			f.Close()
+		}
+		return upgradeMsg{}, nil, fmt.Errorf("control message truncated (MSG_CTRUNC): too many FDs for %d-byte oob buffer", len(oob))
 	}
 
 	// Read payload.

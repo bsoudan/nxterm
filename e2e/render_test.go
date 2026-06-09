@@ -31,6 +31,30 @@ func TestStartAndRender(t *testing.T) {
 	}
 }
 
+// TestWindowOpResizeShrinkNoCrash feeds XTWINOPS "CSI 8;5;80t" (resize to 5
+// rows) into a region. Before the te.Screen.Resize buffer-truncation fix this
+// left len(Buffer) > Lines, and the client panicked in LinesCells while
+// rendering — killing the whole TUI. The client must survive and keep
+// rendering subsequent output.
+func TestWindowOpResizeShrinkNoCrash(t *testing.T) {
+	t.Parallel()
+	socketPath, cleanup := startServer(t)
+	defer cleanup()
+
+	driver := nxtest.DialDriver(t, socketPath)
+	region := driver.SpawnNativeRegion("nxtest-winop", "r1", 80, 24)
+
+	nxterm := startFrontendForSession(t, socketPath, "nxtest-winop")
+	defer nxterm.Kill()
+	region.Sync(nxterm, "TUI boot + subscribe")
+
+	// The resize is replayed into the client's local HistoryScreen; the marker
+	// that follows forces a render (LinesCells) on the shrunken buffer.
+	region.Output([]byte("\x1b[8;5;80tWINOP_OK\r\n")).Sync(nxterm, "feed winop + marker")
+
+	nxterm.WaitFor("WINOP_OK", 10*time.Second)
+}
+
 func TestCursorPosition(t *testing.T) {
 	t.Parallel()
 	socketPath, serverCleanup := startServer(t)

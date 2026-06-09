@@ -153,6 +153,15 @@ func (s *ScrollbackLayer) handleSyncChunk(msg protocol.GetScrollbackResponse) {
 	// When events are in sync, only fill the front gap: prepend the
 	// portion of the response older than the client's current FirstSeq.
 	// Either way, a single PrependHistory call completes the merge.
+	// No local screen yet (scrollback opened before the first ScreenUpdate):
+	// there is nothing to reconcile the response into. Mark the fetch done and
+	// leave syncBuf for View to render rather than dereferencing a nil hscreen.
+	if s.term.hscreen == nil {
+		slog.Debug("scrollback sync: no local hscreen, skipping reconcile")
+		s.synced = true
+		return
+	}
+
 	responseFirstSeq := int64(msg.ScrollbackTotal) - int64(len(s.syncBuf))
 	if s.term.hscreen.TotalAdded() < msg.ScrollbackTotal {
 		slog.Debug("scrollback sync: client behind, rebuilding from response",

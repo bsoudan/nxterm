@@ -205,6 +205,10 @@ func (s *Screen) Resize(lines, columns int) {
 		s.CursorPosition(0, 0)
 		s.DeleteLines(s.Lines - lines)
 		s.RestoreCursor()
+		// DeleteLines shifts the surviving rows to the top of the buffer but
+		// leaves its length unchanged; truncate so len(Buffer) == Lines holds
+		// (LinesCells and snapshot callers rely on this invariant).
+		s.Buffer = s.Buffer[:lines]
 	}
 
 	fitRowsWidth(s.Buffer, columns, s.defaultCell())
@@ -217,6 +221,12 @@ func (s *Screen) Resize(lines, columns int) {
 
 	s.Lines = lines
 	s.Columns = columns
+	if s.Cursor.Row >= lines {
+		s.Cursor.Row = lines - 1
+	}
+	if s.Cursor.Col >= columns {
+		s.Cursor.Col = columns - 1
+	}
 	s.SetMargins(0, 0)
 	s.leftMargin = 0
 	if s.charPixelWidth == 0 {

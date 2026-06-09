@@ -111,15 +111,19 @@ func (s *Server) SetDownload(d *Download) {
 }
 
 // Close signals the server goroutine to exit. Safe to call multiple times.
+//
+// Only s.done is closed; s.ch is deliberately left open. Send() has multiple
+// callers (keystrokes, resize, tasks) and closing s.ch would let a concurrent
+// Send race onto a closed channel and panic. The consumer (runConnection)
+// exits on s.done instead.
 func (s *Server) Close() {
 	s.closeOnce.Do(func() {
 		close(s.done)
-		close(s.ch)
 	})
 }
 
 // Run connects to the server, processes messages, and handles reconnection.
-// It blocks until the send channel is closed.
+// It blocks until Close() is called (which closes s.done).
 func (s *Server) Run(conn net.Conn, dialFn func() (net.Conn, error)) {
 	c := s.newClient(conn)
 	s.sendIdentify(c)
@@ -157,6 +161,11 @@ func (s *Server) runConnection(c *client.Client) (exit bool) {
 		}
 
 		select {
+		case <-s.done:
+			c.Close()
+			for range recv {
+			}
+			return true
 		case msg, ok := <-s.ch:
 			if !ok {
 				c.Close()

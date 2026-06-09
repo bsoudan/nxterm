@@ -150,6 +150,16 @@ func (s *Server) HandleUpgrade(specs []string, newBin string) error {
 			ptyDups[id] = pr.DetachPTY()
 		}
 	})
+	// These are dup'd copies; the regions keep their own FDs and SCM_RIGHTS
+	// dups them into the new process. Close our copies on every exit path so a
+	// failed upgrade (rollback) doesn't leak one descriptor per PTY per attempt.
+	defer func() {
+		for _, f := range ptyDups {
+			if f != nil {
+				f.Close()
+			}
+		}
+	}()
 	slog.Info("upgrade: detached PTY FDs", "pty_regions", len(ptyDups))
 
 	state := buildUpgradeState(s, result, specs)

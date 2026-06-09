@@ -42,6 +42,15 @@ func RecvUpgrade(fd int, version string) (*Server, []net.Listener, []string, err
 	specs := msg.Specs
 	slog.Info("upgrade-recv: got listener FDs", "count", len(files), "specs", specs)
 
+	// Each listener FD must have a matching spec; indexing specs by FD position
+	// otherwise panics. A mismatch means a malformed or truncated handoff.
+	if len(files) != len(specs) {
+		for _, f := range files {
+			f.Close()
+		}
+		return nil, nil, nil, fmt.Errorf("listener handoff mismatch: %d FDs, %d specs", len(files), len(specs))
+	}
+
 	listeners := make([]net.Listener, len(files))
 	for i, f := range files {
 		ln, err := transport.ListenFromFile(f, msg.Specs[i], sshCfg)

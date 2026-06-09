@@ -294,8 +294,31 @@ func (m *NxtermModel) handleCmd(msg MainCmd) (tea.Msg, tea.Cmd, bool) {
 
 // ── Event loop ──────────────────────────────────────────────────────────
 
+// restoreTerminalOnPanic is a deferred recovery for the hand-rolled event
+// loop. Unlike tea.Program.Run, this loop has no built-in panic handling, so a
+// panic here would unwind with the host terminal still in the alt screen and
+// mouse/kitty/bracketed-paste reporting enabled. On panic it runs cleanup
+// (which emits the renderer's terminal-restoring exit sequences) and then
+// re-panics so the crash is still surfaced. cleanup is itself guarded so a
+// secondary panic during teardown can't mask the original.
+func restoreTerminalOnPanic(cleanup func()) {
+	if r := recover(); r != nil {
+		func() {
+			defer func() { _ = recover() }()
+			cleanup()
+		}()
+		panic(r)
+	}
+}
+
 func (m *NxtermModel) Run(p *tea.Program, rawCh <-chan RawInputMsg,
 	dialFn func(string) (net.Conn, error), connected bool) error {
+
+	defer restoreTerminalOnPanic(func() {
+		if m.program != nil {
+			m.program.Stop(nil)
+		}
+	})
 
 	if err := p.Start(); err != nil {
 		return err
