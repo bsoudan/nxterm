@@ -333,14 +333,17 @@ func flushAndCloseClients(clients map[uint32]*Client) {
 
 func (s *Server) drainForUpgrade() upgradeResult {
 	resp := make(chan upgradeResult)
-	s.send(upgradeReq{resp: resp})
-	return <-resp
+	resume := make(chan struct{})
+	s.send(upgradeReq{resp: resp, resume: resume})
+	result := <-resp
+	result.resume = resume
+	return result
 }
 
 func (s *Server) resumeAfterFailedUpgrade(result upgradeResult) {
 	slog.Warn("upgrade: rolling back")
 	s.noAccept.Store(false)
-	s.send(resumeUpgradeReq{})
+	close(result.resume)
 	result.tree.ForEachRegion(func(_ string, r Region) {
 		pr, ok := r.(*PTYRegion)
 		if !ok {
@@ -353,8 +356,10 @@ func (s *Server) resumeAfterFailedUpgrade(result upgradeResult) {
 	slog.Warn("upgrade: rollback complete, but listeners were closed; restart may be needed")
 }
 
-type upgradeReq struct{ resp chan upgradeResult }
-type resumeUpgradeReq struct{}
+type upgradeReq struct {
+	resp   chan upgradeResult
+	resume chan struct{} // closed by resumeAfterFailedUpgrade to end the pause
+}
 
 type setUpgradeReq struct {
 	node protocol.UpgradeNode
@@ -415,27 +420,30 @@ func (r upgradeReq) handle(st *eventLoopState) {
 		tree:    st.tree,
 		clients: st.tree.ClientMap(),
 	}
-	// Pause: wait for resume (rollback) or done (successful upgrade).
+	// Pause the event loop until rollback (r.resume closed) or shutdown.
+	// Crucially we do NOT read st.srv.requests here: client requests that
+	// arrive during the freeze must stay queued, not be consumed, so the
+	// loop stays truly paused and HandleUpgrade has exclusive tree access.
+	// They are processed after a rollback resume; on a successful upgrade
+	// the process exits and clients reconnect to the new one.
 	select {
-	case <-st.srv.requests:
-		// resumeUpgradeReq — put state back and continue.
+	case <-r.resume:
+		// rollback — resume normal request processing
 	case <-st.srv.done:
 		st.srv.shutdownResp <- shutdownResult{}
 		st.exit = true
 	}
 }
 
-// resumeUpgradeReq is a no-op; it is consumed by the pause select
-// in upgradeReq.handle above.
-func (r resumeUpgradeReq) handle(st *eventLoopState) {}
-
 type upgradeResult struct {
 	tree *ServerTree
 	// clients is the snapshot of connected clients at the moment the
 	// event loop paused. The event loop goroutine does not touch the
-	// map after returning this result (it blocks on s.requests waiting
-	// for resume/done), so HandleUpgrade can iterate it safely and
-	// broadcast upgrade status messages. HandleUpgrade is responsible
-	// for closing every client at the end of the upgrade.
+	// tree or this map after returning the result (it blocks on resume/
+	// done), so HandleUpgrade can iterate it safely and broadcast upgrade
+	// status messages. HandleUpgrade is responsible for closing every
+	// client at the end of the upgrade.
 	clients map[uint32]*Client
+	// resume ends the pause on rollback; closed by resumeAfterFailedUpgrade.
+	resume chan struct{}
 }
