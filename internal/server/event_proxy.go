@@ -6,6 +6,13 @@ import (
 	"nxtermd/internal/protocol"
 )
 
+// maxSyncBatchEvents caps how many events a synchronized-output (mode 2026)
+// batch may buffer before the proxy gives up waiting for the terminating
+// sequence and flushes via a snapshot. Generous enough for a large single-frame
+// repaint; bounds memory and prevents an indefinite freeze if 2026 is never
+// reset.
+const maxSyncBatchEvents = 1 << 16
+
 type EventProxy struct {
 	screen       te.EventHandler
 	batch        []protocol.TerminalEvent
@@ -60,8 +67,15 @@ func (p *EventProxy) AllSyncs() []string {
 // trailing events, then the sync markers.
 func (p *EventProxy) Flush() (events []protocol.TerminalEvent, needsSnapshot bool, syncs []string) {
 	if p.syncMode {
-		// Still in sync mode — hold everything including syncs.
-		return nil, false, nil
+		if len(p.batch) <= maxSyncBatchEvents {
+			// Still in sync mode and within bounds — hold everything.
+			return nil, false, nil
+		}
+		// An app set mode 2026 and flooded output without ending sync. Break
+		// the sync to avoid an unbounded buffer and an indefinite freeze: end
+		// it here and fall through to flush via a snapshot.
+		p.syncMode = false
+		p.syncEndIndex = len(p.batch)
 	}
 
 	syncs = p.pendingSyncs
