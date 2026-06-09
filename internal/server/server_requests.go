@@ -291,7 +291,11 @@ func (r removeClientReq) handle(st *eventLoopState) {
 			region.ClearOverlay(r.clientID)
 		}
 		delete(st.clientOverlays, r.clientID)
-		delete(st.regionOverlays, rid)
+		// Only drop the region's overlay mapping if THIS client still owns it —
+		// another client may have re-registered over it.
+		if owner, ok := st.regionOverlays[rid]; ok && owner == r.clientID {
+			delete(st.regionOverlays, rid)
+		}
 	}
 	// Destroy any native regions owned by this client (driver). Each
 	// region's DriverDisconnected pushes childExitedMsg onto the actor,
@@ -555,6 +559,12 @@ func (r overlayRegisterReq) handle(st *eventLoopState) {
 	}
 	result := region.RegisterOverlay(r.client)
 	if result.err == "" {
+		// Re-registering replaces the previous owner's overlay on the actor;
+		// drop its now-stale reverse mapping so a later disconnect of the old
+		// owner can't delete the new owner's regionOverlays entry.
+		if prev, ok := st.regionOverlays[r.regionID]; ok && prev != r.client.id {
+			delete(st.clientOverlays, prev)
+		}
 		st.clientOverlays[r.client.id] = r.regionID
 		st.regionOverlays[r.regionID] = r.client.id
 	}
