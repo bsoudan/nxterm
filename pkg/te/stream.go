@@ -284,9 +284,29 @@ func (st *Stream) FeedBytes(data []byte) (err error) {
 	return nil
 }
 
+// abortSequence cancels any in-progress control sequence and returns to ground,
+// discarding partial CSI/OSC/DCS state. Used for the CAN/SUB anywhere-aborts.
+func (st *Stream) abortSequence() {
+	st.state = stateGround
+	st.resetCSI()
+	st.oscEsc = false
+	st.strBuf.Reset()
+}
+
 func (st *Stream) feedRune(ch rune) error {
 	if st.skipNext {
 		st.skipNext = false
+		return nil
+	}
+	// CAN and SUB abort any in-progress control sequence from any non-ground
+	// state and return to ground, rather than being swallowed into a string.
+	// SUB additionally displays a substitution character (Williams parser);
+	// CAN displays nothing. xterm resynchronizes here.
+	if (ch == 0x18 || ch == 0x1a) && st.state != stateGround {
+		st.abortSequence()
+		if ch == 0x1a {
+			st.listener.Draw(string(ch))
+		}
 		return nil
 	}
 	switch st.state {
@@ -465,6 +485,12 @@ func (st *Stream) handleEscape(ch rune) error {
 }
 
 func (st *Stream) handleCSI(ch rune) error {
+	if ch == '\x1b' {
+		// ESC aborts the in-progress CSI and begins a new escape sequence.
+		st.resetCSI()
+		st.state = stateEscape
+		return nil
+	}
 	if st.pendingQuote {
 		st.pendingQuote = false
 		if ch == '}' || ch == '~' {
@@ -521,11 +547,6 @@ func (st *Stream) handleCSI(ch rune) error {
 		st.csiIntermediate = ch
 		return nil
 	}
-	if ch == '\x18' || ch == '\x1a' {
-		st.state = stateGround
-		st.listener.Draw(string(ch))
-		return nil
-	}
 	if ch == ' ' || ch == '>' {
 		return nil
 	}
@@ -545,9 +566,11 @@ func (st *Stream) handleOSC(ch rune) error {
 			st.finishOSC()
 			return nil
 		}
-		st.appendStringPayload('\x1b')
-		st.appendStringPayload(ch)
-		return nil
+		// ESC not part of ST: terminate the OSC and treat ch as the start of a
+		// new escape sequence instead of embedding the bytes in the string.
+		st.finishOSC()
+		st.state = stateEscape
+		return st.handleEscape(ch)
 	}
 	if ch == '\x07' || ch == '\x9c' {
 		st.state = stateGround
@@ -571,7 +594,10 @@ func (st *Stream) handleString(ch rune) error {
 				st.finishDCS()
 				return nil
 			}
-			return nil
+			// ESC not part of ST: terminate the DCS and start a new escape.
+			st.finishDCS()
+			st.state = stateEscape
+			return st.handleEscape(ch)
 		}
 		if ch == '\x07' || ch == '\x9c' {
 			st.state = stateGround
@@ -591,7 +617,9 @@ func (st *Stream) handleString(ch rune) error {
 			st.state = stateGround
 			return nil
 		}
-		return nil
+		// ESC not part of ST: abort the ignored string and start a new escape.
+		st.state = stateEscape
+		return st.handleEscape(ch)
 	}
 	if ch == '\x07' || ch == '\x9c' {
 		st.state = stateGround
