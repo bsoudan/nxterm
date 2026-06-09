@@ -539,12 +539,18 @@ func (m *NxtermModel) processRawInput(raw RawInputMsg) (tea.Cmd, error) {
 		raw = RawInputMsg(remaining)
 	}
 	if m.commandMode {
-		return m.handleCommandInput([]byte(raw)), nil
+		return m.handleCommandInput(normalizeKittyKeys([]byte(raw))), nil
 	}
 	if needsFocusRouting(m.stack) {
+		// Focus layers parse input through bubbletea, which understands the
+		// kitty/modifyOtherKeys encodings; leave the bytes untouched.
 		m.focusBuf = append(m.focusBuf, raw...)
 		return nil, nil
 	}
+	// Normalize kitty-keyboard / modifyOtherKeys encodings to legacy bytes so
+	// the prefix-chord scan and always-bindings match and inner apps (which
+	// never enabled those protocols) receive ordinary bytes.
+	raw = RawInputMsg(normalizeKittyKeys([]byte(raw)))
 	if idx := bytes.IndexByte([]byte(raw), m.registry.PrefixKey); idx >= 0 {
 		if idx > 0 {
 			m.stack.Update(RawInputMsg(raw[:idx]))
