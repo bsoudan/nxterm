@@ -213,11 +213,12 @@ func (r *TaskRunner[RS]) Run(fn func(*Handle[RS])) uint64 {
 				slog.Debug("task panic recovered", "task", id, "panic", rv)
 			}
 			cancel()
-			// Best-effort send; if outbox is closed or blocked, skip.
-			select {
-			case r.fromTasks <- taskDoneMsg{taskID: id}:
-			default:
-			}
+			// Deliver the done notification reliably: a dropped done leaks the
+			// task in r.tasks (its subscriptions keep filtering every message
+			// forever). The send blocks until ListenCmd reads it — like every
+			// other task message — which it will, since the listen loop re-arms
+			// after each delivery.
+			r.fromTasks <- taskDoneMsg{taskID: id}
 		}()
 		fn(h)
 	}()
