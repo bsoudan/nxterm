@@ -78,13 +78,16 @@ The problems cluster in four themes, consistent across all subsystems:
 
 ### Remediation status (2026-06-09)
 
-The crash/panic-class findings have been addressed on branch `nx3`. Each fix
+The crash/panic and data-corruption findings have been addressed. Each fix
 shipped with a test that fails before the change and passes after.
 
 | Item | Status | Commit |
 |------|--------|--------|
 | #1 resize-shrink panic | fixed | `e371d5a` |
 | #2 live-upgrade pause | fixed | `d07f140` |
+| #3 split-UTF-8 mojibake | fixed (library hardening; the server PTY path was already guarded by `sequenceSafe`) | `0118934` |
+| #4 quadratic/unbounded OSC/DCS | fixed (O(n) builder, 512KB cap) | `ebed911` |
+| #5 alt-screen/scroll-region scrollback pollution | fixed (live corruption) | `51ea1a0` |
 | #13 event-loop panic net | partial — recover net added; the SIGTSTP-unhandled aside remains | `e371d5a` |
 | #26 upgrade-recv crash | partial — FD/spec-mismatch panic, `MSG_CTRUNC`, and the rollback FD leak fixed; the 253-FD single-`sendmsg` `SCM_RIGHTS` cap remains | `e371d5a` |
 | #58 `Server.Close` race | fixed | `e371d5a` |
@@ -96,7 +99,7 @@ after a tab switch/reconnect) — was surfaced during the TUI review but never g
 its own row below; it is recorded here for completeness.
 
 Everything else remains **open**, notably the security cluster (#6–#10) and the
-emulator chunk-boundary/resource bugs (#3, #4, #5).
+emulator fidelity gaps (#14, #17, #18, #36, #37).
 
 ---
 
@@ -111,9 +114,9 @@ operation).
 |---|-----|--------|---------|
 | 1 | 8 | FIXED (`e371d5a`) | **`CSI 8;rows;cols t` shrink panics every attached client.** `WindowOp` case 8 calls `Screen.Resize`, which on vertical shrink never truncates `s.Buffer` and doesn't clamp the cursor, leaving `len(Buffer) > Lines`; `LinesCells()` then indexes out of range. Go embedding means this bypasses the careful `HistoryScreen.Resize` override. The TUI replays winop events into its local hscreen and calls `LinesCells()`, so a child running `printf '\e[8;20;80t'` crashes every attached nxterm. The server survives only because `actor.snapshot()` happens to take `min(height, len(Buffer))`. — `pkg/te/screen.go:203,303,2359`, `pkg/te/history_screen.go:856`, `internal/tui/terminal.go:328,479,962` |
 | 2 | 8 | FIXED (`d07f140`) | **Live-upgrade "pause" consumes an arbitrary request as the resume signal.** `upgradeReq.handle` parks on `<-st.srv.requests` assuming the next message is `resumeUpgradeReq`, but client readLoops are never stopped (`stopAccepting()` only blocks new connections). Any in-flight request — someone typing during upgrade — is consumed and silently discarded (its sender blocks forever on `<-resp`, wedging that client's readLoop), and the event loop resumes full processing while `HandleUpgrade` concurrently iterates/mutates the same `ServerTree` from the signal goroutine: a Go map concurrent read/write (possible runtime panic) plus corrupt serialized upgrade state. Because `s.requests` is buffered (256), a single queued message at drain time breaks the freeze deterministically. — `internal/server/upgrade.go:403-420,330-344`, `internal/server/handlers.go:103-115` |
-| 3 | 7 | open | **UTF-8 runes split across Feed/FeedBytes calls are destroyed.** No partial-rune buffering: `DecodeRune` on an incomplete prefix returns `(RuneError, 1)` and the byte is emitted raw; `ByteStream`'s `buffer` field never actually retains a partial sequence. The server feeds raw PTY read chunks straight in. Verified: `日` fed as `[0xE6]` + `[0x97,0xA5]` renders `æ¥`. ~One corrupted character per PTY read-chunk boundary in CJK/emoji-heavy output. — `pkg/te/stream.go:201-217`, `pkg/te/byte_stream.go:17-38`, `internal/server/actor.go:501` |
-| 4 | 7 | open | **Unbounded + quadratic OSC/DCS string accumulation — CPU/memory DoS.** Per-rune `st.current += string(ch)` with no length cap. Measured: 16KB OSC payload = 39ms, 64KB = 783ms, 256KB = 16.3s; 1MB hung >3 minutes. `cat`ing a binary containing `ESC ]` with no early BEL/ST freezes that region's actor goroutine for minutes and grows memory without bound. xterm caps string buffers. — `pkg/te/stream.go:523,547` |
-| 5 | 7 | open | **Alt-screen and scroll-region scrolling pollutes scrollback.** `indexInternal` pushes `Buffer[top]` into history whenever the cursor is at the region bottom — no `altActive` check, no "region == full screen" check. Verified: 1049 alt-screen scrolling added 6 lines to scrollback (xterm: 0); a DECSTBM region scroll pushed 5 interior lines. Paging through `less`/`vim` stuffs primary scrollback with garbage **and** spuriously advances `TotalAdded`, the seq counter the whole client scrollback-sync protocol keys off. — `pkg/te/history_screen.go:661-670` |
+| 3 | 7 | FIXED (`0118934`) | **UTF-8 runes split across Feed/FeedBytes calls are destroyed.** _(Stream/ByteStream now carry incomplete trailing bytes across calls. The server PTY path was already guarded by `sequenceSafe`, so this was latent library hardening, not a live server corruption.)_ No partial-rune buffering: `DecodeRune` on an incomplete prefix returns `(RuneError, 1)` and the byte is emitted raw; `ByteStream`'s `buffer` field never actually retains a partial sequence. The server feeds raw PTY read chunks straight in. Verified: `日` fed as `[0xE6]` + `[0x97,0xA5]` renders `æ¥`. ~One corrupted character per PTY read-chunk boundary in CJK/emoji-heavy output. — `pkg/te/stream.go:201-217`, `pkg/te/byte_stream.go:17-38`, `internal/server/actor.go:501` |
+| 4 | 7 | FIXED (`ebed911`) | **Unbounded + quadratic OSC/DCS string accumulation — CPU/memory DoS.** _(O(n) strings.Builder accumulation, capped at 512KB.)_ Per-rune `st.current += string(ch)` with no length cap. Measured: 16KB OSC payload = 39ms, 64KB = 783ms, 256KB = 16.3s; 1MB hung >3 minutes. `cat`ing a binary containing `ESC ]` with no early BEL/ST freezes that region's actor goroutine for minutes and grows memory without bound. xterm caps string buffers. — `pkg/te/stream.go:523,547` |
+| 5 | 7 | FIXED (`51ea1a0`) | **Alt-screen and scroll-region scrolling pollutes scrollback.** _(Scrollback only accrues from full-screen primary-buffer scrolling now.)_ `indexInternal` pushes `Buffer[top]` into history whenever the cursor is at the region bottom — no `altActive` check, no "region == full screen" check. Verified: 1049 alt-screen scrolling added 6 lines to scrollback (xterm: 0); a DECSTBM region scroll pushed 5 interior lines. Paging through `less`/`vim` stuffs primary scrollback with garbage **and** spuriously advances `TotalAdded`, the seq counter the whole client scrollback-sync protocol keys off. — `pkg/te/history_screen.go:661-670` |
 
 ### Security
 
