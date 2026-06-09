@@ -114,7 +114,7 @@ type Stream struct {
 	takingText      bool
 	oscEsc          bool
 	skipNext        bool
-	dcsData         string
+	strBuf          strings.Builder
 	paramStrings    []string
 	escapeOverrides map[rune]func()
 	// pendingBytes holds an incomplete trailing UTF-8 sequence carried over
@@ -140,6 +140,20 @@ const (
 	stateEscapeSpace
 )
 
+// maxStringPayload caps the OSC/DCS string buffer so a long or never-terminated
+// control string (e.g. cat-ing a binary that contains ESC ]) can't grow memory
+// without bound. 512KB is generous for legitimate OSC use (titles, OSC 52
+// clipboard); excess bytes are dropped until the string terminator.
+const maxStringPayload = 1 << 19
+
+// appendStringPayload accumulates one rune of an OSC/DCS string in O(1)
+// amortized time (a strings.Builder, not per-rune string concat), up to the cap.
+func (st *Stream) appendStringPayload(ch rune) {
+	if st.strBuf.Len() < maxStringPayload {
+		st.strBuf.WriteRune(ch)
+	}
+}
+
 // NewStream creates a Stream for the provided event handler.
 func NewStream(screen EventHandler, strict bool) *Stream {
 	st := &Stream{strict: strict, useUTF8: true}
@@ -159,12 +173,13 @@ func (st *Stream) Attach(screen EventHandler) {
 	st.csiPrefix = 0
 	st.csiIntermediate = 0
 	st.pendingQuote = false
-	st.dcsData = ""
+	st.strBuf.Reset()
 	st.takingText = false
 	st.oscEsc = false
 	st.skipNext = false
 	st.use8BitControls = false
 	st.pendingBytes = nil
+	st.strBuf.Reset()
 	st.paramStrings = nil
 }
 
@@ -192,6 +207,7 @@ func (st *Stream) FeedBytes(data []byte) (err error) {
 			st.oscEsc = false
 			st.skipNext = false
 			st.pendingBytes = nil
+			st.strBuf.Reset()
 			err = fmt.Errorf("handler panic: %v", r)
 		}
 	}()
@@ -353,7 +369,8 @@ func (st *Stream) handleGround(ch rune) error {
 		st.listener.ReverseIndex()
 	case '\x90':
 		st.state = stateDCS
-		st.dcsData = ""
+		st.strBuf.Reset()
+		st.oscEsc = false
 	case '\x9a':
 		st.listener.ReportDeviceAttributes(0, true, '?')
 	case '\x98':
@@ -363,7 +380,7 @@ func (st *Stream) handleGround(ch rune) error {
 		st.resetCSI()
 	case '\x9d':
 		st.state = stateOSC
-		st.current = ""
+		st.strBuf.Reset()
 		st.oscEsc = false
 	case '\x9e':
 		st.state = statePM
@@ -391,12 +408,12 @@ func (st *Stream) handleEscape(ch rune) error {
 		st.resetCSI()
 	case ']':
 		st.state = stateOSC
-		st.current = ""
+		st.strBuf.Reset()
 		st.oscEsc = false
 	case 'P':
 		st.state = stateDCS
 		st.oscEsc = false
-		st.dcsData = ""
+		st.strBuf.Reset()
 	case '_':
 		st.state = stateAPC
 		st.oscEsc = false
@@ -528,8 +545,8 @@ func (st *Stream) handleOSC(ch rune) error {
 			st.finishOSC()
 			return nil
 		}
-		st.current += string('\x1b')
-		st.current += string(ch)
+		st.appendStringPayload('\x1b')
+		st.appendStringPayload(ch)
 		return nil
 	}
 	if ch == '\x07' || ch == '\x9c' {
@@ -541,7 +558,7 @@ func (st *Stream) handleOSC(ch rune) error {
 		st.oscEsc = true
 		return nil
 	}
-	st.current += string(ch)
+	st.appendStringPayload(ch)
 	return nil
 }
 
@@ -565,7 +582,7 @@ func (st *Stream) handleString(ch rune) error {
 			st.oscEsc = true
 			return nil
 		}
-		st.dcsData += string(ch)
+		st.appendStringPayload(ch)
 		return nil
 	}
 	if st.oscEsc {
@@ -587,18 +604,20 @@ func (st *Stream) handleString(ch rune) error {
 }
 
 func (st *Stream) finishDCS() {
-	data := st.dcsData
-	st.dcsData = ""
+	data := st.strBuf.String()
+	st.strBuf.Reset()
 	if len(data) >= 2 && data[0] == '$' && data[1] == 'q' {
 		st.listener.RequestStatusString(data[2:])
 	}
 }
 
 func (st *Stream) finishOSC() {
-	if st.current == "" {
+	payload := st.strBuf.String()
+	st.strBuf.Reset()
+	if payload == "" {
 		return
 	}
-	chunks := strings.Split(st.current, ";")
+	chunks := strings.Split(payload, ";")
 	if len(chunks) == 0 {
 		return
 	}

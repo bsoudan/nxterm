@@ -3,7 +3,39 @@ package te
 import (
 	"strings"
 	"testing"
+	"time"
 )
+
+// TestOSCNotQuadratic guards against O(n^2) OSC accumulation: a long OSC string
+// (here a 200KB window title) must be processed in linear time. Per-rune string
+// concatenation made a 256KB OSC take ~16s and could freeze a region for
+// minutes on larger garbage input.
+func TestOSCNotQuadratic(t *testing.T) {
+	screen := NewScreen(80, 24)
+	stream := NewStream(screen, false)
+	payload := "\x1b]0;" + strings.Repeat("A", 200*1024) + "\x07"
+	start := time.Now()
+	if err := stream.FeedBytes([]byte(payload)); err != nil {
+		t.Fatalf("FeedBytes: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("200KB OSC took %v — accumulation is not linear", elapsed)
+	}
+}
+
+// TestOSCCapped verifies an over-long OSC payload is bounded rather than growing
+// without limit.
+func TestOSCCapped(t *testing.T) {
+	screen := NewScreen(80, 24)
+	stream := NewStream(screen, false)
+	payload := "\x1b]0;" + strings.Repeat("A", 600*1024) + "\x07"
+	if err := stream.FeedBytes([]byte(payload)); err != nil {
+		t.Fatalf("FeedBytes: %v", err)
+	}
+	if got := len(screen.Title); got > maxStringPayload {
+		t.Fatalf("OSC title length %d exceeds cap %d", got, maxStringPayload)
+	}
+}
 
 // TestFeedBytesSplitUTF8 verifies that a multibyte rune split across FeedBytes
 // calls (as happens at PTY read-chunk boundaries) renders intact rather than as
