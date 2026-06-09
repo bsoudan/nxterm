@@ -330,8 +330,9 @@ func (m *NxtermModel) Run(p *tea.Program, rawCh <-chan RawInputMsg,
 
 	if connected {
 		m.initialSetup()
-	} else {
-		m.connectOverlay(dialFn)
+	} else if err := m.connectOverlay(dialFn); err != nil {
+		p.Stop(nil)
+		return nil
 	}
 	m.sm.CheckForUpgrades()
 
@@ -383,7 +384,10 @@ func (m *NxtermModel) Run(p *tea.Program, rawCh <-chan RawInputMsg,
 			case msg := <-srv.Lifecycle:
 				switch msg := msg.(type) {
 				case DisconnectedMsg:
-					m.reconnectLoop(msg)
+					if err := m.reconnectLoop(msg); err != nil {
+						p.Stop(nil)
+						return nil
+					}
 				case PausedMsg:
 					m.sessionPaused = true
 				case ResumedMsg:
@@ -447,7 +451,10 @@ func (m *NxtermModel) Run(p *tea.Program, rawCh <-chan RawInputMsg,
 		case msg := <-srv.Lifecycle:
 			switch msg := msg.(type) {
 			case DisconnectedMsg:
-				m.reconnectLoop(msg)
+				if err := m.reconnectLoop(msg); err != nil {
+					p.Stop(nil)
+					return nil
+				}
 			case PausedMsg:
 				m.sessionPaused = true
 			case ResumedMsg:
@@ -739,7 +746,11 @@ ready:
 	})
 }
 
-func (m *NxtermModel) reconnectLoop(initial DisconnectedMsg) {
+// reconnectLoop drains messages until the connection is restored. A
+// non-nil error (notably tea.ErrProgramQuit from a detach/quit chord
+// pressed while disconnected) must be propagated to Run — swallowing it
+// here made the first detach during a reconnect silently do nothing.
+func (m *NxtermModel) reconnectLoop(initial DisconnectedMsg) error {
 	m.sm.SetRetryAt(initial.RetryAt)
 	m.stack.Update(SetConnStatusMsg{Status: "reconnecting"})
 	m.program.Render()
@@ -774,7 +785,7 @@ func (m *NxtermModel) reconnectLoop(initial DisconnectedMsg) {
 
 		if err != nil {
 			close(tickDone)
-			return
+			return err
 		}
 		switch msg := msg.(type) {
 		case DisconnectedMsg:
@@ -783,12 +794,15 @@ func (m *NxtermModel) reconnectLoop(initial DisconnectedMsg) {
 			close(tickDone)
 			m.stack.Update(ReconnectAllMsg{})
 			m.sm.CheckForUpgrades()
-			return
+			return nil
 		}
 	}
 }
 
-func (m *NxtermModel) connectOverlay(dialFn func(string) (net.Conn, error)) {
+// connectOverlay drains messages until a server connection is established.
+// Like reconnectLoop, it must propagate drainUntil errors so a quit chord
+// pressed while the overlay is up actually exits.
+func (m *NxtermModel) connectOverlay(dialFn func(string) (net.Conn, error)) error {
 	for {
 		msg, err := m.drainUntil(func(source string, msg any) bool {
 			if source != "tea" {
@@ -799,7 +813,7 @@ func (m *NxtermModel) connectOverlay(dialFn func(string) (net.Conn, error)) {
 		})
 
 		if err != nil {
-			return
+			return err
 		}
 
 		connectMsg := msg.(ConnectToServerMsg)
@@ -834,6 +848,6 @@ func (m *NxtermModel) connectOverlay(dialFn func(string) (net.Conn, error)) {
 		})
 
 		SaveRecent(recentAddress(connectMsg.Endpoint, connectMsg.Session), connectMsg.Endpoint)
-		return
+		return nil
 	}
 }

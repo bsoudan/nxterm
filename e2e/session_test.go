@@ -397,6 +397,46 @@ func TestDetachSeparateKeys(t *testing.T) {
 	}
 }
 
+// TestDetachWhileReconnecting verifies that ctrl+b d detaches while the
+// client is in reconnect mode. The reconnect loop processes raw input
+// through the same dispatch path as the main loop, but used to discard the
+// resulting quit error — the chord visibly entered command mode and fired
+// detach, then nothing happened until a second attempt after reconnect.
+func TestDetachWhileReconnecting(t *testing.T) {
+	t.Parallel()
+	env := testEnv(t)
+	if err := nxtest.WriteServerConfig(env); err != nil {
+		t.Fatal(err)
+	}
+	srv, err := nxtest.StartServer(t.TempDir(), env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopped := false
+	defer func() {
+		if !stopped {
+			srv.Stop()
+		}
+	}()
+
+	nxt := nxtest.MustStartFrontend(t, srv.SocketPath, env, 80, 24)
+	defer nxt.Kill()
+
+	nxt.WaitFor("nxterm$", 10*time.Second)
+
+	// Kill the server so the client enters reconnect mode and stays there.
+	srv.Stop()
+	stopped = true
+	nxt.WaitFor("reconnecting", 10*time.Second)
+
+	nxt.Write([]byte("\x02d"))
+
+	if err := nxt.Wait(5 * time.Second); err != nil {
+		nxt.Kill()
+		t.Fatalf("frontend did not exit after detach while reconnecting: %v", err)
+	}
+}
+
 // TestDetachCommandPalette verifies that detach works from the command
 // palette (ctrl+b : detach).
 func TestDetachCommandPalette(t *testing.T) {
