@@ -535,6 +535,13 @@ func (st *Stream) handleCSI(ch rune) error {
 		st.current += string(ch)
 		return nil
 	}
+	if ch == ':' {
+		// Colon introduces SGR sub-parameters (ITU/kitty form). Accumulate it
+		// into the current parameter string; appendParam keeps the raw string
+		// and expandSGRParams interprets the colon groups for SGR.
+		st.current += string(ch)
+		return nil
+	}
 	if ch == ';' {
 		st.appendParam()
 		return nil
@@ -768,6 +775,9 @@ func (st *Stream) appendParam() {
 	current := st.current
 	if current != "" {
 		for _, r := range current {
+			if r == ':' {
+				break // integer value is the part before the first sub-parameter
+			}
 			value = value*10 + int(r-'0')
 			if value > 9999 {
 				value = 9999
@@ -778,6 +788,80 @@ func (st *Stream) appendParam() {
 	st.params = append(st.params, value)
 	st.paramStrings = append(st.paramStrings, current)
 	st.current = ""
+}
+
+// expandSGRParams flattens colon-grouped SGR sub-parameters (ITU/kitty form)
+// into the int sequence SelectGraphicRendition consumes. Params with no colon
+// pass through unchanged; colon groups are interpreted:
+//
+//	38:2:r:g:b / 38:2::r:g:b / 38:2:cs:r:g:b → 38,2,r,g,b   (truecolor; last 3 = rgb)
+//	38:5:n                                   → 38,5,n        (256-color)
+//	4:n                                      → 4             (underline; sub-param dropped)
+//
+// Falls back to the leading value for any other colon group so nothing leaks.
+func (st *Stream) expandSGRParams(params []int) []int {
+	hasColon := false
+	for _, s := range st.paramStrings {
+		if strings.ContainsRune(s, ':') {
+			hasColon = true
+			break
+		}
+	}
+	if !hasColon || len(st.paramStrings) != len(params) {
+		return params
+	}
+	out := make([]int, 0, len(params)+4)
+	for i, s := range st.paramStrings {
+		if !strings.ContainsRune(s, ':') {
+			out = append(out, params[i])
+			continue
+		}
+		parts := strings.Split(s, ":")
+		lead := params[i]
+		switch lead {
+		case 38, 48, 58:
+			kind := 0
+			if len(parts) >= 2 {
+				kind = atoiClamp(parts[1])
+			}
+			switch kind {
+			case 2:
+				tail := parts[2:]
+				if n := len(tail); n >= 3 {
+					out = append(out, lead, 2, atoiClamp(tail[n-3]), atoiClamp(tail[n-2]), atoiClamp(tail[n-1]))
+				} else {
+					out = append(out, lead)
+				}
+			case 5:
+				if len(parts) >= 3 {
+					out = append(out, lead, 5, atoiClamp(parts[2]))
+				} else {
+					out = append(out, lead)
+				}
+			default:
+				out = append(out, lead)
+			}
+		default:
+			// e.g. 4:3 (curly underline) — apply the base attribute only; the
+			// emulator has no underline-style rendering.
+			out = append(out, lead)
+		}
+	}
+	return out
+}
+
+func atoiClamp(s string) int {
+	value := 0
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			continue
+		}
+		value = value*10 + int(r-'0')
+		if value > 9999 {
+			return 9999
+		}
+	}
+	return value
 }
 
 func (st *Stream) dispatchCSI(final rune, params []int) {
@@ -895,7 +979,7 @@ func (st *Stream) dispatchCSI(final rune, params []int) {
 	case 'l':
 		st.listener.ResetMode(params, st.private)
 	case 'm':
-		st.listener.SelectGraphicRendition(params, st.private)
+		st.listener.SelectGraphicRendition(st.expandSGRParams(params), st.private)
 	case 'n':
 		mode := defaultParam(params, 0, 0)
 		rest := []int{}
