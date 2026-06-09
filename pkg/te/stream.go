@@ -117,6 +117,10 @@ type Stream struct {
 	dcsData         string
 	paramStrings    []string
 	escapeOverrides map[rune]func()
+	// pendingBytes holds an incomplete trailing UTF-8 sequence carried over
+	// from the previous FeedBytes call so a rune split across read-chunk
+	// boundaries isn't decoded as mojibake. Bounded to <4 bytes.
+	pendingBytes []byte
 }
 
 type parserState int
@@ -160,6 +164,7 @@ func (st *Stream) Attach(screen EventHandler) {
 	st.oscEsc = false
 	st.skipNext = false
 	st.use8BitControls = false
+	st.pendingBytes = nil
 	st.paramStrings = nil
 }
 
@@ -186,9 +191,19 @@ func (st *Stream) FeedBytes(data []byte) (err error) {
 			st.resetCSI()
 			st.oscEsc = false
 			st.skipNext = false
+			st.pendingBytes = nil
 			err = fmt.Errorf("handler panic: %v", r)
 		}
 	}()
+
+	// Prepend any incomplete trailing UTF-8 bytes carried from last call.
+	if len(st.pendingBytes) > 0 {
+		combined := make([]byte, 0, len(st.pendingBytes)+len(data))
+		combined = append(combined, st.pendingBytes...)
+		combined = append(combined, data...)
+		data = combined
+		st.pendingBytes = st.pendingBytes[:0]
+	}
 
 	var textBuf []rune
 	flush := func() {
@@ -205,6 +220,12 @@ func (st *Stream) FeedBytes(data []byte) (err error) {
 		if b < 0x80 {
 			ch = rune(b)
 		} else if b >= 0xC0 {
+			if st.useUTF8 && !utf8.FullRune(data[i:]) {
+				// Incomplete trailing multibyte sequence — carry the rest to
+				// the next FeedBytes call rather than mangling it now.
+				st.pendingBytes = append(st.pendingBytes[:0], data[i:]...)
+				break
+			}
 			r, n := utf8.DecodeRune(data[i:])
 			if r != utf8.RuneError || n > 1 {
 				ch = r

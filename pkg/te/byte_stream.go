@@ -19,6 +19,11 @@ func (st *ByteStream) Feed(data []byte) error {
 		st.buffer = append(st.buffer, data...)
 		var out []rune
 		for len(st.buffer) > 0 {
+			if !utf8.FullRune(st.buffer) {
+				// Incomplete trailing sequence — retain it for the next Feed
+				// rather than emitting the partial bytes raw.
+				break
+			}
 			r, size := utf8.DecodeRune(st.buffer)
 			if r == utf8.RuneError && size == 1 {
 				out = append(out, rune(st.buffer[0]))
