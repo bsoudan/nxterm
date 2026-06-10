@@ -764,7 +764,7 @@ func (s *Screen) EraseCharacters(params ...int) {
 		if line[col].Attr.ISOProtected {
 			continue
 		}
-		line[col] = Cell{Data: " ", Attr: s.defaultAttr()}
+		line[col] = Cell{Data: " ", Attr: s.bceAttr()}
 	}
 }
 
@@ -794,7 +794,7 @@ func (s *Screen) EraseInLine(how int, private bool, _ ...int) {
 		if protected {
 			continue
 		}
-		line[col] = Cell{Data: " ", Attr: s.defaultAttr()}
+		line[col] = Cell{Data: " ", Attr: s.bceAttr()}
 	}
 }
 
@@ -840,7 +840,7 @@ func (s *Screen) eraseInDisplay(how int, private bool, selective bool) {
 			if protected {
 				continue
 			}
-			line[col] = Cell{Data: " ", Attr: s.defaultAttr()}
+			line[col] = Cell{Data: " ", Attr: s.bceAttr()}
 		}
 		s.Dirty[row] = struct{}{}
 	}
@@ -2720,6 +2720,17 @@ func (s *Screen) defaultAttr() Attr {
 
 func (s *Screen) defaultCell() Cell {
 	return Cell{Data: " ", Attr: s.defaultAttr()}
+}
+
+// bceAttr is the attribute erased cells take under back-color-erase: the
+// default attributes but with the current SGR background. The xterm-256color
+// terminfo advertises `bce`, so ncurses apps expect cleared regions to carry
+// the active background; only the background is applied (foreground and other
+// rendition stay default).
+func (s *Screen) bceAttr() Attr {
+	a := s.defaultAttr()
+	a.Bg = s.Cursor.Attr.Bg
+	return a
 }
 
 func (s *Screen) copyRowSegment(srcRow, dstRow, left, right int) {
