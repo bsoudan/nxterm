@@ -290,14 +290,16 @@ func handleUnsubscribe(s *Server, c *Client, msg protocol.UnsubscribeRequest, re
 	slog.Debug("client unsubscribed", "client_id", c.id, "region_id", msg.RegionID)
 }
 
-func handleInput(s *Server, _ *Client, msg protocol.InputMsg) {
+func handleInput(s *Server, c *Client, msg protocol.InputMsg) {
 	region, overlayClient := s.RouteInput(msg.RegionID)
 	if overlayClient != nil {
-		overlayClient.SendMessage(protocol.OverlayInput{
+		if !overlayClient.SendMessage(protocol.OverlayInput{
 			Type:     "overlay_input",
 			RegionID: msg.RegionID,
 			Data:     msg.Data,
-		})
+		}) {
+			warnInputDropped(c, msg.RegionID, "overlay client behind")
+		}
 		return
 	}
 	if region == nil {
@@ -308,7 +310,26 @@ func handleInput(s *Server, _ *Client, msg protocol.InputMsg) {
 	if err != nil {
 		return
 	}
-	region.WriteInput(decoded)
+	if !region.WriteInput(decoded) {
+		warnInputDropped(c, msg.RegionID, "region backend behind")
+	}
+}
+
+// warnInputDropped surfaces a dropped keystroke to the client that submitted
+// it. Native-region and overlay-routed input rides a bounded writeCh and can
+// be dropped under backpressure; without this the loss was entirely silent.
+// Logged at warn level (input loss is more serious than a coalescable screen
+// update) and reported to the sender as a Warning so the UI isn't left
+// desynced with no signal.
+func warnInputDropped(c *Client, regionID, reason string) {
+	slog.Warn("input dropped under backpressure", "region_id", regionID, "reason", reason)
+	if c != nil {
+		c.SendMessage(protocol.Warning{
+			Type:     "warning",
+			WarnType: "input_dropped",
+			Message:  "input to region " + regionID + " dropped: " + reason,
+		})
+	}
 }
 
 func handleResize(s *Server, _ *Client, msg protocol.ResizeRequest, reply func(any)) {

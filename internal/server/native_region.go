@@ -95,8 +95,8 @@ func (r *NativeRegion) ScrollbackLen() int {
 	}
 }
 
-func (r *NativeRegion) WriteInput(data []byte) {
-	r.actor.backend.WriteInput(data)
+func (r *NativeRegion) WriteInput(data []byte) bool {
+	return r.actor.backend.WriteInput(data)
 }
 
 func (r *NativeRegion) Resize(width, height uint16) error {

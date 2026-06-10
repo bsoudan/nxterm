@@ -19,7 +19,7 @@ func (f *fakeRegion) Width() int                          { return 80 }
 func (f *fakeRegion) Height() int                         { return 24 }
 func (f *fakeRegion) Snapshot() Snapshot                  { return Snapshot{} }
 func (f *fakeRegion) GetScrollback() ScrollbackResult     { return ScrollbackResult{} }
-func (f *fakeRegion) WriteInput([]byte)                   {}
+func (f *fakeRegion) WriteInput([]byte) bool              { return true }
 func (f *fakeRegion) Resize(uint16, uint16) error         { return nil }
 func (f *fakeRegion) Kill()                               {}
 func (f *fakeRegion) Close()                              {}

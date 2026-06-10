@@ -34,7 +34,7 @@ type Region interface {
 
 	Snapshot() Snapshot
 	GetScrollback() ScrollbackResult
-	WriteInput([]byte)
+	WriteInput([]byte) bool
 	Resize(width, height uint16) error
 	Kill()
 	Close()
@@ -171,8 +171,8 @@ func (r *PTYRegion) Resize(width, height uint16) error {
 
 // WriteInput writes directly to the backend. For PTY regions this is a
 // thread-safe kernel write and does not go through the actor.
-func (r *PTYRegion) WriteInput(data []byte) {
-	r.actor.backend.WriteInput(data)
+func (r *PTYRegion) WriteInput(data []byte) bool {
+	return r.actor.backend.WriteInput(data)
 }
 
 func (r *PTYRegion) Kill() {

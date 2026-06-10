@@ -86,10 +86,12 @@ func (b *ptyBackend) waitLoop(msgs chan<- regionMsg) {
 	}
 }
 
-func (b *ptyBackend) WriteInput(data []byte) {
+func (b *ptyBackend) WriteInput(data []byte) bool {
 	if _, err := b.ptmx.Write(data); err != nil {
 		slog.Debug("write input error", "region_id", b.id, "err", err)
+		return false
 	}
+	return true
 }
 
 func (b *ptyBackend) Resize(rows, cols uint16) error {

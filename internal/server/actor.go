@@ -31,7 +31,10 @@ type regionBackend interface {
 
 	// WriteInput writes client-sourced input to the backend. Thread-safe;
 	// called from the region's WriteInput without going through the actor.
-	WriteInput(data []byte)
+	// Returns false if the input could not be delivered (e.g. a native
+	// region's driver has fallen behind), so callers can surface the drop
+	// instead of discarding keystrokes silently.
+	WriteInput(data []byte) bool
 
 	// Resize updates backend sizing.
 	Resize(rows, cols uint16) error

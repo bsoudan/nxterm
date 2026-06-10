@@ -88,8 +88,8 @@ func (b *nativeBackend) Start(msgs chan<- regionMsg, actorDone <-chan struct{}) 
 	}()
 }
 
-func (b *nativeBackend) WriteInput(data []byte) {
-	b.driver.SendMessage(protocol.NativeInput{
+func (b *nativeBackend) WriteInput(data []byte) bool {
+	return b.driver.SendMessage(protocol.NativeInput{
 		Type:     "native_input",
 		RegionID: b.id,
 		Data:     base64.StdEncoding.EncodeToString(data),
