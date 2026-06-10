@@ -71,6 +71,14 @@ type NxtermModel struct {
 	// rendered frame, yielding stale ScreenLines() on assertion.
 	pendingSyncAcks []string
 
+	// pasting is true while consuming the content of a host bracketed
+	// paste (between ESC[200~ and ESC[201~). pasteAtStart marks that the
+	// next paste segment emitted opened the paste, so the session re-wraps
+	// it with the start marker for mode-2004 children. Both persist across
+	// RawInputMsg boundaries because paste content can span several reads.
+	pasting      bool
+	pasteAtStart bool
+
 	// sessionPaused mirrors the server goroutine's paused state, updated
 	// from PausedMsg/ResumedMsg on srv.Lifecycle. Read from View() via
 	// RenderState.SessionPaused to drive the UI indicators.
@@ -543,25 +551,83 @@ func (m *NxtermModel) processRawInput(raw RawInputMsg) (tea.Cmd, error) {
 	}
 	if needsFocusRouting(m.stack) {
 		// Focus layers parse input through bubbletea, which understands the
-		// kitty/modifyOtherKeys encodings; leave the bytes untouched.
+		// kitty/modifyOtherKeys encodings and bracketed paste; leave the
+		// bytes untouched.
 		m.focusBuf = append(m.focusBuf, raw...)
 		return nil, nil
 	}
-	// Normalize kitty-keyboard / modifyOtherKeys encodings to legacy bytes so
-	// the prefix-chord scan and always-bindings match and inner apps (which
-	// never enabled those protocols) receive ordinary bytes.
-	raw = RawInputMsg(normalizeKittyKeys([]byte(raw)))
-	if idx := bytes.IndexByte([]byte(raw), m.registry.PrefixKey); idx >= 0 {
+	return m.routeSessionInput([]byte(raw))
+}
+
+// routeSessionInput splits raw input around host bracketed-paste markers.
+// Content inside a paste is routed verbatim to the active region as literal
+// data (so a pasted prefix byte, alt-binding-shaped bytes, or escape
+// sequences are never interpreted as commands); everything outside a paste
+// goes through the normal prefix-chord / always-binding path. Paste state is
+// carried on the model so a paste spanning several reads is handled correctly.
+func (m *NxtermModel) routeSessionInput(raw []byte) (tea.Cmd, error) {
+	var cmds []tea.Cmd
+	add := func(c tea.Cmd) {
+		if c != nil {
+			cmds = append(cmds, c)
+		}
+	}
+
+	for len(raw) > 0 {
+		if m.pasting {
+			if end := bytes.Index(raw, bracketPasteEnd); end >= 0 {
+				add(m.stack.Update(PasteInputMsg{Data: raw[:end], Start: m.pasteAtStart, End: true}))
+				m.pasteAtStart = false
+				m.pasting = false
+				raw = raw[end+len(bracketPasteEnd):]
+				continue
+			}
+			add(m.stack.Update(PasteInputMsg{Data: raw, Start: m.pasteAtStart}))
+			m.pasteAtStart = false
+			return tea.Batch(cmds...), nil
+		}
+
+		start := bytes.Index(raw, bracketPasteStart)
+		if start < 0 {
+			cmd, err := m.interpretInput(raw)
+			if err != nil {
+				return nil, err
+			}
+			add(cmd)
+			return tea.Batch(cmds...), nil
+		}
+		if start > 0 {
+			cmd, err := m.interpretInput(raw[:start])
+			if err != nil {
+				return nil, err
+			}
+			add(cmd)
+		}
+		m.pasting = true
+		m.pasteAtStart = true
+		raw = raw[start+len(bracketPasteStart):]
+	}
+	return tea.Batch(cmds...), nil
+}
+
+// interpretInput runs the normal (non-paste) input path: it normalizes
+// kitty/modifyOtherKeys encodings to legacy bytes so the prefix-chord scan
+// and always-bindings match and inner apps receive ordinary bytes, scans for
+// the prefix key (entering command mode on a match), and otherwise forwards
+// the bytes through the layer stack to the active session.
+func (m *NxtermModel) interpretInput(raw []byte) (tea.Cmd, error) {
+	norm := normalizeKittyKeys(raw)
+	if idx := bytes.IndexByte(norm, m.registry.PrefixKey); idx >= 0 {
 		if idx > 0 {
-			m.stack.Update(RawInputMsg(raw[:idx]))
+			m.stack.Update(RawInputMsg(norm[:idx]))
 		}
 		m.enterCommandMode()
-		if rest := raw[idx+1:]; len(rest) > 0 {
+		if rest := norm[idx+1:]; len(rest) > 0 {
 			return m.handleCommandInput(rest), nil
 		}
 		return nil, nil
 	}
-	return m.stack.Update(RawInputMsg(raw)), nil
+	return m.stack.Update(RawInputMsg(norm)), nil
 }
 
 func (m *NxtermModel) execCmdSync(cmd tea.Cmd) error {

@@ -459,6 +459,17 @@ func (t *TerminalLayer) ChildWantsMouse() bool {
 	return m1000 || m1002 || m1003
 }
 
+// ChildWantsPaste reports whether the child program enabled bracketed paste
+// (DEC mode 2004). When true, paste markers are forwarded to the child; when
+// false, only the pasted content is sent and the markers are stripped.
+func (t *TerminalLayer) ChildWantsPaste() bool {
+	if t.hscreen == nil {
+		return false
+	}
+	_, ok := t.hscreen.Mode[privateModeKey(2004)]
+	return ok
+}
+
 // MouseMode returns the bubbletea mouse mode based on the child's mode state.
 func (t *TerminalLayer) MouseMode() int {
 	if t.hscreen == nil {

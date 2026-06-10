@@ -262,6 +262,27 @@ func InputLoop(stdin *os.File, rawCh chan<- RawInputMsg, pipeW io.Writer) {
 // sgrMouseCSIPrefix identifies SGR mouse sequences (ESC [ <).
 var sgrMouseCSIPrefix = []byte{0x1b, '[', '<'}
 
+// bracketPasteStart / bracketPasteEnd are the host terminal's bracketed-paste
+// markers (DEC mode 2004). Bubbletea enables bracketed paste on the host
+// unconditionally, so a paste arrives as ESC[200~ <content> ESC[201~. The
+// content between the markers must be treated as literal data — never scanned
+// for the prefix chord, always-bindings, or capability responses.
+var (
+	bracketPasteStart = []byte("\x1b[200~")
+	bracketPasteEnd   = []byte("\x1b[201~")
+)
+
+// PasteInputMsg carries bracketed-paste content routed straight to the active
+// region as literal input, bypassing prefix/always-binding interpretation.
+// Start/End mark the segments that opened/closed the paste so the session can
+// re-wrap the content with markers when (and only when) the child program has
+// itself enabled bracketed paste (mode 2004).
+type PasteInputMsg struct {
+	Data  []byte
+	Start bool
+	End   bool
+}
+
 // handleRawInput processes raw bytes in normal mode (no focus layer active,
 // prefix key already handled by Model). It uses DecodeSequence to iterate
 // complete tokens, routing SGR mouse sequences and always-active keybindings

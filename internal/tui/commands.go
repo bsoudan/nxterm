@@ -30,3 +30,24 @@ func (s *SessionLayer) sendRawToServer(raw []byte) {
 		Data:     raw,
 	})
 }
+
+// sendPasteToServer forwards bracketed-paste content to the active region as
+// literal input. The host's paste markers are re-emitted to the child only
+// when the child enabled bracketed paste (mode 2004); otherwise the content
+// is delivered unwrapped so a child that never opted in doesn't receive stray
+// ESC[200~/ESC[201~ sequences.
+func (s *SessionLayer) sendPasteToServer(p PasteInputMsg) {
+	wantMarkers := false
+	if t := s.activeTerm(); t != nil {
+		wantMarkers = t.ChildWantsPaste()
+	}
+	var buf []byte
+	if p.Start && wantMarkers {
+		buf = append(buf, bracketPasteStart...)
+	}
+	buf = append(buf, p.Data...)
+	if p.End && wantMarkers {
+		buf = append(buf, bracketPasteEnd...)
+	}
+	s.sendRawToServer(buf)
+}

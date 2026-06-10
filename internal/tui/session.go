@@ -258,6 +258,10 @@ func (s *SessionLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 		resp, cmd := s.handleRawInput([]byte(msg))
 		return resp, cmd, true
 
+	case PasteInputMsg:
+		s.sendPasteToServer(msg)
+		return nil, nil, true
+
 	case SessionCmd:
 		return s.handleCmd(msg)
 
