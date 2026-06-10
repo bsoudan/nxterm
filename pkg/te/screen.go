@@ -443,10 +443,20 @@ func (s *Screen) Index() {
 			return
 		}
 		s.markDirtyRange(0, s.Lines-1)
-		for row := top; row < bottom; row++ {
-			s.Buffer[row] = s.Buffer[row+1]
+		left, right := s.horizontalMargins()
+		if left == 0 && right == s.Columns-1 {
+			for row := top; row < bottom; row++ {
+				s.Buffer[row] = s.Buffer[row+1]
+			}
+			s.Buffer[bottom] = blankLine(s.Columns, s.defaultCell())
+		} else {
+			// DECLRMM: scroll only the columns inside the margins, like
+			// ScrollUp, so content outside [left,right] is left in place.
+			for row := top; row < bottom; row++ {
+				s.copyRowSegment(row+1, row, left, right)
+			}
+			s.clearRowSegment(bottom, left, right)
 		}
-		s.Buffer[bottom] = blankLine(s.Columns, s.defaultCell())
 		return
 	}
 	if s.Cursor.Row < bottom {
@@ -467,10 +477,18 @@ func (s *Screen) ReverseIndex() {
 			return
 		}
 		s.markDirtyRange(0, s.Lines-1)
-		for row := bottom; row > top; row-- {
-			s.Buffer[row] = s.Buffer[row-1]
+		left, right := s.horizontalMargins()
+		if left == 0 && right == s.Columns-1 {
+			for row := bottom; row > top; row-- {
+				s.Buffer[row] = s.Buffer[row-1]
+			}
+			s.Buffer[top] = blankLine(s.Columns, s.defaultCell())
+		} else {
+			for row := bottom; row > top; row-- {
+				s.copyRowSegment(row-1, row, left, right)
+			}
+			s.clearRowSegment(top, left, right)
 		}
-		s.Buffer[top] = blankLine(s.Columns, s.defaultCell())
 		return
 	}
 	if s.Cursor.Row > top {
