@@ -563,13 +563,16 @@ func (s *Screen) SaveCursorDEC() {
 	s.saveCursorState(false)
 }
 
-func (s *Screen) saveCursorState(restoreWrap bool) {
+func (s *Screen) saveCursorState(saveMode bool) {
 	modeOrigin := s.isModeSet(ModeDECOM)
 	modeWrap := s.isModeSet(ModeDECAWM)
-	wrapNext := s.wrapNext
-	if !restoreWrap {
+	// The last-column wrap-pending flag is always preserved (xterm restores it
+	// on both DECRC and SCORC). Only the autowrap *mode* (DECAWM) is gated: the
+	// DEC variant (ESC 7 / the stream's CSI s,u path) must not save/restore it,
+	// or a save taken with DECAWM on would wrongly re-enable wrap after the app
+	// turned it off (esctest SCORC).
+	if !saveMode {
 		modeWrap = false
-		wrapNext = false
 	}
 	s.Savepoints = append(s.Savepoints, Savepoint{
 		Cursor:   s.Cursor,
@@ -578,7 +581,7 @@ func (s *Screen) saveCursorState(restoreWrap bool) {
 		Charset:  s.Charset,
 		Origin:   modeOrigin,
 		Wrap:     modeWrap,
-		WrapNext: wrapNext,
+		WrapNext: s.wrapNext,
 		SavedCol: s.SavedColumns,
 	})
 }
@@ -593,13 +596,11 @@ func (s *Screen) RestoreCursorDEC() {
 	s.restoreCursorState(false)
 }
 
-func (s *Screen) restoreCursorState(restoreWrap bool) {
+func (s *Screen) restoreCursorState(restoreMode bool) {
 	if len(s.Savepoints) == 0 {
 		s.ResetMode([]int{ModeDECOM}, false)
 		s.CursorPosition(0, 0)
-		if !restoreWrap {
-			s.wrapNext = false
-		}
+		s.wrapNext = false
 		return
 	}
 
@@ -613,16 +614,15 @@ func (s *Screen) restoreCursorState(restoreWrap bool) {
 	} else {
 		s.ResetMode([]int{ModeDECOM}, false)
 	}
-	if restoreWrap {
+	if restoreMode {
 		if last.Wrap {
 			s.SetMode([]int{ModeDECAWM}, false)
 		} else {
 			s.ResetMode([]int{ModeDECAWM}, false)
 		}
-		s.wrapNext = last.WrapNext
-	} else {
-		s.wrapNext = false
 	}
+	// Always restore the wrap-pending flag (decoupled from the DECAWM mode).
+	s.wrapNext = last.WrapNext
 	s.Cursor = last.Cursor
 	s.ensureHB()
 	s.ensureVB(true)
