@@ -85,6 +85,7 @@ func (c *Client) SendIdentify(processName string) {
 	_ = c.Send(protocol.Identify{
 		Type: "identify", Hostname: hostname,
 		Username: username, Pid: os.Getpid(), Process: processName,
+		ProtoMajor: protocol.ProtocolMajor, ProtoMinor: protocol.ProtocolMinor,
 	})
 }
 

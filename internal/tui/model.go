@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"log/slog"
 	"strings"
 	"time"
 
@@ -113,6 +114,13 @@ func (m *NxtermModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		_, cmd := m.quit()
 		return m, cmd
 	case protocol.Identify:
+		if refuse, warn := protocol.CheckProtocolVersion(msg.ProtoMajor, msg.ProtoMinor); refuse {
+			m.sm.err = "incompatible server: " + warn
+			_, cmd := m.quit()
+			return m, cmd
+		} else if warn != "" {
+			slog.Warn("server protocol version", "detail", warn)
+		}
 		if msg.Hostname != m.sm.localHostname {
 			m.sm.endpoint = m.sm.localHostname + " -> " + m.sm.endpoint
 		}

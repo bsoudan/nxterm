@@ -14,6 +14,40 @@ type Identify struct {
 	Username string `json:"username"`
 	Pid      int    `json:"pid"`
 	Process  string `json:"process"`
+	// ProtoMajor/ProtoMinor announce the speaker's wire-protocol version.
+	// Omitted (0/0) by peers that predate version negotiation, which are
+	// grandfathered with a warning rather than refused. See
+	// CheckProtocolVersion.
+	ProtoMajor int `json:"proto_major,omitempty"`
+	ProtoMinor int `json:"proto_minor,omitempty"`
+}
+
+// ProtocolMajor/ProtocolMinor are this build's wire-protocol version. Bump
+// Major for an incompatible change (a skewed pair must refuse to connect),
+// Minor for a backward-compatible addition (a skewed pair warns but proceeds).
+const (
+	ProtocolMajor = 1
+	ProtocolMinor = 0
+)
+
+// CheckProtocolVersion classifies a peer's announced protocol version against
+// this build's. It returns refuse=true when the connection must be rejected
+// (incompatible major), and a non-empty warn string when the skew is tolerable
+// but worth logging (peer predates versioning, or a minor-version difference).
+func CheckProtocolVersion(peerMajor, peerMinor int) (refuse bool, warn string) {
+	switch {
+	case peerMajor == 0:
+		return false, fmt.Sprintf("peer did not announce a protocol version (legacy); local is %d.%d",
+			ProtocolMajor, ProtocolMinor)
+	case peerMajor != ProtocolMajor:
+		return true, fmt.Sprintf("incompatible protocol major version: peer %d.%d, local %d.%d",
+			peerMajor, peerMinor, ProtocolMajor, ProtocolMinor)
+	case peerMinor != ProtocolMinor:
+		return false, fmt.Sprintf("protocol minor-version skew: peer %d.%d, local %d.%d",
+			peerMajor, peerMinor, ProtocolMajor, ProtocolMinor)
+	default:
+		return false, ""
+	}
 }
 
 type SpawnRequest struct {

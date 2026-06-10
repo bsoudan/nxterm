@@ -117,6 +117,18 @@ func (s *Server) dispatch(c *Client, line []byte) {
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
 func handleIdentify(s *Server, c *Client, msg protocol.Identify) {
+	if refuse, warn := protocol.CheckProtocolVersion(msg.ProtoMajor, msg.ProtoMinor); refuse {
+		slog.Warn("refusing client: "+warn, "client_id", c.id)
+		c.SendMessage(protocol.Warning{
+			Type: "warning", WarnType: "protocol_incompatible", Message: warn,
+		})
+		// Give the warning a chance to reach the wire, then drop the client.
+		c.CloseGracefully(time.Second)
+		return
+	} else if warn != "" {
+		slog.Warn("client protocol version", "client_id", c.id, "detail", warn)
+	}
+
 	ident := clientIdentity{
 		hostname: msg.Hostname,
 		username: msg.Username,

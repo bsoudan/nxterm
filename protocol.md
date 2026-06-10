@@ -53,19 +53,33 @@ Server-initiated messages (`region_created`, `screen_update`, `terminal_events`,
 
 ### identify
 
-Identify the connecting client to the server. Fire-and-forget; no response.
+Identify the connecting peer. Fire-and-forget; no response. Both directions
+send it: the client on connect, and the server (`process: "nxtermd"`) as its
+first message so the client can read the server's version.
 
 ```json
-{ "type": "identify", "hostname": "myhost", "username": "alice", "pid": 12345, "process": "nxterm" }
+{ "type": "identify", "hostname": "myhost", "username": "alice", "pid": 12345, "process": "nxterm", "proto_major": 1, "proto_minor": 0 }
 ```
 
-| Field    | Type   | Description                    |
-|----------|--------|--------------------------------|
-| type     | string | `"identify"`                   |
-| hostname | string | Client hostname                |
-| username | string | Client username                |
-| pid      | int32  | Client process ID              |
-| process  | string | Client process name            |
+| Field       | Type   | Description                                         |
+|-------------|--------|-----------------------------------------------------|
+| type        | string | `"identify"`                                        |
+| hostname    | string | Peer hostname                                       |
+| username    | string | Peer username                                       |
+| pid         | int32  | Peer process ID                                     |
+| process     | string | Peer process name                                   |
+| proto_major | int    | Wire-protocol major version (omitted ⇒ 0 = legacy)  |
+| proto_minor | int    | Wire-protocol minor version (omitted ⇒ 0)           |
+
+**Version negotiation.** On receiving the peer's `identify`, each side checks
+`proto_major`/`proto_minor` against its own (`protocol.ProtocolMajor`/`Minor`):
+
+- **Incompatible major** (different non-zero major) → **refuse**: the server
+  sends a `warning` with `warn_type: "protocol_incompatible"` and closes the
+  connection; the client surfaces a fatal error and disconnects.
+- **Legacy peer** (`proto_major` absent/0, i.e. predates negotiation) or a
+  **minor-version skew** → proceed, logging a warning. Minor bumps must stay
+  backward-compatible; bump the major for any incompatible change.
 
 ---
 

@@ -236,9 +236,11 @@ func (c *Client) GetProcess() string {
 func (c *Client) sendIdentify() {
 	hostname, _ := os.Hostname()
 	c.SendMessage(protocol.Identify{
-		Type:     "identify",
-		Hostname: hostname,
-		Process:  "nxtermd",
-		Pid:      os.Getpid(),
+		Type:       "identify",
+		Hostname:   hostname,
+		Process:    "nxtermd",
+		Pid:        os.Getpid(),
+		ProtoMajor: protocol.ProtocolMajor,
+		ProtoMinor: protocol.ProtocolMinor,
 	})
 }
