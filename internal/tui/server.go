@@ -2,6 +2,7 @@ package tui
 
 import (
 	"encoding/base64"
+	"fmt"
 	"log/slog"
 	"net"
 	"sync"
@@ -78,18 +79,33 @@ func NewServer(bufSize int, processName string) *Server {
 	}
 }
 
-// Send enqueues a message for the server goroutine. Non-blocking — drops
-// if the channel is full or the server is shut down.
-func (s *Server) Send(msg any) {
+// Send enqueues a message for the server goroutine to forward to the server.
+// Non-blocking. Returns false if the message was dropped — either because the
+// server is shut down or because the outbound queue is full. A full-queue drop
+// is logged at warn level so the loss is observable (input/control loss was
+// previously entirely silent), and callers that can react to a dropped message
+// may use the return value.
+//
+// This is a minimal stopgap for review item #15: it makes drops visible but
+// does NOT confirm delivery. The full write-confirmed design — Send returns
+// success only after conn.Write succeeds, with the blocking moved onto task
+// goroutines so the UI never stalls — is tracked in
+// doc/project/outbound-send-confirmation.md.
+func (s *Server) Send(msg any) bool {
 	select {
 	case <-s.done:
-		return
+		return false
 	default:
 	}
 	select {
 	case s.ch <- msg:
+		return true
 	case <-s.done:
+		return false
 	default:
+		slog.Warn("outbound message dropped: queue full",
+			"process", s.processName, "type", fmt.Sprintf("%T", msg))
+		return false
 	}
 }
 
