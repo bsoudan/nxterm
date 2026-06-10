@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -8,19 +9,37 @@ import (
 	"nxtermd/pkg/layer"
 )
 
+// errConnectionLost is the error reported to in-flight task requests when
+// the server connection drops before their response arrives.
+var errConnectionLost = errors.New("connection lost before response")
+
 // TermdHandle wraps a layer.Handle with nxtermd-specific request/response
 // capability. Task goroutines use this to make protocol roundtrips.
 type TermdHandle struct {
 	*layer.Handle[RenderState]
 }
 
+// requestFailed is delivered (as a Send response) to a task parked in
+// Request when its in-flight protocol request can no longer be answered —
+// e.g. the connection dropped before the response arrived. It turns the
+// parked Request into a returned error instead of an indefinite hang.
+type requestFailed struct{ err error }
+
 // Request sends a protocol request and blocks until the matching response
 // arrives. The request is sent via Handle.Send which routes it through
 // the bubbletea event loop where it is tagged with a req_id and sent
 // to the server. The task goroutine stays blocked until the response
-// is delivered via TaskRunner.Deliver.
+// is delivered via TaskRunner.Deliver — or, if the connection drops
+// mid-request, until the disconnect sweep delivers a requestFailed.
 func (h *TermdHandle) Request(req any) (any, error) {
-	return h.Send(req)
+	resp, err := h.Send(req)
+	if err != nil {
+		return nil, err
+	}
+	if rf, ok := resp.(requestFailed); ok {
+		return nil, rf.err
+	}
+	return resp, nil
 }
 
 // ── Overlay: a simple layer.Layer for task-driven dialogs ───────────────────

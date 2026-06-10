@@ -610,6 +610,18 @@ func (m *NxtermModel) execCmdSync(cmd tea.Cmd) error {
 	return nil
 }
 
+// failPendingReplies aborts every in-flight task request: each parked
+// Request is handed a requestFailed (so it returns an error instead of
+// hanging forever waiting for a response the dropped connection will
+// never deliver), and the correlation map is cleared so it doesn't leak
+// stale reqID→taskID entries across reconnects.
+func (m *NxtermModel) failPendingReplies(err error) {
+	for reqID, taskID := range m.pendingReplies {
+		m.tasks.Deliver(taskID, requestFailed{err: err})
+		delete(m.pendingReplies, reqID)
+	}
+}
+
 func (m *NxtermModel) processServerMsg(msg protocol.Message) {
 	if msg.ReqID > 0 {
 		if taskID, ok := m.pendingReplies[msg.ReqID]; ok {
@@ -757,6 +769,12 @@ ready:
 // pressed while disconnected) must be propagated to Run — swallowing it
 // here made the first detach during a reconnect silently do nothing.
 func (m *NxtermModel) reconnectLoop(initial DisconnectedMsg) error {
+	// The connection that carried any in-flight requests is gone; the new
+	// connection won't answer their old req_ids. Fail them now so parked
+	// tasks return an error instead of hanging, and the correlation map
+	// doesn't leak entries across the reconnect.
+	m.failPendingReplies(errConnectionLost)
+
 	m.sm.SetRetryAt(initial.RetryAt)
 	m.stack.Update(SetConnStatusMsg{Status: "reconnecting"})
 	m.program.Render()
