@@ -7,12 +7,14 @@ var textAttributes = map[int]string{
 	4:  "+underline",
 	5:  "+blink",
 	7:  "+reverse",
+	8:  "+conceal",
 	9:  "+strikethrough",
 	22: "-intensity",
 	23: "-italics",
 	24: "-underline",
 	25: "-blink",
 	27: "-reverse",
+	28: "-conceal",
 	29: "-strikethrough",
 }
 

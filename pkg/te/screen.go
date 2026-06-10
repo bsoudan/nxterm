@@ -1342,6 +1342,10 @@ func (s *Screen) SelectGraphicRendition(attrs []int, private bool) {
 				replace.Strikethrough = true
 			case "-strikethrough":
 				replace.Strikethrough = false
+			case "+conceal":
+				replace.Conceal = true
+			case "-conceal":
+				replace.Conceal = false
 			}
 		case attr == SgrFg256 || attr == SgrBg256:
 			keyIsFg := attr == SgrFg256
