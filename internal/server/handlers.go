@@ -354,6 +354,10 @@ func handleResize(s *Server, _ *Client, msg protocol.ResizeRequest, reply func(a
 		return
 	}
 
+	// Publish the new geometry to the tree (resize updates the actor + atomics
+	// but not the node, leaving tree snapshots/upgrade state stale).
+	s.UpdateRegionGeometry(region.ID())
+
 	reply(protocol.ResizeResponse{
 		Type:     "resize_response",
 		RegionID: region.ID(),

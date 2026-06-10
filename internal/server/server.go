@@ -310,6 +310,17 @@ func (s *Server) FindRegion(regionID string) Region {
 	return <-resp
 }
 
+// UpdateRegionGeometry re-publishes the region's tree node so its width/height
+// (and ScrollbackLen) reflect the current values. Call after a resize, which
+// updates the region actor + atomics but not the tree node.
+func (s *Server) UpdateRegionGeometry(regionID string) {
+	resp := make(chan struct{}, 1)
+	if !s.send(setRegionGeometryReq{regionID: regionID, resp: resp}) {
+		return
+	}
+	<-resp
+}
+
 // RouteInput looks up where input for a region should go. If an overlay is
 // active, the overlay's Client is returned. Otherwise the Region is returned
 // for direct PTY write.

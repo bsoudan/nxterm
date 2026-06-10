@@ -94,6 +94,11 @@ type killRegionReq struct {
 	resp     chan Region
 }
 
+type setRegionGeometryReq struct {
+	regionID string
+	resp     chan struct{}
+}
+
 type killClientReq struct {
 	clientID uint32
 	resp     chan *Client
@@ -352,6 +357,18 @@ func (r destroyRegionReq) handle(st *eventLoopState) {
 	if sessionRemoved {
 		st.notifySessionsChanged()
 	}
+}
+
+func (r setRegionGeometryReq) handle(st *eventLoopState) {
+	// Re-emit the region node so its width/height (and ScrollbackLen) reflect
+	// the post-resize geometry. Only SetRegion writes node geometry, and it
+	// otherwise runs only at spawn/restore — so without this every tree
+	// snapshot/stream advertised the spawn-time size and a live upgrade
+	// serialized the stale node.
+	if region := st.tree.Region(r.regionID); region != nil {
+		st.tree.SetRegion(region)
+	}
+	r.resp <- struct{}{}
 }
 
 func (r findRegionReq) handle(st *eventLoopState) {
