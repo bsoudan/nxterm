@@ -96,7 +96,21 @@ type regionActor struct {
 	msgs      chan regionMsg
 	actorDone chan struct{}
 	stopped   bool
+
+	// catchupTimer drives repair of dropped broadcasts on a quiescent
+	// region. The piggyback catchup in deliverBroadcast only fires on the
+	// next successful regular send; if the last batch of a burst drops and
+	// the program then goes quiet, behind stays set and the torn final
+	// frame is never healed. The timer, armed whenever a subscriber is left
+	// behind, fires after a quiescent window and sends the catchup snapshot.
+	catchupTimer *time.Timer
+	catchupArmed bool
 }
+
+// quiescentCatchupDelay is how long after a dropped broadcast the actor waits
+// before sending a repair snapshot to a still-behind subscriber, assuming no
+// regular broadcast piggybacked the catchup in the meantime. Test-overridable.
+var quiescentCatchupDelay = 250 * time.Millisecond
 
 // regionStats mirrors protocol.RegionStats; kept separate so the
 // server package doesn't import-reference protocol types in the actor
@@ -125,7 +139,7 @@ func newRegionActor(
 ) *regionActor {
 	proxy := NewEventProxy(hscreen)
 	stream := te.NewStream(proxy, false)
-	return &regionActor{
+	a := &regionActor{
 		id:          id,
 		backend:     backend,
 		destroyFn:   destroyFn,
@@ -139,6 +153,9 @@ func newRegionActor(
 		msgs:        make(chan regionMsg, actorChanSize),
 		actorDone:   make(chan struct{}),
 	}
+	a.catchupTimer = time.NewTimer(time.Hour)
+	a.catchupTimer.Stop()
+	return a
 }
 
 func (a *regionActor) start() {
@@ -148,14 +165,76 @@ func (a *regionActor) start() {
 
 func (a *regionActor) run() {
 	defer close(a.actorDone)
+	defer a.catchupTimer.Stop()
 	for {
-		msg, ok := <-a.msgs
-		if !ok {
-			return
+		select {
+		case msg, ok := <-a.msgs:
+			if !ok {
+				return
+			}
+			msg.handleRegion(a)
+		case <-a.catchupTimer.C:
+			a.catchupArmed = false
+			a.catchupBehindSubscribers()
 		}
-		msg.handleRegion(a)
 		if a.stopped {
 			return
+		}
+		a.armCatchupIfBehind()
+	}
+}
+
+// armCatchupIfBehind starts the quiescent-catchup timer when a subscriber is
+// behind and the timer isn't already pending. Single-goroutine (actor only),
+// so the catchupArmed guard makes the Reset safe: it only fires on a timer
+// that has already expired (consumed in run's select) or never armed.
+func (a *regionActor) armCatchupIfBehind() {
+	if a.catchupArmed || !a.anyBehind() {
+		return
+	}
+	a.catchupTimer.Reset(quiescentCatchupDelay)
+	a.catchupArmed = true
+}
+
+func (a *regionActor) anyBehind() bool {
+	for _, sub := range a.subscribers {
+		if sub.client.behind.Load() {
+			return true
+		}
+	}
+	return false
+}
+
+// catchupBehindSubscribers sends a fresh ScrollbackDesync snapshot to each
+// still-behind subscriber whose writeCh has drained, healing a torn frame
+// left by a dropped broadcast on a region that has since gone quiet. A
+// subscriber whose channel is still full is left for a later attempt; one
+// stuck past behindTimeout is shed by the same circuit breaker the regular
+// broadcast path uses (which never runs on a quiescent region).
+func (a *regionActor) catchupBehindSubscribers() {
+	for _, sub := range a.subscribers {
+		c := sub.client
+		if !c.behind.Load() {
+			continue
+		}
+		since := c.behindSinceNanos.Load()
+		if since > 0 && time.Since(time.Unix(0, since)) > behindTimeout {
+			if c.behindSinceNanos.CompareAndSwap(since, 0) {
+				slog.Warn("client stuck behind — disconnecting",
+					"region_id", a.id, "client_id", c.id)
+				c.Close()
+			}
+			continue
+		}
+		if !c.WriteChHasRoom() {
+			continue
+		}
+		s := newScreenUpdate(a.id, a.compositedSnapshot())
+		s.ScrollbackDesync = true
+		if c.SendMessage(s) {
+			c.behind.Store(false)
+			c.behindSinceNanos.Store(0)
+			sub.lastTotalAdded = a.hscreen.TotalAdded()
 		}
 	}
 }
@@ -543,7 +622,14 @@ type addSubscriberMsg struct {
 
 func (m addSubscriberMsg) handleRegion(a *regionActor) {
 	snap := a.compositedSnapshot()
-	m.client.SendMessage(newScreenUpdate(a.id, snap))
+	if !m.client.SendMessage(newScreenUpdate(a.id, snap)) {
+		// The initial snapshot dropped — without marking the subscriber
+		// behind it would start permanently desynced (handleSubscribe still
+		// reports success). Marking it lets the catchup timer repair it.
+		if m.client.behind.CompareAndSwap(false, true) {
+			m.client.behindSinceNanos.Store(time.Now().UnixNano())
+		}
+	}
 	// Deliver the region's accumulated sync marker history so the new
 	// subscriber can catch up on markers emitted before it joined. Sent
 	// as a terminal_events follow-up ordered behind the screen_update
