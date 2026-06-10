@@ -326,7 +326,11 @@ func (st *Stream) feedRune(ch rune) error {
 		return nil
 	case stateCharset:
 		st.state = stateGround
-		if st.useUTF8 {
+		if st.useUTF8 && !utf8SafeCharset(ch) {
+			// In UTF-8 mode honor only the sets that don't remap the >=0x80
+			// range (DEC Special Graphics for line drawing, and ASCII/Latin).
+			// The IBM-PC/VAX sets would corrupt decoded multibyte text, and
+			// xterm ignores them in UTF-8 mode.
 			return nil
 		}
 		st.listener.DefineCharset(string(ch), st.current)
@@ -369,13 +373,13 @@ func (st *Stream) handleGround(ch rune) error {
 	case '\r':
 		st.listener.CarriageReturn()
 	case '\x0e':
-		if !st.useUTF8 {
-			st.listener.ShiftOut()
-		}
+		// SO/SI (LS1/LS0) select G1/G0 into GL. Honored even in UTF-8 mode so
+		// the DEC Special Graphics set (terminfo smacs=^N / rmacs=^O) works;
+		// the default G0/G1 don't remap the >=0x80 range, so decoded multibyte
+		// text is unaffected.
+		st.listener.ShiftOut()
 	case '\x0f':
-		if !st.useUTF8 {
-			st.listener.ShiftIn()
-		}
+		st.listener.ShiftIn()
 	case '\x1b':
 		st.state = stateEscape
 	case '\x84':
@@ -1109,6 +1113,20 @@ func (st *Stream) dispatchCSI(final rune, params []int) {
 		}
 		st.listener.Debug(args...)
 	}
+}
+
+// utf8SafeCharset reports whether a charset-designation final byte is safe to
+// honor in UTF-8 mode: DEC Special Graphics ('0', line drawing) and the
+// ASCII/UK/Latin sets ('B', 'A'), all of which are identity for code points
+// >=0x80. The IBM-PC ('U') and VAX ('V') sets remap the high range and would
+// corrupt decoded multibyte text, so they're ignored in UTF-8 mode (as xterm
+// does).
+func utf8SafeCharset(ch rune) bool {
+	switch ch {
+	case '0', 'B', 'A':
+		return true
+	}
+	return false
 }
 
 // SelectOtherCharset switches to the specified character set.
