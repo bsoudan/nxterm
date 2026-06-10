@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"golang.org/x/sys/unix"
 )
 
 // execConn wraps an exec.Cmd spawned in a PTY as a net.Conn. The PTY
@@ -65,6 +66,31 @@ func (c *execConn) Read(b []byte) (int, error) {
 }
 
 func (c *execConn) Write(b []byte) (int, error) { return c.pty.Write(b) }
+
+// enterRawMode puts the PTY line discipline into raw mode (cfmakeraw) for the
+// data phase. The local PTY starts cooked so ssh's auth prompts work normally;
+// once auth completes the channel carries newline-delimited JSON whose lines
+// can exceed the canonical MAX_CANON limit (~4096B) and would be truncated, and
+// echo would feed our own writes back into the read stream. Raw mode disables
+// canonical buffering, echo, signal generation, and output post-processing so
+// the byte stream is clean. termios on the master fd controls the shared pts
+// line discipline (same pattern as pty_backend.go).
+func (c *execConn) enterRawMode() error {
+	fd := int(c.pty.Fd())
+	t, err := unix.IoctlGetTermios(fd, unix.TCGETS)
+	if err != nil {
+		return err
+	}
+	t.Iflag &^= unix.IGNBRK | unix.BRKINT | unix.PARMRK | unix.ISTRIP |
+		unix.INLCR | unix.IGNCR | unix.ICRNL | unix.IXON
+	t.Oflag &^= unix.OPOST
+	t.Lflag &^= unix.ECHO | unix.ECHONL | unix.ICANON | unix.ISIG | unix.IEXTEN
+	t.Cflag &^= unix.CSIZE | unix.PARENB
+	t.Cflag |= unix.CS8
+	t.Cc[unix.VMIN] = 1
+	t.Cc[unix.VTIME] = 0
+	return unix.IoctlSetTermios(fd, unix.TCSETS, t)
+}
 
 // isPTYEIO reports whether err is the input/output error a Linux pty
 // master returns after the slave end has been fully closed.

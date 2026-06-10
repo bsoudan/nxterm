@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os/exec"
 	"regexp"
@@ -98,6 +99,15 @@ func dialSSHExec(addr string, prompter Prompter) (net.Conn, error) {
 	if err != nil {
 		conn.Close()
 		return nil, err
+	}
+
+	// Auth is done; the rest of the session is newline-delimited JSON. Switch
+	// the local PTY out of cooked mode so canonical MAX_CANON line limits and
+	// echo can't truncate/corrupt the data phase. Best-effort: the wire is
+	// 7-bit ASCII so a failure degrades to the prior behavior rather than
+	// breaking the connection.
+	if err := conn.enterRawMode(); err != nil {
+		slog.Warn("ssh: failed to set data-phase PTY raw mode", "err", err)
 	}
 
 	// Wrap the post-auth reader and writer for the data phase.

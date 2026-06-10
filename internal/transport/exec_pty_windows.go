@@ -33,6 +33,12 @@ type execConn struct {
 	closeErr  error
 }
 
+// enterRawMode is a no-op on Windows: the ConPTY data phase is made clean by
+// base64-wrapping in wrapDataPhase (ssh_exec_flags_windows.go), and echo is
+// disabled by the --internal-conpty-wrap launcher, so there is no termios line
+// discipline to switch here.
+func (c *execConn) enterRawMode() error { return nil }
+
 // startExecConn spawns cmd attached to a freshly-allocated ConPTY and
 // returns an execConn wrapping it. label is shown in LocalAddr /
 // RemoteAddr for diagnostics.
