@@ -264,7 +264,7 @@ func (s *Server) reconnect(dialFn func() (net.Conn, error)) *client.Client {
 		c := s.newClient(conn)
 		timer := time.NewTimer(3 * time.Second)
 		select {
-		case _, ok := <-c.Recv():
+		case msg, ok := <-c.Recv():
 			timer.Stop()
 			if !ok {
 				slog.Debug("reconnect: connection closed before identify")
@@ -273,6 +273,18 @@ func (s *Server) reconnect(dialFn func() (net.Conn, error)) *client.Client {
 					backoff = maxBackoff
 				}
 				continue
+			}
+			// The first message is expected to be the server's identify (the
+			// readiness signal). Anything else must not be silently dropped —
+			// forward it so real state reaches the main loop, in order, ahead
+			// of the messages runConnection will drain next.
+			if _, isIdentify := msg.Payload.(protocol.Identify); !isIdentify {
+				select {
+				case s.Inbound <- msg:
+				case <-s.done:
+					c.Close()
+					return nil
+				}
 			}
 		case <-timer.C:
 			slog.Debug("reconnect: timed out waiting for server identify")
