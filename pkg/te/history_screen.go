@@ -660,11 +660,16 @@ func (h *HistoryScreen) ReverseIndex() {
 
 // scrollbackEligible reports whether a line scrolling off the top should be
 // saved to scrollback. Only full-screen scrolling on the primary buffer
-// accrues history: alt-screen scrolling (less/vim) and DECSTBM scroll-region
-// scrolling (status-line apps) must not, or they pollute scrollback and
-// spuriously advance the TotalAdded sequence the client sync protocol keys off.
+// accrues history: alt-screen scrolling (less/vim), DECSTBM scroll-region
+// scrolling (status-line apps), and DECLRMM horizontal-margin scrolling (a
+// rectangular region scroll, or a no-op when the cursor is outside the
+// margins) must not, or they pollute scrollback and spuriously advance the
+// TotalAdded sequence the client sync protocol keys off.
 func (h *HistoryScreen) scrollbackEligible(top, bottom int) bool {
-	return top == 0 && bottom == h.Lines-1 && !h.IsAltScreenActive()
+	left, right := h.horizontalMargins()
+	return top == 0 && bottom == h.Lines-1 &&
+		left == 0 && right == h.Columns-1 &&
+		!h.IsAltScreenActive()
 }
 
 func (h *HistoryScreen) indexInternal() {
