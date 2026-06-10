@@ -605,10 +605,17 @@ type childExitedMsg struct{}
 
 func (m childExitedMsg) handleRegion(a *regionActor) {
 	a.broadcastToSubscribers()
-	if a.destroyFn != nil {
-		a.destroyFn(a.id)
-	}
 	a.stopped = true
+	if a.destroyFn != nil {
+		// Run destroy OFF the actor goroutine. destroyFn re-enters the event
+		// loop (s.send + <-resp), and the event loop may concurrently be
+		// blocked sending INTO this actor's msgs channel (e.g. a subscribe) —
+		// a cyclic wait that would livelock the whole server. By setting
+		// stopped and returning, run() exits and closes actorDone; every
+		// event-loop→actor send selects on actorDone, so the loop's send
+		// unblocks instead of hanging on this dead actor.
+		go a.destroyFn(a.id)
+	}
 }
 
 // addSubscriberMsg adds a client to the subscriber set and returns
