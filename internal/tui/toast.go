@@ -2,6 +2,7 @@ package tui
 
 import (
 	"strings"
+	"sync/atomic"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -11,7 +12,9 @@ import (
 // hideToastMsg is sent after the toast duration expires.
 type hideToastMsg struct{ id int }
 
-var nextToastID int
+// nextToastID is bumped from both the main goroutine (ShowToast) and the
+// upgrade task goroutine, so it must be atomic.
+var nextToastID atomic.Int64
 
 // ToastLayer displays a brief floating notification in the upper-right
 // corner. It auto-dismisses after the given duration.
@@ -52,8 +55,7 @@ func (t *ToastLayer) Status(rs *RenderState) (string, lipgloss.Style) {
 // auto-dismisses after the given duration.
 func ShowToast(text string, duration time.Duration) tea.Cmd {
 	text = strings.TrimRight(text, "\n")
-	nextToastID++
-	id := nextToastID
+	id := int(nextToastID.Add(1))
 	toast := &ToastLayer{id: id, text: text}
 	pushCmd := func() tea.Msg { return PushLayerMsg{Layer: toast} }
 	timerCmd := tea.Tick(duration, func(time.Time) tea.Msg {

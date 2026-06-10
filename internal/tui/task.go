@@ -3,6 +3,7 @@ package tui
 import (
 	"errors"
 	"strings"
+	"sync"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -44,13 +45,25 @@ func (h *TermdHandle) Request(req any) (any, error) {
 
 // ── Overlay: a simple layer.Layer for task-driven dialogs ───────────────────
 
-// Overlay is a simple Layer that displays a bordered dialog.
-// Tasks hold a pointer and mutate fields directly between blocking calls.
+// Overlay is a simple Layer that displays a bordered dialog. A task goroutine
+// holds a pointer and mutates the fields between its blocking calls while the
+// render goroutine reads them via View/Status every frame — so all access goes
+// through mu. Tasks mutate via edit(); View/Status snapshot under RLock.
 type Overlay struct {
+	mu         sync.RWMutex
 	Title      string
 	Lines      []string
 	Help       string
 	StatusText string
+}
+
+// edit applies field mutations under the write lock. Tasks call this instead
+// of assigning fields directly so the concurrent render-goroutine reads in
+// View/Status don't race.
+func (o *Overlay) edit(fn func()) {
+	o.mu.Lock()
+	fn()
+	o.mu.Unlock()
 }
 
 func (o *Overlay) Activate() tea.Cmd { return nil }
@@ -65,31 +78,35 @@ func (o *Overlay) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 }
 
 func (o *Overlay) View(width, height int, rs *RenderState) []*lipgloss.Layer {
+	o.mu.RLock()
+	title, bodyLines, help := o.Title, append([]string(nil), o.Lines...), o.Help
+	o.mu.RUnlock()
+
 	var lines []string
-	if o.Title != "" {
-		lines = append(lines, o.Title)
+	if title != "" {
+		lines = append(lines, title)
 		lines = append(lines, "")
 	}
-	lines = append(lines, o.Lines...)
+	lines = append(lines, bodyLines...)
 
 	content := strings.Join(lines, "\n")
 
 	overlayW := 50
 	dialog := overlayBorder.Width(overlayW).Render(content)
 
-	help := ""
-	if o.Help != "" {
-		help = overlayHint.Render("• " + o.Help + " •")
+	helpText := ""
+	if help != "" {
+		helpText = overlayHint.Render("• " + help + " •")
 	}
 
 	var dialogFull string
-	if help != "" {
+	if helpText != "" {
 		dialogLines := strings.Split(dialog, "\n")
-		helpPad := (overlayW + overlayBorder.GetHorizontalBorderSize() - lipgloss.Width(help)) / 2
+		helpPad := (overlayW + overlayBorder.GetHorizontalBorderSize() - lipgloss.Width(helpText)) / 2
 		if helpPad < 0 {
 			helpPad = 0
 		}
-		dialogLines = append(dialogLines, strings.Repeat(" ", helpPad)+help)
+		dialogLines = append(dialogLines, strings.Repeat(" ", helpPad)+helpText)
 		dialogFull = strings.Join(dialogLines, "\n")
 	} else {
 		dialogFull = dialog
@@ -111,11 +128,14 @@ func (o *Overlay) View(width, height int, rs *RenderState) []*lipgloss.Layer {
 func (o *Overlay) WantsKeyboardInput() bool { return true }
 
 func (o *Overlay) Status(rs *RenderState) (string, lipgloss.Style) {
-	if o.StatusText != "" {
-		return o.StatusText, statusBold
+	o.mu.RLock()
+	status, title := o.StatusText, o.Title
+	o.mu.RUnlock()
+	if status != "" {
+		return status, statusBold
 	}
-	if o.Title != "" {
-		return o.Title, statusBold
+	if title != "" {
+		return title, statusBold
 	}
 	return "", lipgloss.Style{}
 }
@@ -128,8 +148,10 @@ func IsKeyPress(msg any) (deliver, handled bool) {
 
 // ShowError sets the overlay to an error state and waits for dismiss.
 func ShowError(overlay *Overlay, h *layer.Handle[RenderState], errMsg string) {
-	overlay.Lines = []string{"  Error: " + errMsg, "", "  Press any key to close."}
-	overlay.Help = "any key: close"
-	overlay.StatusText = "error: " + errMsg
+	overlay.edit(func() {
+		overlay.Lines = []string{"  Error: " + errMsg, "", "  Press any key to close."}
+		overlay.Help = "any key: close"
+		overlay.StatusText = "error: " + errMsg
+	})
 	h.WaitFor(IsKeyPress)
 }

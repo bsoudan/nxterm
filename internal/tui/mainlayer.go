@@ -283,8 +283,7 @@ func (m *NxtermModel) handleCmd(msg MainCmd) (tea.Msg, tea.Cmd, bool) {
 			})
 
 			if !ucr.ServerAvailable && !ucr.ClientAvailable {
-				toast := &ToastLayer{id: nextToastID + 1, text: "Already up to date"}
-				nextToastID++
+				toast := &ToastLayer{id: int(nextToastID.Add(1)), text: "Already up to date"}
 				t.PushLayer(toast)
 				time.Sleep(3 * time.Second)
 				t.PopLayer(toast)
