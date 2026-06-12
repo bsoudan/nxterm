@@ -44,23 +44,46 @@ func parseSGRMouse(seq []byte) tea.MouseMsg {
 		y = 0
 	}
 
-	if btn == 64 {
-		return tea.MouseWheelMsg(tea.Mouse{X: x, Y: y, Button: tea.MouseWheelUp})
+	// Modifier bits: shift=4, meta/alt=8, ctrl=16.
+	var mod tea.KeyMod
+	if btn&4 != 0 {
+		mod |= tea.ModShift
 	}
-	if btn == 65 {
-		return tea.MouseWheelMsg(tea.Mouse{X: x, Y: y, Button: tea.MouseWheelDown})
+	if btn&8 != 0 {
+		mod |= tea.ModAlt
+	}
+	if btn&16 != 0 {
+		mod |= tea.ModCtrl
+	}
+	// base button with the modifier (4/8/16) and motion (32) bits cleared.
+	base := btn &^ (4 | 8 | 16 | 32)
+
+	// Wheel events set bit 6: 64=up, 65=down, 66=left, 67=right (plus any
+	// modifier bits, which previously turned shift+wheel into a left click and
+	// wheel-left/right into right-clicks).
+	if base&64 != 0 {
+		m := tea.Mouse{X: x, Y: y, Mod: mod}
+		switch base & 3 {
+		case 0:
+			m.Button = tea.MouseWheelUp
+		case 1:
+			m.Button = tea.MouseWheelDown
+		case 2:
+			m.Button = tea.MouseWheelLeft
+		case 3:
+			m.Button = tea.MouseWheelRight
+		}
+		return tea.MouseWheelMsg(m)
 	}
 
+	button := sgrToTeaButton(base & 3)
 	if btn&32 != 0 {
-		button := sgrToTeaButton(btn & 3)
-		return tea.MouseMotionMsg(tea.Mouse{X: x, Y: y, Button: button})
+		return tea.MouseMotionMsg(tea.Mouse{X: x, Y: y, Button: button, Mod: mod})
 	}
-
-	button := sgrToTeaButton(btn & 3)
 	if terminator == 'm' {
-		return tea.MouseReleaseMsg(tea.Mouse{X: x, Y: y, Button: button})
+		return tea.MouseReleaseMsg(tea.Mouse{X: x, Y: y, Button: button, Mod: mod})
 	}
-	return tea.MouseClickMsg(tea.Mouse{X: x, Y: y, Button: button})
+	return tea.MouseClickMsg(tea.Mouse{X: x, Y: y, Button: button, Mod: mod})
 }
 
 func sgrToTeaButton(btn int) tea.MouseButton {
@@ -102,6 +125,10 @@ func encodeSGRMouse(msg tea.MouseMsg, col, row int) string {
 			button = 64
 		case tea.MouseWheelDown:
 			button = 65
+		case tea.MouseWheelLeft:
+			button = 66
+		case tea.MouseWheelRight:
+			button = 67
 		default:
 			return ""
 		}
@@ -110,6 +137,19 @@ func encodeSGRMouse(msg tea.MouseMsg, col, row int) string {
 		button = mouseButtonSGR(e.Button) + 32
 	default:
 		return ""
+	}
+
+	// Preserve modifiers so the child sees shift/ctrl/alt-clicks (bits
+	// shift=4, alt/meta=8, ctrl=16).
+	mod := msg.Mouse().Mod
+	if mod&tea.ModShift != 0 {
+		button |= 4
+	}
+	if mod&tea.ModAlt != 0 {
+		button |= 8
+	}
+	if mod&tea.ModCtrl != 0 {
+		button |= 16
 	}
 
 	return fmt.Sprintf("%c[<%d;%d;%d%c", ansi.ESC, button, col, row, suffix)

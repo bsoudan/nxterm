@@ -431,7 +431,11 @@ func (t *TerminalLayer) SetPendingClear() {
 // ForwardMouse encodes and sends a mouse event to the server.
 func (t *TerminalLayer) ForwardMouse(msg tea.MouseMsg) {
 	mouse := msg.Mouse()
-	seq := encodeSGRMouse(msg, mouse.X, mouse.Y-1)
+	// Content is composited at Y = 1 (tab bar) + statusBarMargin (see
+	// SessionLayer.View), so translate the screen row back to the child's
+	// 0-based content row. Without the margin term every forwarded click was
+	// off by statusBarMargin rows.
+	seq := encodeSGRMouse(msg, mouse.X, mouse.Y-1-t.statusBarMargin)
 	if seq != "" {
 		data := base64.StdEncoding.EncodeToString([]byte(seq))
 		t.server.Send(protocol.InputMsg{

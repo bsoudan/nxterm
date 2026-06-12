@@ -57,10 +57,11 @@ func TestNativeOverlayGetScreen(t *testing.T) {
 	nxt.Write([]byte("nativeapp\r"))
 	nxt.WaitFor("NATIVE", 10*time.Second)
 
-	// Mouse click before refresh — row 3 in outer terminal = row 2 in child
-	// (tab bar occupies row 0). Left click at col 10, row 3.
+	// Mouse click before refresh. Outer SGR row 3 = the first content row
+	// (tab bar row 0 + status-bar margin row 1 sit above), so the child sees
+	// its row 0. Left click at col 10, row 3.
 	nxt.MousePress(nxtest.MouseLeft, 10, 3)
-	nxt.WaitFor("MOUSE:press:0:9:1", 10*time.Second)
+	nxt.WaitFor("MOUSE:press:0:9:0", 10*time.Second)
 
 	// nxtermctl region view uses get_screen_request — overlay must be included.
 	deadline := time.Now().Add(10 * time.Second)
@@ -80,9 +81,10 @@ func TestNativeOverlayGetScreen(t *testing.T) {
 	nxt.Write([]byte("world"))
 	nxt.WaitFor("INPUT:world", 10*time.Second)
 
-	// Mouse click after refresh — modes must still be active.
+	// Mouse click after refresh — modes must still be active. Outer SGR row 4
+	// = the child's second content row (0-based row 1).
 	nxt.MousePress(nxtest.MouseLeft, 20, 4)
-	nxt.WaitFor("MOUSE:press:0:19:2", 10*time.Second)
+	nxt.WaitFor("MOUSE:press:0:19:1", 10*time.Second)
 }
 
 func TestNativeOverlayExit(t *testing.T) {

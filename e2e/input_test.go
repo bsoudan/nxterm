@@ -84,43 +84,44 @@ func TestMousePassthrough(t *testing.T) {
 		}, expected, 5*time.Second)
 	}
 
-	// Coordinates sent are in outer terminal space (1-based SGR).
-	// The tab bar occupies row 1, so the frontend adjusts row by -1
-	// before forwarding to the child. mousehelper prints what it receives.
+	// Coordinates sent are in outer terminal space (1-based SGR). The tab bar
+	// (row 1) plus the status-bar margin (1 row by default) sit above the
+	// child, so the frontend subtracts 2 before forwarding: outer row R → child
+	// row R-2 (clamped at 1). mousehelper prints what it receives.
 
-	// Left click at col 5, row 3 → child sees row 2
+	// Left click at col 5, outer row 3 → child sees row 1 (first content row)
 	nxt.MousePress(nxtest.MouseLeft, 5, 3)
-	waitForMouse("MOUSE press 0 5 2")
+	waitForMouse("MOUSE press 0 5 1")
 
 	// Left release
 	nxt.MouseRelease(nxtest.MouseLeft, 5, 3)
-	waitForMouse("MOUSE release 0 5 2")
+	waitForMouse("MOUSE release 0 5 1")
 
-	// Right click (button 2) at row 4 → child sees row 3
+	// Right click (button 2) at outer row 4 → child sees row 2
 	nxt.MousePress(nxtest.MouseRight, 10, 4)
-	waitForMouse("MOUSE press 2 10 3")
+	waitForMouse("MOUSE press 2 10 2")
 
-	// Middle click (button 1) at row 6 → child sees row 5
+	// Middle click (button 1) at outer row 6 → child sees row 4
 	nxt.MousePress(nxtest.MouseMiddle, 8, 6)
-	waitForMouse("MOUSE press 1 8 5")
+	waitForMouse("MOUSE press 1 8 4")
 
-	// Scroll wheel up at row 3 → child sees row 2
+	// Scroll wheel up at outer row 3 → child sees row 1
 	nxt.MouseWheelUp(5, 3)
-	waitForMouse("MOUSE wheelup 64 5 2")
+	waitForMouse("MOUSE wheelup 64 5 1")
 
-	// Scroll wheel down at row 3 → child sees row 2
+	// Scroll wheel down at outer row 3 → child sees row 1
 	nxt.MouseWheelDown(5, 3)
-	waitForMouse("MOUSE wheeldown 65 5 2")
+	waitForMouse("MOUSE wheeldown 65 5 1")
 
-	// Motion event (button 32 = motion + left held) at row 7 → child sees row 6
+	// Motion event (button 32 = motion + left held) at outer row 7 → child row 5
 	nxt.MouseDrag(nxtest.MouseLeft, 12, 7)
-	waitForMouse("MOUSE press 32 12 6")
+	waitForMouse("MOUSE press 32 12 5")
 
-	// Click on the tab bar (row 1) → clamped to child row 1
+	// Click on the tab bar (outer row 1) → clamped to child row 1
 	nxt.MousePress(nxtest.MouseLeft, 5, 1)
 	waitForMouse("MOUSE press 0 5 1")
 
-	// Click on content row 1 (row 2 in outer) → child sees row 1
+	// Click on the status-bar margin (outer row 2) → clamped to child row 1
 	nxt.MousePress(nxtest.MouseLeft, 20, 2)
 	waitForMouse("MOUSE press 0 20 1")
 
@@ -139,9 +140,9 @@ func TestMouseAfterTabSwitch(t *testing.T) {
 	// Run mousehelper in tab 1
 	startMouseHelper(t, nxt)
 
-	// Verify mouse works initially
+	// Verify mouse works initially (outer row 3 → child row 1)
 	nxt.MousePress(nxtest.MouseLeft, 5, 3)
-	nxt.WaitFor("MOUSE press 0 5 2", 5*time.Second)
+	nxt.WaitFor("MOUSE press 0 5 1", 5*time.Second)
 
 	// Spawn tab 2 (switches to it automatically). Tab 1 becomes
 	// inactive so "<1>bash" now appears in the tab bar.
@@ -154,9 +155,9 @@ func TestMouseAfterTabSwitch(t *testing.T) {
 	nxt.Write([]byte("\x021"))
 	nxt.Sync("render settle")
 
-	// Mouse should still work after switching back
+	// Mouse should still work after switching back (outer row 4 → child row 2)
 	nxt.MousePress(nxtest.MouseLeft, 10, 4)
-	nxt.WaitFor("MOUSE press 0 10 3", 5*time.Second)
+	nxt.WaitFor("MOUSE press 0 10 2", 5*time.Second)
 
 	// Quit the helper
 	nxt.Write([]byte("q"))
