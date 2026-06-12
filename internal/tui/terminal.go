@@ -756,11 +756,6 @@ func sgrTransition(from, to te.Attr) string {
 	} else if !to.Italics && from.Italics {
 		attrs = append(attrs, ansi.AttrNoItalic)
 	}
-	if to.Underline && !from.Underline {
-		attrs = append(attrs, ansi.AttrUnderline)
-	} else if !to.Underline && from.Underline {
-		attrs = append(attrs, ansi.AttrNoUnderline)
-	}
 	if to.Blink && !from.Blink {
 		attrs = append(attrs, ansi.AttrBlink)
 	}
@@ -784,12 +779,53 @@ func sgrTransition(from, to te.Attr) string {
 	if to.Bg != from.Bg {
 		attrs = append(attrs, teColorAttrs(to.Bg, true)...)
 	}
-
-	if len(attrs) == 0 {
-		return ""
+	if to.UnderlineColor != from.UnderlineColor {
+		attrs = append(attrs, teUnderlineColorAttrs(to.UnderlineColor)...)
 	}
 
-	return ansi.SGR(attrs...)
+	out := ""
+	if len(attrs) > 0 {
+		out = ansi.SGR(attrs...)
+	}
+
+	// Underline on/off and style. Emitted as raw SGR because ansi.SGR can't
+	// express the colon sub-parameter form (4:2 double, 4:3 curly, 4:4 dotted,
+	// 4:5 dashed).
+	if to.Underline {
+		if !from.Underline || to.UnderlineStyle != from.UnderlineStyle {
+			style := to.UnderlineStyle
+			if style == 0 {
+				style = 1
+			}
+			out += fmt.Sprintf("\x1b[4:%dm", style)
+		}
+	} else if from.Underline {
+		out += "\x1b[24m"
+	}
+
+	// Overline (SGR 53/55) — no ansi.Attr is available for it.
+	if to.Overline && !from.Overline {
+		out += "\x1b[53m"
+	} else if !to.Overline && from.Overline {
+		out += "\x1b[55m"
+	}
+
+	return out
+}
+
+// teUnderlineColorAttrs builds the SGR 58/59 underline-color attributes. SGR 58
+// has only 256-color (58;5;n) and truecolor (58;2;r;g;b) forms; ANSI-16
+// underline colors are mapped to their 256-color index.
+func teUnderlineColorAttrs(c te.Color) []ansi.Attr {
+	switch c.Mode {
+	case te.ColorANSI256, te.ColorANSI16:
+		return []ansi.Attr{ansi.AttrExtendedUnderlineColor, 5, ansi.Attr(c.Index)}
+	case te.ColorTrueColor:
+		r, g, b := protocol.ParseHexColor(c.Name)
+		return []ansi.Attr{ansi.AttrExtendedUnderlineColor, 2, ansi.Attr(r), ansi.Attr(g), ansi.Attr(b)}
+	default:
+		return []ansi.Attr{ansi.AttrDefaultUnderlineColor}
+	}
 }
 
 func teColorAttrs(c te.Color, isBg bool) []ansi.Attr {
@@ -1044,8 +1080,24 @@ func protocolCellsToTe(row []protocol.ScreenCell) []te.Cell {
 		cells[i].Attr.Blink = c.A&32 != 0
 		cells[i].Attr.Conceal = c.A&64 != 0
 		cells[i].Attr.Faint = c.A&128 != 0
+		cells[i].Attr.UnderlineStyle = underlineStyle(c)
+		cells[i].Attr.UnderlineColor = specToColor(c.Uc)
+		cells[i].Attr.Overline = c.Ol
 	}
 	return cells
+}
+
+// underlineStyle derives the underline style from a protocol cell: 0 when not
+// underlined, the explicit Us when set, else single (1) for older servers that
+// only sent the A&4 bit.
+func underlineStyle(c protocol.ScreenCell) uint8 {
+	if c.A&4 == 0 {
+		return 0
+	}
+	if c.Us > 0 {
+		return c.Us
+	}
+	return 1
 }
 
 func initScreenFromCells(screen *te.Screen, cells [][]protocol.ScreenCell) {
@@ -1072,9 +1124,12 @@ func initScreenFromCells(screen *te.Screen, cells [][]protocol.ScreenCell) {
 					Underline:     pc.A&4 != 0,
 					Strikethrough: pc.A&8 != 0,
 					Reverse:       pc.A&16 != 0,
-					Blink:         pc.A&32 != 0,
-					Conceal:       pc.A&64 != 0,
-					Faint:         pc.A&128 != 0,
+					Blink:          pc.A&32 != 0,
+					Conceal:        pc.A&64 != 0,
+					Faint:          pc.A&128 != 0,
+					UnderlineStyle: underlineStyle(pc),
+					UnderlineColor: specToColor(pc.Uc),
+					Overline:       pc.Ol,
 				},
 			}
 		}

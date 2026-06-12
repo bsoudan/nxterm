@@ -217,6 +217,14 @@ type ScreenCell struct {
 	Fg   string `json:"fg,omitempty"` // SGR color: "31", "38;5;208", "38;2;R;G;B", or "" for default
 	Bg   string `json:"bg,omitempty"`
 	A    uint8  `json:"a,omitempty"` // bitfield: 1=bold 2=italic 4=underline 8=strikethrough 16=reverse 32=blink 64=conceal 128=faint
+	// Us is the underline style when A&4 is set: 1=single 2=double 3=curly
+	// 4=dotted 5=dashed. Absent (0) with A&4 means single.
+	Us uint8 `json:"us,omitempty"`
+	// Uc is the SGR 58 underline color spec (same encoding as Fg/Bg); "" =
+	// default (underline uses the foreground color).
+	Uc string `json:"uc,omitempty"`
+	// Ol is SGR 53 overline.
+	Ol bool `json:"ol,omitempty"`
 }
 
 type ScreenUpdate struct {

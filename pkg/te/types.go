@@ -35,6 +35,14 @@ type Attr struct {
 	Conceal       bool  `json:"Conceal,omitempty"`
 	Protected     bool  `json:"Protected,omitempty"`
 	ISOProtected  bool  `json:"ISOProtected,omitempty"`
+	// UnderlineStyle is the underline variant when Underline is set:
+	// 1=single, 2=double, 3=curly, 4=dotted, 5=dashed (SGR 4:n / 21).
+	UnderlineStyle uint8 `json:"UnderlineStyle,omitempty"`
+	// UnderlineColor is the SGR 58 underline color; default (zero) means the
+	// underline uses the text foreground color.
+	UnderlineColor Color `json:"UnderlineColor,omitzero"`
+	// Overline is SGR 53.
+	Overline bool `json:"Overline,omitempty"`
 }
 
 // Cell represents a single screen cell.

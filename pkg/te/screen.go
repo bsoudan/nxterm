@@ -1345,9 +1345,17 @@ func (s *Screen) SelectGraphicRendition(attrs []int, private bool) {
 			case "-italics":
 				replace.Italics = false
 			case "+underline":
+				// Plain SGR 4 is single underline; it overrides any prior
+				// colon-form style. (4:n styles arrive via the marker case.)
 				replace.Underline = true
+				replace.UnderlineStyle = 1
 			case "-underline":
 				replace.Underline = false
+				replace.UnderlineStyle = 0
+			case "+overline":
+				replace.Overline = true
+			case "-overline":
+				replace.Overline = false
 			case "+blink":
 				replace.Blink = true
 			case "-blink":
@@ -1365,8 +1373,32 @@ func (s *Screen) SelectGraphicRendition(attrs []int, private bool) {
 			case "-conceal":
 				replace.Conceal = false
 			}
-		case attr == SgrFg256 || attr == SgrBg256:
-			keyIsFg := attr == SgrFg256
+		case attr == 21:
+			// SGR 21 = double underline (ECMA-48).
+			replace.Underline = true
+			replace.UnderlineStyle = 2
+		case attr >= sgrUnderlineStyleBase && attr <= sgrUnderlineStyleBase+5:
+			// Colon-form underline style (SGR 4:n), encoded by expandSGRParams.
+			style := uint8(attr - sgrUnderlineStyleBase)
+			if style == 0 {
+				replace.Underline = false
+				replace.UnderlineStyle = 0
+			} else {
+				replace.Underline = true
+				replace.UnderlineStyle = style
+			}
+		case attr == SgrDefaultUnderlineColor:
+			replace.UnderlineColor = Color{}
+		case attr == SgrFg256 || attr == SgrBg256 || attr == SgrUnderlineColor:
+			var target *Color
+			switch attr {
+			case SgrFg256:
+				target = &replace.Fg
+			case SgrBg256:
+				target = &replace.Bg
+			default:
+				target = &replace.UnderlineColor
+			}
 			if len(queue) < 1 {
 				break
 			}
@@ -1380,12 +1412,7 @@ func (s *Screen) SelectGraphicRendition(attrs []int, private bool) {
 				index := queue[0]
 				queue = queue[1:]
 				if index >= 0 && index < len(fgBg256) {
-					color := Color{Mode: ColorANSI256, Index: uint8(index), Name: fgBg256[index]}
-					if keyIsFg {
-						replace.Fg = color
-					} else {
-						replace.Bg = color
-					}
+					*target = Color{Mode: ColorANSI256, Index: uint8(index), Name: fgBg256[index]}
 				}
 			case 2:
 				if len(queue) < 3 {
@@ -1395,12 +1422,7 @@ func (s *Screen) SelectGraphicRendition(attrs []int, private bool) {
 				g := queue[1]
 				b := queue[2]
 				queue = queue[3:]
-				color := Color{Mode: ColorTrueColor, Name: rgbHex(r, g, b)}
-				if keyIsFg {
-					replace.Fg = color
-				} else {
-					replace.Bg = color
-				}
+				*target = Color{Mode: ColorTrueColor, Name: rgbHex(r, g, b)}
 			}
 		}
 	}

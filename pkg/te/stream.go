@@ -854,9 +854,20 @@ func (st *Stream) expandSGRParams(params []int) []int {
 			default:
 				out = append(out, lead)
 			}
+		case 4:
+			// 4:n selects an underline style (4:0 none, 4:1 single, 4:2 double,
+			// 4:3 curly, 4:4 dotted, 4:5 dashed). Encode it as an internal
+			// SGR code SelectGraphicRendition decodes; the base 9999 clamp on
+			// wire params means this can't collide with real input.
+			style := 1
+			if len(parts) >= 2 {
+				style = atoiClamp(parts[1])
+			}
+			if style > 5 {
+				style = 5
+			}
+			out = append(out, sgrUnderlineStyleBase+style)
 		default:
-			// e.g. 4:3 (curly underline) — apply the base attribute only; the
-			// emulator has no underline-style rendering.
 			out = append(out, lead)
 		}
 	}

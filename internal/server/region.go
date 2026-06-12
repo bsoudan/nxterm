@@ -467,6 +467,11 @@ func cellToProtocol(c te.Cell) protocol.ScreenCell {
 		a |= 128
 	}
 	pc.A = a
+	if c.Attr.Underline {
+		pc.Us = c.Attr.UnderlineStyle
+	}
+	pc.Uc = colorToSpec(c.Attr.UnderlineColor)
+	pc.Ol = c.Attr.Overline
 	return pc
 }
 
