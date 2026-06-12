@@ -499,9 +499,19 @@ func (m *NxtermModel) stepFocusSequence() error {
 	m.focusBuf = m.focusBuf[n:]
 
 	go m.pipeW.Write(seq)
-	msg := <-m.program.Msgs()
-	if _, err := m.program.Handle(msg); err != nil {
-		return err
+	// Guard the first receive with a timeout: not every token produces a
+	// bubbletea message (a lone ESC waits out the reader's esc-timeout; some
+	// bytes parse to nothing). Without the guard this blocked until any
+	// unrelated message arrived — and consumed it as this token's "result".
+	select {
+	case msg := <-m.program.Msgs():
+		if _, err := m.program.Handle(msg); err != nil {
+			return err
+		}
+	case <-m.program.Context().Done():
+		return m.program.Context().Err()
+	case <-time.After(focusStepTimeout):
+		return nil
 	}
 	for {
 		select {
@@ -514,6 +524,12 @@ func (m *NxtermModel) stepFocusSequence() error {
 		}
 	}
 }
+
+// focusStepTimeout bounds the wait for a focus-routed token to produce a
+// bubbletea message. It is comfortably above the uv reader's ~50ms escape
+// timeout so a real escape sequence is parsed, but caps the stall when a token
+// yields no event.
+const focusStepTimeout = 200 * time.Millisecond
 
 // inboundEventCost returns how many terminal events a server message
 // contributes to the event-loop work budget. Only TerminalEvents
