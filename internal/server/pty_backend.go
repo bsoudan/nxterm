@@ -148,10 +148,21 @@ func (b *ptyBackend) Close() error {
 }
 
 func (b *ptyBackend) Kill() {
-	if b.cmdObj != nil {
-		b.cmdObj.Process.Signal(syscall.SIGKILL)
-	} else if b.pid > 0 {
-		syscall.Kill(b.pid, syscall.SIGKILL)
+	pid := b.pid
+	if pid <= 0 && b.cmdObj != nil && b.cmdObj.Process != nil {
+		pid = b.cmdObj.Process.Pid
+	}
+	if pid <= 0 {
+		return
+	}
+	// The child is a session / process-group leader (pty.Start sets Setsid), so
+	// its PGID equals its PID. Signal the whole group (negative pid) so
+	// background processes the child spawned — which ignore SIGHUP and keep the
+	// slave open — die too, instead of lingering and holding the region's read
+	// loop alive after kill_region "succeeds". Fall back to the lone process if
+	// the group send fails (leader already reaped).
+	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil {
+		syscall.Kill(pid, syscall.SIGKILL)
 	}
 }
 
