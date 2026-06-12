@@ -45,6 +45,11 @@ func (h *HistoryScreen) UnmarshalState(st *HistoryState) {
 	h.history.Top.max = st.Size
 	h.history.Bottom.items = deepCopyBuffer(st.BottomItems)
 	h.history.Bottom.max = st.Size
+	// Re-pad history rows that trimBuffer shortened on the way out (the Screen
+	// is restored above, so Columns and the default cell are available).
+	blank := h.Screen.defaultCell()
+	padRowsToColumns(h.history.Top.items, h.Screen.Columns, blank)
+	padRowsToColumns(h.history.Bottom.items, h.Screen.Columns, blank)
 	h.history.Ratio = st.Ratio
 	h.history.Size = st.Size
 	h.history.Position = st.Position

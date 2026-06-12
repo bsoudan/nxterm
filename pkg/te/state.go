@@ -193,6 +193,12 @@ func (s *Screen) UnmarshalState(st *ScreenState) {
 	s.charPixelHeight = st.CharPixelHeight
 	s.windowIconified = st.WindowIconified
 
+	// Re-pad rows that trimBuffer shortened on the way out back to full width
+	// with the default cell (which depends on DECSCNM, restored above).
+	blank := s.defaultCell()
+	padRowsToColumns(s.Buffer, s.Columns, blank)
+	padRowsToColumns(s.altBuffer, s.Columns, blank)
+
 	// Mark all rows dirty so the next render is a full repaint.
 	s.Dirty = make(map[int]struct{}, s.Lines)
 	for i := range s.Lines {
@@ -223,19 +229,43 @@ func trimBuffer(buf [][]Cell) [][]Cell {
 	out := make([][]Cell, len(buf))
 	for i, row := range buf {
 		last := len(row) - 1
-		for last >= 0 {
-			c := row[last]
-			if c.Data != "" && c.Data != " " && c.Data != "\x00" {
-				break
-			}
-			if c.Attr != (Attr{}) {
-				break
-			}
+		for last >= 0 && trimmableBlank(row[last]) {
 			last--
 		}
 		out[i] = append([]Cell(nil), row[:last+1]...)
 	}
 	return out
+}
+
+// trimmableBlank reports whether a trailing cell carries no visible state and
+// can be dropped from the serialized buffer (UnmarshalState re-pads with the
+// default cell). The previous check compared against the zero Attr{}, but a
+// default-painted blank cell carries Color{Name:"default"} — never the zero
+// value — so nothing was ever trimmed (an 80×24 screen with two characters
+// serialized all 1920 cells). A non-default background (BCE), reverse video, or
+// any rendition keeps the cell; protected cells are kept so selective-erase
+// state survives.
+func trimmableBlank(c Cell) bool {
+	if c.Data != "" && c.Data != " " && c.Data != "\x00" {
+		return false
+	}
+	a := c.Attr
+	return a.Fg.Mode == ColorDefault && a.Bg.Mode == ColorDefault &&
+		a.UnderlineColor.Mode == ColorDefault && a.UnderlineStyle == 0 &&
+		!a.Bold && !a.Faint && !a.Italics && !a.Underline && !a.Strikethrough &&
+		!a.Reverse && !a.Blink && !a.Conceal && !a.Overline &&
+		!a.Protected && !a.ISOProtected
+}
+
+// padRowsToColumns re-pads rows that trimBuffer shortened back to full width
+// with the default cell.
+func padRowsToColumns(buf [][]Cell, cols int, blank Cell) {
+	for i, row := range buf {
+		for len(row) < cols {
+			row = append(row, blank)
+		}
+		buf[i] = row
+	}
 }
 
 func setToBoolMap(m map[int]struct{}) map[int]bool {
