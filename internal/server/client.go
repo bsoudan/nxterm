@@ -7,6 +7,7 @@ package server
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -125,6 +126,12 @@ func (c *Client) writeLoop() {
 	}
 }
 
+// clientMaxFrameBytes bounds a single newline-delimited protocol frame. A
+// longer frame yields bufio.ErrTooLong; the read loop surfaces it instead of
+// disconnecting the peer with no explanation. Var (not const) so tests can
+// shrink it without sending a 16 MiB line.
+var clientMaxFrameBytes = 16 << 20
+
 func (c *Client) ReadLoop() {
 	defer func() {
 		c.server.removeClient(c.id)
@@ -132,9 +139,22 @@ func (c *Client) ReadLoop() {
 	}()
 
 	scanner := bufio.NewScanner(c.conn)
-	scanner.Buffer(make([]byte, 0, 64*1024), 16<<20)
+	scanner.Buffer(make([]byte, 0, 64*1024), clientMaxFrameBytes)
 	for scanner.Scan() {
 		c.server.dispatch(c, scanner.Bytes())
+	}
+	if err := scanner.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			slog.Warn("client frame exceeds limit; disconnecting",
+				"client_id", c.id, "limit_bytes", clientMaxFrameBytes)
+			// Best-effort: tell the peer why before the deferred Close.
+			c.SendMessage(protocol.Warning{
+				Type: "warning", WarnType: "frame_too_large",
+				Message: "protocol frame exceeded the server limit",
+			})
+		} else {
+			slog.Debug("client read loop error", "client_id", c.id, "error", err)
+		}
 	}
 }
 

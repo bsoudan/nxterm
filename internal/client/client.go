@@ -128,6 +128,10 @@ func (c *Client) readLoop() {
 		c.recvCh <- msg
 	}
 	if err := scanner.Err(); err != nil {
-		slog.Debug("read loop exiting", "error", err)
+		if errors.Is(err, bufio.ErrTooLong) {
+			slog.Warn("server frame exceeds 16MiB limit; connection dropped", "error", err)
+		} else {
+			slog.Debug("read loop exiting", "error", err)
+		}
 	}
 }
