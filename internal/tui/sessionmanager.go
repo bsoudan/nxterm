@@ -171,13 +171,18 @@ func (sm *SessionManagerLayer) Update(msg tea.Msg) (tea.Msg, tea.Cmd, bool) {
 		return nil, nil, true
 
 	case ConnectToServerMsg:
-		sm.server.Close()
-		sm.Deactivate()
-		sm.sessions = nil
-		sm.activeSession = 0
+		// Don't tear down the current session here — the dial may fail. Keep
+		// the live view (and old server) until the new connection succeeds
+		// (ConnectedMsg); a typo'd address mid-session must not destroy the
+		// session and strand the user on the empty checkerboard.
 		return nil, nil, false // let NxtermModel handle the connect
 
 	case ConnectedMsg:
+		// The new connection is up: now retire the old session/server.
+		if sm.server != nil && sm.server != msg.Server {
+			sm.Deactivate()
+			sm.server.Close()
+		}
 		sm.server = msg.Server
 		sm.endpoint = msg.Endpoint
 		sm.connStatus = "connected"
