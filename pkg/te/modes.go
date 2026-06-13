@@ -1,5 +1,18 @@
 package te
 
+// Terminal modes are stored in Screen.Mode keyed by an int. ANSI modes (set
+// via CSI Pn h) use their raw number. DEC private modes (set via CSI ? Pn h)
+// share the same map, so to avoid colliding with ANSI numbers they are encoded
+// as (number << privateModeShift); use PrivateMode to build the key rather
+// than open-coding the shift.
+const privateModeShift = 5
+
+// PrivateMode returns the Screen.Mode key for DEC private mode n (the mode
+// number used in CSI ? n h / l). Callers that probe Screen.Mode for a private
+// mode should index it with PrivateMode(n) rather than hand-rolling the
+// encoding.
+func PrivateMode(n int) int { return n << privateModeShift }
+
 const (
 	// ModeLNM is a terminal mode constant.
 	ModeLNM = 20
@@ -70,4 +83,15 @@ const (
 	ModeAllow80To132 = 40 << 5
 	// ModeMoreFix is a terminal mode constant.
 	ModeMoreFix = 41 << 5
+
+	// Mouse tracking and bracketed-paste private modes. Consumers (e.g. the
+	// TUI, which decides how to forward mouse and paste input) previously
+	// recreated these numbers locally.
+	ModeMouseX10         = 9 << 5    // X10 compatibility mouse reporting
+	ModeMouseNormal      = 1000 << 5 // normal mouse tracking (press/release)
+	ModeMouseButtonEvent = 1002 << 5 // button-event tracking (drag)
+	ModeMouseAnyEvent    = 1003 << 5 // any-event tracking (all motion)
+	ModeMouseSGR         = 1006 << 5 // SGR extended mouse coordinate encoding
+	ModeFocusEvent       = 1004 << 5 // focus in/out reporting
+	ModeBracketedPaste   = 2004 << 5 // bracketed paste
 )

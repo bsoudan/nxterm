@@ -17,10 +17,11 @@ import (
 // modeAltScreenLegacy is the original xterm alternate screen mode (DEC private 47).
 const modeAltScreenLegacy = 47
 
-// privateModeKey converts a DEC private mode number to the key used
-// by go-te's Screen.Mode map, which shifts private modes left by 5 bits.
+// privateModeKey converts a DEC private mode number to the key used by go-te's
+// Screen.Mode map. Delegates to te.PrivateMode so the encoding lives in one
+// place (pkg/te) rather than being hand-rolled here.
 func privateModeKey(mode int) int {
-	return mode << 5
+	return te.PrivateMode(mode)
 }
 
 // TerminalLayer owns screen state, capabilities, and server communication
@@ -470,7 +471,7 @@ func (t *TerminalLayer) ChildWantsPaste() bool {
 	if t.hscreen == nil {
 		return false
 	}
-	_, ok := t.hscreen.Mode[privateModeKey(2004)]
+	_, ok := t.hscreen.Mode[te.ModeBracketedPaste]
 	return ok
 }
 

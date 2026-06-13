@@ -30,6 +30,12 @@ type Savepoint struct {
 }
 
 // Screen models a terminal screen buffer.
+//
+// Screen is not safe for concurrent use. It carries no internal locking: a
+// single owner must serialize all access, including read-only accessors like
+// Display and LinesCells (which read Buffer/Cursor directly). In this codebase
+// the region actor owns its Screen and the TUI's TerminalLayer owns its
+// HistoryScreen; both are single-goroutine, so no lock is needed there.
 type Screen struct {
 	Columns             int
 	Lines               int
