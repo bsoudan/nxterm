@@ -172,8 +172,15 @@ func (c *Client) sendReply(msg any, reqID uint64) {
 		slog.Debug("marshal error", "client_id", c.id, "err", err)
 		return
 	}
-	if reqID > 0 {
-		inject := fmt.Sprintf(`,"req_id":%d}`, reqID)
+	if reqID > 0 && len(data) >= 2 && data[len(data)-1] == '}' {
+		// Splice req_id in before the closing brace. An empty object ("{}")
+		// must not get a leading comma ("{,\"req_id\"…" is invalid JSON).
+		var inject string
+		if data[len(data)-2] == '{' {
+			inject = fmt.Sprintf(`"req_id":%d}`, reqID)
+		} else {
+			inject = fmt.Sprintf(`,"req_id":%d}`, reqID)
+		}
 		data = append(data[:len(data)-1], []byte(inject)...)
 	}
 	data = append(data, '\n')
