@@ -27,8 +27,7 @@ type clientIdentity struct {
 }
 
 type writeMsg struct {
-	data      []byte
-	byteIndex uint64
+	data []byte
 }
 
 type Client struct {
@@ -41,11 +40,12 @@ type Client struct {
 	closeOnce sync.Once
 	identity  atomic.Value // stores *clientIdentity
 
-	// nextByteIndex tracks the byte offset for drop detection.
-	// Only accessed by goroutines that call SendMessage/sendReply,
-	// but multiple goroutines can call SendMessage concurrently
-	// (region actor goroutines, broadcast), so we use atomic.
-	nextByteIndex atomic.Uint64
+	// droppedBytes accumulates the size of messages SendMessage dropped on a
+	// full writeCh. writeLoop swaps it to zero and emits a single "lost N
+	// bytes" warning before the next successful write. Counting actual drops
+	// (rather than pre-allocating a byteIndex before the droppable enqueue)
+	// avoids the alloc-vs-enqueue race that fabricated spurious warnings (#48).
+	droppedBytes atomic.Uint64
 
 	// behind signals that at least one SendMessage attempt since the
 	// last successful send hit the non-blocking default: branch and
@@ -81,7 +81,6 @@ func NewClient(conn net.Conn, server *Server, id uint32) *Client {
 func (c *Client) writeLoop() {
 	defer c.conn.Close()
 
-	var writtenByteIndex uint64
 	writeFailed := false
 
 	for {
@@ -98,10 +97,8 @@ func (c *Client) writeLoop() {
 				continue
 			}
 
-			if msg.byteIndex > writtenByteIndex {
-				dropped := msg.byteIndex - writtenByteIndex
-				warning := fmt.Sprintf(`{"type":"warning","warn_type":"dropped_data","message":"lost %d bytes"}`, dropped)
-				warning += "\n"
+			if dropped := c.droppedBytes.Swap(0); dropped > 0 {
+				warning := fmt.Sprintf(`{"type":"warning","warn_type":"dropped_data","message":"lost %d bytes"}`+"\n", dropped)
 				c.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 				c.conn.Write([]byte(warning))
 				slog.Debug("sent drop warning", "client_id", c.id, "dropped_bytes", dropped)
@@ -114,7 +111,6 @@ func (c *Client) writeLoop() {
 				slog.Debug("client write error", "client_id", c.id, "err", err)
 				writeFailed = true
 			}
-			writtenByteIndex = msg.byteIndex + uint64(len(msg.data))
 
 		case <-c.closeCh:
 			// Drain any buffered messages so they don't pin memory.
@@ -185,9 +181,8 @@ func (c *Client) sendReply(msg any, reqID uint64) {
 	}
 	data = append(data, '\n')
 
-	idx := c.nextByteIndex.Add(uint64(len(data))) - uint64(len(data))
 	select {
-	case c.writeCh <- writeMsg{data: data, byteIndex: idx}:
+	case c.writeCh <- writeMsg{data: data}:
 	case <-c.closeCh:
 	}
 }
@@ -204,11 +199,13 @@ func (c *Client) SendMessage(msg any) bool {
 	}
 	data = append(data, '\n')
 
-	idx := c.nextByteIndex.Add(uint64(len(data))) - uint64(len(data))
 	select {
-	case c.writeCh <- writeMsg{data: data, byteIndex: idx}:
+	case c.writeCh <- writeMsg{data: data}:
 		return true
 	default:
+		// Count the drop so writeLoop emits one "lost N bytes" warning before
+		// the next successful write — race-free (no pre-allocated byteIndex).
+		c.droppedBytes.Add(uint64(len(data)))
 		slog.Debug("client write channel full, dropping", "client_id", c.id, "bytes", len(data))
 		return false
 	}
