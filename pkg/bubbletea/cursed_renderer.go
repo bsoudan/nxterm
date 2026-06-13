@@ -33,6 +33,25 @@ type cursedRenderer struct {
 	mapnl         bool
 	syncdUpdates  bool // whether to use synchronized output mode for updates
 	starting      bool // indicates whether the renderer is starting after being stopped
+	titlePushed   bool // pushed the terminal's window title onto the XTWINOPS stack
+}
+
+// xtwinopsPushTitle / xtwinopsPopTitle save and restore the terminal's window
+// title via the XTWINOPS title stack (CSI 22;2t / 23;2t), so exiting nxterm
+// restores the title the terminal had on entry instead of clearing it.
+const (
+	xtwinopsPushTitle = "\x1b[22;2t"
+	xtwinopsPopTitle  = "\x1b[23;2t"
+)
+
+// setWindowTitle writes a window title, first pushing the terminal's existing
+// title onto the XTWINOPS stack so close() can restore it.
+func (s *cursedRenderer) setWindowTitle(title string) {
+	if !s.titlePushed {
+		_, _ = s.scr.WriteString(xtwinopsPushTitle)
+		s.titlePushed = true
+	}
+	_, _ = s.scr.WriteString(ansi.SetWindowTitle(title))
 }
 
 var _ renderer = &cursedRenderer{}
@@ -122,7 +141,7 @@ func (s *cursedRenderer) start() {
 		_, _ = s.scr.WriteString(ansi.SetModeMouseAnyEvent + ansi.SetModeMouseExtSgr)
 	}
 	if s.lastView.WindowTitle != "" {
-		_, _ = s.scr.WriteString(ansi.SetWindowTitle(s.lastView.WindowTitle))
+		s.setWindowTitle(s.lastView.WindowTitle)
 	}
 	if s.lastView.ProgressBar != nil {
 		setProgressBar(s, s.lastView.ProgressBar)
@@ -185,9 +204,11 @@ func (s *cursedRenderer) close() (err error) {
 				ansi.ResetModeMouseExtSgr)
 		}
 
-		if lv.WindowTitle != "" {
-			// Clear the window title if it was set.
-			_, _ = s.scr.WriteString(ansi.SetWindowTitle(""))
+		if s.titlePushed {
+			// Restore the terminal's pre-nxterm title from the XTWINOPS stack
+			// rather than clearing it to empty.
+			_, _ = s.scr.WriteString(xtwinopsPopTitle)
+			s.titlePushed = false
 		}
 		if lc := lv.Cursor; lc != nil {
 			curShape := encodeCursorStyle(lc.Shape, lc.Blink)
@@ -365,7 +386,7 @@ func (s *cursedRenderer) flush(closing bool) error {
 	// Set window title.
 	if s.lastView == nil || view.WindowTitle != s.lastView.WindowTitle {
 		if s.lastView != nil || view.WindowTitle != "" {
-			_, _ = s.scr.WriteString(ansi.SetWindowTitle(view.WindowTitle))
+			s.setWindowTitle(view.WindowTitle)
 		}
 	}
 
