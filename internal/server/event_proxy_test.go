@@ -319,3 +319,29 @@ func TestSyncOutputHoldsDuringSync(t *testing.T) {
 	}
 }
 
+// A bell that arrives after a synchronized-output batch ends is transient —
+// a snapshot can't represent it — so Flush must return it as a trailing event
+// even though needsSnapshot is set (#51).
+func TestSyncOutputPreservesTrailingBell(t *testing.T) {
+	const cols, rows = 80, 24
+
+	serverScreen := te.NewScreen(cols, rows)
+	proxy := NewEventProxy(serverScreen)
+	stream := te.NewStream(proxy, false)
+
+	stream.FeedBytes([]byte(
+		ansi.SetModeSynchronizedOutput +
+			"synced" +
+			ansi.ResetModeSynchronizedOutput +
+			"\a", // bell after the sync ended
+	))
+
+	events, needsSnap, _ := proxy.Flush()
+	if !needsSnap {
+		t.Fatal("expected needsSnapshot after sync end")
+	}
+	if len(events) != 1 || events[0].Op != "bell" {
+		t.Fatalf("expected a single trailing bell event, got %+v", events)
+	}
+}
+

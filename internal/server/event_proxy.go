@@ -71,10 +71,12 @@ func (p *EventProxy) AllSyncs() []string {
 // are ordered after events/snapshot; callers should send them as
 // trailing TerminalEvents with Op="sync".
 //
-// If a synchronized output batch completed (mode 2026), needsSnapshot
-// is true and events contains only the events AFTER the sync ended.
-// The caller should send a screen_update snapshot first, then the
-// trailing events, then the sync markers.
+// If a synchronized output batch completed (mode 2026), needsSnapshot is
+// true. The snapshot reconstructs all screen state — including post-sync
+// screen mutations — so those are dropped, but transient events that a
+// snapshot cannot represent (e.g. a bell) and that arrived after the sync
+// ended are returned in events. The caller should send a screen_update
+// snapshot first, then those trailing events, then the sync markers.
 func (p *EventProxy) Flush() (events []protocol.TerminalEvent, needsSnapshot bool, syncs []string) {
 	if p.syncMode {
 		if len(p.batch) <= maxSyncBatchEvents {
@@ -92,12 +94,19 @@ func (p *EventProxy) Flush() (events []protocol.TerminalEvent, needsSnapshot boo
 	p.pendingSyncs = nil
 
 	if p.syncEndIndex >= 0 {
-		// Sync completed. The snapshot captures the full screen state
-		// including any events after the sync ended, so discard the
-		// entire batch.
+		// Sync completed. The snapshot captures the full screen state,
+		// including post-sync screen mutations, so those are dropped. But
+		// transient events the snapshot can't represent (e.g. a bell) that
+		// arrived after the sync ended must survive — collect and return them.
+		var trailing []protocol.TerminalEvent
+		for _, ev := range p.batch[p.syncEndIndex:] {
+			if isTransientEvent(ev.Op) {
+				trailing = append(trailing, ev)
+			}
+		}
 		p.batch = nil
 		p.syncEndIndex = -1
-		return nil, true, syncs
+		return trailing, true, syncs
 	}
 
 	if len(p.batch) == 0 {
@@ -106,6 +115,14 @@ func (p *EventProxy) Flush() (events []protocol.TerminalEvent, needsSnapshot boo
 	out := p.batch
 	p.batch = nil
 	return out, false, syncs
+}
+
+// isTransientEvent reports whether an event op signals something to the client
+// that a screen snapshot cannot reconstruct, so it must survive a sync flush
+// (which otherwise replaces the batch with a snapshot). Today only the bell
+// qualifies; screen-mutating ops are all covered by the snapshot.
+func isTransientEvent(op string) bool {
+	return op == "bell"
 }
 
 func (p *EventProxy) ev(op string) {

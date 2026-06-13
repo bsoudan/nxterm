@@ -383,7 +383,7 @@ func (a *regionActor) broadcastToSubscribers() {
 	if needsSnapshot {
 		baseSnap := a.snapshot()
 		a.deliverSnapshotPerSub(baseSnap, currentTotal)
-		a.broadcastSyncs(syncs)
+		a.broadcastTrailing(events, syncs)
 		return
 	}
 
@@ -532,17 +532,26 @@ func (a *regionActor) deliverBroadcast(msgBuilder, catchupBuilder func(*subscrib
 }
 
 func (a *regionActor) broadcastSyncs(syncs []string) {
-	if len(syncs) == 0 {
+	a.broadcastTrailing(nil, syncs)
+}
+
+// broadcastTrailing sends transient post-sync events (e.g. a bell the snapshot
+// can't carry) followed by sync markers as a single ordered terminal_events
+// message. Used after a snapshot, where these ride behind the full screen
+// state. Subscribers behind on backpressure fall back to a desync snapshot.
+func (a *regionActor) broadcastTrailing(events []protocol.TerminalEvent, syncs []string) {
+	if len(events) == 0 && len(syncs) == 0 {
 		return
 	}
-	syncEvents := make([]protocol.TerminalEvent, len(syncs))
-	for i, id := range syncs {
-		syncEvents[i] = protocol.TerminalEvent{Op: "sync", Data: id}
+	combined := make([]protocol.TerminalEvent, 0, len(events)+len(syncs))
+	combined = append(combined, events...)
+	for _, id := range syncs {
+		combined = append(combined, protocol.TerminalEvent{Op: "sync", Data: id})
 	}
 	msg := protocol.TerminalEvents{
 		Type:     "terminal_events",
 		RegionID: a.id,
-		Events:   syncEvents,
+		Events:   combined,
 	}
 	currentTotal := a.hscreen.TotalAdded()
 	a.deliverBroadcast(
