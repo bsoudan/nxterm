@@ -58,9 +58,15 @@ func (p *UIPrompter) secretInput(prompt string) (string, error) {
 	ch := make(chan SecretInputResult, 1)
 	layer := NewSecretInputLayer(prompt, ch)
 	p.program.Send(PushLayerMsg{Layer: layer})
-	result := <-ch
-	if result.Cancelled {
-		return "", fmt.Errorf("user cancelled secret prompt")
+	// Also wake on program exit: if bubbletea has quit, Send is a no-op and the
+	// layer will never fill ch — the dial goroutine would block forever.
+	select {
+	case result := <-ch:
+		if result.Cancelled {
+			return "", fmt.Errorf("user cancelled secret prompt")
+		}
+		return result.Value, nil
+	case <-p.program.Context().Done():
+		return "", fmt.Errorf("UIPrompter: program exited while prompt pending")
 	}
-	return result.Value, nil
 }
