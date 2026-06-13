@@ -353,7 +353,9 @@ func (s *Server) resumeAfterFailedUpgrade(result upgradeResult) {
 			slog.Error("upgrade: rollback failed to restart readLoop", "region_id", pr.id, "err", err)
 		}
 	})
-	slog.Warn("upgrade: rollback complete, but listeners were closed; restart may be needed")
+	// stopAccepting() only flips noAccept; it never closes the listeners, so
+	// clearing noAccept above is enough to resume serving. No restart needed.
+	slog.Warn("upgrade: rollback complete; resumed accepting connections")
 }
 
 type upgradeReq struct {

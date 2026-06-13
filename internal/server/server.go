@@ -142,6 +142,21 @@ func (s *Server) send(req request) bool {
 	}
 }
 
+// awaitResp waits for a response on ch, but unblocks if the event loop exits
+// first (s.done closed). It guards the window where send() succeeded — the
+// request was enqueued — but the loop drained and exited before handling it,
+// which would otherwise strand the caller on <-ch forever (#55). ok is false
+// when the loop exited before responding.
+func awaitResp[T any](s *Server, ch <-chan T) (T, bool) {
+	select {
+	case r := <-ch:
+		return r, true
+	case <-s.done:
+		var zero T
+		return zero, false
+	}
+}
+
 func (s *Server) Run() {
 	var wg sync.WaitGroup
 	for _, ln := range s.listeners {
@@ -227,7 +242,10 @@ func (s *Server) acceptClient(conn net.Conn) {
 		client.Close()
 		return
 	}
-	<-resp
+	if _, ok := awaitResp(s, resp); !ok {
+		client.Close()
+		return
+	}
 
 	slog.Debug("client connected", "id", id)
 	go client.ReadLoop()
@@ -253,7 +271,10 @@ func (s *Server) SpawnRegion(sessionName, cmd string, args []string, env map[str
 		region.Close()
 		return nil, fmt.Errorf("server shutting down")
 	}
-	<-resp
+	if _, ok := awaitResp(s, resp); !ok {
+		region.Close()
+		return nil, fmt.Errorf("server shutting down")
+	}
 
 	slog.Info("spawned region", "region_id", region.ID(), "cmd", cmd, "session", sessionName)
 
@@ -277,7 +298,10 @@ func (s *Server) SpawnNativeRegion(driver *Client, sessionName, name string, wid
 		region.Close()
 		return nil, fmt.Errorf("server shutting down")
 	}
-	<-resp
+	if _, ok := awaitResp(s, resp); !ok {
+		region.Close()
+		return nil, fmt.Errorf("server shutting down")
+	}
 
 	slog.Info("spawned native region", "region_id", region.ID(), "name", name,
 		"session", sessionName, "driver_client_id", driver.id)
@@ -290,9 +314,8 @@ func (s *Server) destroyRegion(regionID string) {
 	if !s.send(destroyRegionReq{regionID: regionID, resp: resp}) {
 		return
 	}
-	result := <-resp
-
-	if !result.found {
+	result, ok := awaitResp(s, resp)
+	if !ok || !result.found {
 		return
 	}
 	// Note: region_destroyed broadcast removed — clients are notified
@@ -307,7 +330,8 @@ func (s *Server) FindRegion(regionID string) Region {
 	if !s.send(findRegionReq{regionID: regionID, resp: resp}) {
 		return nil
 	}
-	return <-resp
+	r, _ := awaitResp(s, resp)
+	return r
 }
 
 // UpdateRegionGeometry re-publishes the region's tree node so its width/height
@@ -318,7 +342,7 @@ func (s *Server) UpdateRegionGeometry(regionID string) {
 	if !s.send(setRegionGeometryReq{regionID: regionID, resp: resp}) {
 		return
 	}
-	<-resp
+	awaitResp(s, resp)
 }
 
 // RouteInput looks up where input for a region should go. If an overlay is
@@ -329,7 +353,7 @@ func (s *Server) RouteInput(regionID string) (Region, *Client) {
 	if !s.send(inputRouteReq{regionID: regionID, resp: resp}) {
 		return nil, nil
 	}
-	result := <-resp
+	result, _ := awaitResp(s, resp)
 	return result.region, result.overlayClient
 }
 
@@ -338,8 +362,8 @@ func (s *Server) KillRegion(regionID string) bool {
 	if !s.send(killRegionReq{regionID: regionID, resp: resp}) {
 		return false
 	}
-	region := <-resp
-	if region == nil {
+	region, ok := awaitResp(s, resp)
+	if !ok || region == nil {
 		return false
 	}
 	region.Kill()
@@ -351,8 +375,8 @@ func (s *Server) KillClient(clientID uint32) bool {
 	if !s.send(killClientReq{clientID: clientID, resp: resp}) {
 		return false
 	}
-	client := <-resp
-	if client == nil {
+	client, ok := awaitResp(s, resp)
+	if !ok || client == nil {
 		return false
 	}
 	client.Close()
@@ -460,8 +484,8 @@ func (s *Server) SpawnProgram(sessionName, programName string) (Region, error) {
 	if !s.send(lookupProgramReq{name: programName, resp: resp}) {
 		return nil, fmt.Errorf("server shutting down")
 	}
-	prog := <-resp
-	if prog == nil {
+	prog, ok := awaitResp(s, resp)
+	if !ok || prog == nil {
 		return nil, fmt.Errorf("unknown program: %s", programName)
 	}
 	return s.SpawnRegion(sessionName, prog.Cmd, prog.Args, prog.Env, 0, 0)
@@ -497,7 +521,10 @@ func (s *Server) findOrCreateSession(name string, width, height uint16) (string,
 	if !s.send(sessionConnectReq{name: name, width: width, height: height, resp: resp}) {
 		return "", nil, fmt.Errorf("server shutting down")
 	}
-	result := <-resp
+	result, ok := awaitResp(s, resp)
+	if !ok {
+		return "", nil, fmt.Errorf("server shutting down")
+	}
 
 	if result.exists {
 		return name, result.regionInfos, nil
@@ -527,7 +554,8 @@ func (s *Server) listProgramInfos() []protocol.ProgramInfo {
 	if !s.send(listProgramsReq{resp: resp}) {
 		return nil
 	}
-	return <-resp
+	r, _ := awaitResp(s, resp)
+	return r
 }
 
 func (s *Server) addProgram(p config.ProgramConfig) error {
@@ -535,7 +563,11 @@ func (s *Server) addProgram(p config.ProgramConfig) error {
 	if !s.send(addProgramReq{prog: p, resp: resp}) {
 		return fmt.Errorf("server shutting down")
 	}
-	return <-resp
+	r, ok := awaitResp(s, resp)
+	if !ok {
+		return fmt.Errorf("server shutting down")
+	}
+	return r
 }
 
 func (s *Server) removeProgram(name string) error {
@@ -543,7 +575,11 @@ func (s *Server) removeProgram(name string) error {
 	if !s.send(removeProgramReq{name: name, resp: resp}) {
 		return fmt.Errorf("server shutting down")
 	}
-	return <-resp
+	r, ok := awaitResp(s, resp)
+	if !ok {
+		return fmt.Errorf("server shutting down")
+	}
+	return r
 }
 
 func (s *Server) getRegionInfos(sessionFilter string) []protocol.RegionInfo {
@@ -551,7 +587,8 @@ func (s *Server) getRegionInfos(sessionFilter string) []protocol.RegionInfo {
 	if !s.send(getRegionInfosReq{session: sessionFilter, resp: resp}) {
 		return nil
 	}
-	return <-resp
+	r, _ := awaitResp(s, resp)
+	return r
 }
 
 func (s *Server) getClientInfos() []protocol.ClientInfoData {
@@ -559,7 +596,8 @@ func (s *Server) getClientInfos() []protocol.ClientInfoData {
 	if !s.send(getClientInfosReq{resp: resp}) {
 		return nil
 	}
-	return <-resp
+	r, _ := awaitResp(s, resp)
+	return r
 }
 
 func (s *Server) getSessionInfos() []protocol.SessionInfo {
@@ -567,7 +605,8 @@ func (s *Server) getSessionInfos() []protocol.SessionInfo {
 	if !s.send(getSessionInfosReq{resp: resp}) {
 		return nil
 	}
-	return <-resp
+	r, _ := awaitResp(s, resp)
+	return r
 }
 
 // SetSessionsChanged registers a callback invoked from the server event
@@ -583,8 +622,8 @@ func (s *Server) Subscribe(clientID uint32, regionID string) (Region, Snapshot) 
 	if !s.send(subscribeReq{clientID: clientID, regionID: regionID, resp: resp}) {
 		return nil, Snapshot{}
 	}
-	result := <-resp
-	if result == nil {
+	result, ok := awaitResp(s, resp)
+	if !ok || result == nil {
 		return nil, Snapshot{}
 	}
 	return result.region, result.snapshot
@@ -603,7 +642,8 @@ func (s *Server) GetClientSession(clientID uint32) string {
 	if !s.send(getClientSessionReq{clientID: clientID, resp: resp}) {
 		return ""
 	}
-	return <-resp
+	r, _ := awaitResp(s, resp)
+	return r
 }
 
 func serverShell() string {
