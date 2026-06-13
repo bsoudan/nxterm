@@ -40,9 +40,19 @@ func NewEventProxy(screen te.EventHandler) *EventProxy {
 // to the region's permanent sync history. During mode 2026 the marker
 // is held along with the rest of the batch and flushed only after the
 // terminating sequence.
+// maxSyncHistory bounds the per-region sync-marker backlog replayed to new
+// subscribers. Sync markers are a test-harness construct (OSC 2459); a new
+// subscriber only ever awaits a recent one, so keeping the tail is sufficient
+// and stops allSyncs from growing for the region's lifetime.
+const maxSyncHistory = 256
+
 func (p *EventProxy) EmitSyncMarker(id string) {
 	p.pendingSyncs = append(p.pendingSyncs, id)
 	p.allSyncs = append(p.allSyncs, id)
+	if len(p.allSyncs) > maxSyncHistory {
+		// Copy to a fresh slice so the old backing array can be freed.
+		p.allSyncs = append([]string(nil), p.allSyncs[len(p.allSyncs)-maxSyncHistory:]...)
+	}
 }
 
 // AllSyncs returns the full sync marker history for this region. Used

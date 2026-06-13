@@ -113,7 +113,6 @@ type Stream struct {
 	pendingQuote    bool
 	takingText      bool
 	oscEsc          bool
-	skipNext        bool
 	strBuf          strings.Builder
 	paramStrings    []string
 	escapeOverrides map[rune]func()
@@ -176,7 +175,6 @@ func (st *Stream) Attach(screen EventHandler) {
 	st.strBuf.Reset()
 	st.takingText = false
 	st.oscEsc = false
-	st.skipNext = false
 	st.use8BitControls = false
 	st.pendingBytes = nil
 	st.strBuf.Reset()
@@ -205,7 +203,6 @@ func (st *Stream) FeedBytes(data []byte) (err error) {
 			st.state = stateGround
 			st.resetCSI()
 			st.oscEsc = false
-			st.skipNext = false
 			st.pendingBytes = nil
 			st.strBuf.Reset()
 			err = fmt.Errorf("handler panic: %v", r)
@@ -253,15 +250,6 @@ func (st *Stream) FeedBytes(data []byte) (err error) {
 			ch = rune(b)
 		}
 
-		if st.skipNext {
-			flush()
-			st.skipNext = false
-			if err := st.feedRune(ch); err != nil {
-				return err
-			}
-			i += size
-			continue
-		}
 		if st.isPlainText(ch) && st.state == stateGround {
 			textBuf = append(textBuf, ch)
 			i += size
@@ -298,10 +286,6 @@ func (st *Stream) abortSequence() {
 }
 
 func (st *Stream) feedRune(ch rune) error {
-	if st.skipNext {
-		st.skipNext = false
-		return nil
-	}
 	// CAN and SUB abort any in-progress control sequence from any non-ground
 	// state and return to ground, rather than being swallowed into a string.
 	// SUB additionally displays a substitution character (Williams parser);
