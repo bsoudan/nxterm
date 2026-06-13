@@ -3,6 +3,7 @@ package tui
 import (
 	"bytes"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"runtime"
@@ -645,6 +646,14 @@ func (m *NxtermModel) interpretInput(raw []byte) (tea.Cmd, error) {
 	return m.stack.Update(RawInputMsg(norm)), nil
 }
 
+// slowSyncCmdThreshold bounds how long a single cmd may run on the input loop
+// before execCmdSync logs it. Cmds reaching execCmdSync MUST be non-blocking:
+// they run inline on the raw-input goroutine, so a blocking cmd (a network
+// call, or a tea.Tick that sleeps) freezes input handling for its full
+// duration. Nothing returns such a cmd today; this watchdog makes a future
+// regression observable rather than a silent hang.
+const slowSyncCmdThreshold = 100 * time.Millisecond
+
 func (m *NxtermModel) execCmdSync(cmd tea.Cmd) error {
 	// Trampoline: process commands iteratively to avoid unbounded
 	// recursion through execCmdSync → processRawInput → execCmdSync.
@@ -655,7 +664,12 @@ func (m *NxtermModel) execCmdSync(cmd tea.Cmd) error {
 	for len(queue) > 0 {
 		c := queue[0]
 		queue = queue[1:]
+		start := time.Now()
 		msg := c()
+		if elapsed := time.Since(start); elapsed > slowSyncCmdThreshold {
+			slog.Warn("slow synchronous cmd on input loop; cmds reaching execCmdSync must be non-blocking",
+				"elapsed_ms", elapsed.Milliseconds())
+		}
 		if msg == nil {
 			continue
 		}
