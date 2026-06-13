@@ -399,7 +399,7 @@ func (a *regionActor) broadcastToSubscribers() {
 		Events:   combined,
 	}
 	a.deliverBroadcast(
-		func(sub *subscriberState) any { return msg },
+		msg,
 		func(sub *subscriberState) any {
 			s := newScreenUpdate(a.id, a.snapshot())
 			s.ScrollbackDesync = true
@@ -416,11 +416,18 @@ func (a *regionActor) broadcastToSubscribers() {
 // transitions where per-event replay is discarded — without the delta,
 // rows pushed to history during the batch would be lost on the client.
 func (a *regionActor) deliverSnapshotPerSub(base Snapshot, currentTotal uint64) {
-	a.deliverBroadcast(
-		func(sub *subscriberState) any {
+	// Each subscriber gets a distinct ScrollbackDelta, so the message genuinely
+	// differs per subscriber and must be marshaled per subscriber.
+	a.deliverFrames(
+		func(sub *subscriberState) []byte {
 			s := newScreenUpdate(a.id, base)
 			s.ScrollbackDelta = a.scrollbackSince(sub.lastTotalAdded, currentTotal)
-			return s
+			frame, err := marshalFrame(s)
+			if err != nil {
+				slog.Debug("snapshot marshal error", "region_id", a.id, "err", err)
+				return nil
+			}
+			return frame
 		},
 		func(sub *subscriberState) any {
 			s := newScreenUpdate(a.id, base)
@@ -469,17 +476,27 @@ func (a *regionActor) scrollbackSince(since, upto uint64) [][]protocol.ScreenCel
 	return out
 }
 
-// deliverBroadcast sends a per-subscriber message (built by msgBuilder)
-// and, when the regular send succeeds against a subscriber that is
-// currently behind, additionally sends a catchup ScreenUpdate (built
-// by catchupBuilder) to clear the behind state. Maintains the
-// per-client behind flag and the circuit breaker. Increments
+// deliverBroadcast sends one identical message to every subscriber. The
+// message is marshaled a single time and the resulting bytes are shared
+// read-only across all subscribers (#56). For per-subscriber messages (e.g.
+// snapshots carrying a per-sub ScrollbackDelta), use deliverFrames directly.
+func (a *regionActor) deliverBroadcast(msg any, catchupBuilder func(*subscriberState) any, currentTotal uint64) {
+	frame, err := marshalFrame(msg)
+	if err != nil {
+		slog.Debug("broadcast marshal error", "region_id", a.id, "err", err)
+		return
+	}
+	a.deliverFrames(func(*subscriberState) []byte { return frame }, catchupBuilder, currentTotal)
+}
+
+// deliverFrames sends a per-subscriber frame (produced by frameFor; a nil
+// return skips that subscriber) and, when the regular send succeeds against a
+// subscriber that is currently behind, additionally sends a catchup
+// ScreenUpdate (built by catchupBuilder) to clear the behind state. Maintains
+// the per-client behind flag and the circuit breaker. Increments
 // droppedBroadcasts on drops. On successful delivery, advances the
-// subscriber's lastTotalAdded so future snapshot deltas cover only
-// rows scrolled since this broadcast. The batchMsg parameter, when
-// the snapshot path calls msgBuilder per subscriber to attach
-// per-subscriber ScrollbackDelta; batch paths (TerminalEvents) return
-// the same msg for every subscriber.
+// subscriber's lastTotalAdded so future snapshot deltas cover only rows
+// scrolled since this broadcast.
 //
 // We intentionally never send the catchup ahead of the regular msg, nor
 // in the same broadcast that just dropped a regular msg: the catchup
@@ -489,11 +506,14 @@ func (a *regionActor) scrollbackSince(since, upto uint64) [][]protocol.ScreenCel
 // has drained enough for the catchup to fit too — then piggyback the
 // catchup. If the regular msg drops, behind stays set; the next broadcast
 // retries naturally.
-func (a *regionActor) deliverBroadcast(msgBuilder, catchupBuilder func(*subscriberState) any, currentTotal uint64) {
+func (a *regionActor) deliverFrames(frameFor func(*subscriberState) []byte, catchupBuilder func(*subscriberState) any, currentTotal uint64) {
 	for _, sub := range a.subscribers {
-		msg := msgBuilder(sub)
 		c := sub.client
-		if !c.SendMessage(msg) {
+		frame := frameFor(sub)
+		if frame == nil {
+			continue
+		}
+		if !c.SendFrame(frame) {
 			a.stats.droppedBroadcasts++
 			if c.behind.CompareAndSwap(false, true) {
 				c.behindSinceNanos.Store(time.Now().UnixNano())
@@ -555,7 +575,7 @@ func (a *regionActor) broadcastTrailing(events []protocol.TerminalEvent, syncs [
 	}
 	currentTotal := a.hscreen.TotalAdded()
 	a.deliverBroadcast(
-		func(sub *subscriberState) any { return msg },
+		msg,
 		func(sub *subscriberState) any {
 			s := newScreenUpdate(a.id, a.snapshot())
 			s.ScrollbackDesync = true

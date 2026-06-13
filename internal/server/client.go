@@ -205,23 +205,38 @@ func (c *Client) sendReply(msg any, reqID uint64) {
 // dropped. Callers that care about drops (e.g., the region actor's
 // broadcast loop) use the return value to mark the client as behind.
 func (c *Client) SendMessage(msg any) bool {
-	data, err := json.Marshal(msg)
+	frame, err := marshalFrame(msg)
 	if err != nil {
 		slog.Debug("marshal error", "client_id", c.id, "err", err)
 		return false
 	}
-	data = append(data, '\n')
+	return c.SendFrame(frame)
+}
 
+// SendFrame enqueues a pre-marshaled, newline-terminated frame. Same
+// non-blocking drop semantics as SendMessage. The frame is treated as
+// read-only and may be shared across clients, so a broadcaster can marshal a
+// message once and fan the same bytes out to every subscriber (#56).
+func (c *Client) SendFrame(frame []byte) bool {
 	select {
-	case c.writeCh <- writeMsg{data: data}:
+	case c.writeCh <- writeMsg{data: frame}:
 		return true
 	default:
 		// Count the drop so writeLoop emits one "lost N bytes" warning before
 		// the next successful write — race-free (no pre-allocated byteIndex).
-		c.droppedBytes.Add(uint64(len(data)))
-		slog.Debug("client write channel full, dropping", "client_id", c.id, "bytes", len(data))
+		c.droppedBytes.Add(uint64(len(frame)))
+		slog.Debug("client write channel full, dropping", "client_id", c.id, "bytes", len(frame))
 		return false
 	}
+}
+
+// marshalFrame JSON-encodes msg and appends the newline delimiter.
+func marshalFrame(msg any) ([]byte, error) {
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	return append(data, '\n'), nil
 }
 
 // WriteChHasRoom reports whether the client's outbound channel has
