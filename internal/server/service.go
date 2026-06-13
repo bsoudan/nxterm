@@ -46,8 +46,14 @@ func generateUnit(execPath string, cmd *cli.Command) string {
 	// Positional args are listen specs
 	args = append(args, cmd.Args().Slice()...)
 
-	execLine := strings.Join(args, " ")
+	return renderUnitFile(strings.Join(args, " "))
+}
 
+// renderUnitFile produces the systemd user-unit content for the given
+// ExecStart command line. Both the install path (generateUnit) and the
+// upgrade-reinstall path (cmdRestart) go through here so the unit definition
+// lives in exactly one place.
+func renderUnitFile(execLine string) string {
 	return fmt.Sprintf(`[Unit]
 Description=nxtermd %s
 
@@ -207,10 +213,8 @@ func cmdRestart(ctx context.Context, cmd *cli.Command) error {
 	var args []string
 	args = append(args, execPath)
 	args = append(args, prevArgs...)
-	execLine := strings.Join(args, " ")
 
-	unit := fmt.Sprintf("[Unit]\nDescription=nxtermd %s\n\n[Service]\nType=notify\nNotifyAccess=all\nExecStart=%s\nExecReload=/bin/kill -USR2 $MAINPID\nRestart=on-failure\nEnvironment=NXTERMD_VERSION=%s\nEnvironment=PATH=%s\n\n[Install]\nWantedBy=default.target\n",
-		version, execLine, version, os.Getenv("PATH"))
+	unit := renderUnitFile(strings.Join(args, " "))
 
 	if err := os.WriteFile(unitPath, []byte(unit), 0644); err != nil {
 		return fmt.Errorf("write unit file: %w", err)
