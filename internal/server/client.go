@@ -40,6 +40,10 @@ type Client struct {
 	closeOnce sync.Once
 	identity  atomic.Value // stores *clientIdentity
 
+	// drained is a coalescing (cap-1) notification that writeLoop posts each
+	// time it empties writeCh. CloseGracefully waits on it instead of polling.
+	drained chan struct{}
+
 	// droppedBytes accumulates the size of messages SendMessage dropped on a
 	// full writeCh. writeLoop swaps it to zero and emits a single "lost N
 	// bytes" warning before the next successful write. Counting actual drops
@@ -68,6 +72,7 @@ func NewClient(conn net.Conn, server *Server, id uint32) *Client {
 		id:      id,
 		writeCh: make(chan writeMsg, cap),
 		closeCh: make(chan struct{}),
+		drained: make(chan struct{}, 1),
 	}
 	c.identity.Store(&clientIdentity{
 		hostname: "unknown",
@@ -110,6 +115,14 @@ func (c *Client) writeLoop() {
 			if err != nil {
 				slog.Debug("client write error", "client_id", c.id, "err", err)
 				writeFailed = true
+			}
+
+			// Wake a graceful closer once the queue is empty.
+			if len(c.writeCh) == 0 {
+				select {
+				case c.drained <- struct{}{}:
+				default:
+				}
 			}
 
 		case <-c.closeCh:
@@ -225,18 +238,22 @@ func (c *Client) Close() {
 	})
 }
 
-// CloseGracefully polls the writeCh until it drains (or the deadline
-// expires) and then closes the client. This gives messages enqueued
-// just before the close — notably the final upgrade status broadcast
-// during a live upgrade — a chance to actually reach the wire before
-// writeLoop sees closeCh and drops the remaining queue.
+// CloseGracefully waits until writeCh drains (or the deadline expires) and
+// then closes the client. This gives messages enqueued just before the close
+// — notably the final upgrade status broadcast during a live upgrade — a
+// chance to actually reach the wire before writeLoop sees closeCh and drops
+// the remaining queue. It blocks on writeLoop's drained notification rather
+// than polling, so it returns as soon as the queue empties.
 func (c *Client) CloseGracefully(timeout time.Duration) {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if len(c.writeCh) == 0 {
-			break
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for len(c.writeCh) > 0 {
+		select {
+		case <-c.drained:
+		case <-timer.C:
+			c.Close()
+			return
 		}
-		time.Sleep(5 * time.Millisecond)
 	}
 	c.Close()
 }
